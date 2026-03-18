@@ -134,7 +134,7 @@ struct ProviderPopoverView: View {
     private var footer: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(snapshot.isStale ? "업데이트 실패" : "Updated \(TokenFormatters.resetString(from: .now, resetAt: snapshot.updatedAt))")
+                Text(snapshot.isStale ? "최근 정상값 \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))" : "마지막 갱신 \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(AppTheme.muted)
                 Text(TokenFormatters.dateTimeString(snapshot.updatedAt))

@@ -10,7 +10,7 @@ struct ClaudeUsageProvider: UsageProviding {
                 let remoteResult = try await resolveRemoteUsage()
                 return ProviderSnapshot(
                     provider: .claude,
-                    updatedAt: .now,
+                    updatedAt: remoteResult.updatedAt,
                     fiveHour: WindowSummary(
                         tokens: remoteResult.data.fiveHourUsedPercent,
                         limitTokens: 100,
@@ -57,29 +57,53 @@ struct ClaudeUsageProvider: UsageProviding {
         if let cached = try? cache.read(), cached.isFresh {
             return RemoteUsageResult(
                 data: cached.data,
+                updatedAt: cached.timestamp,
                 note: "상단 bar는 Anthropic 계정 전체 usage API 기준입니다. Claude는 5분 캐시를 사용하고, 아래 토큰/세션은 This Mac 로그 기준입니다.",
                 isStale: false
             )
         }
 
+        if let cached = try? cache.read(), cached.isCoolingDown {
+            return RemoteUsageResult(
+                data: cached.data,
+                updatedAt: cached.timestamp,
+                note: "Anthropic usage API가 잠시 제한되어 최근 정상값을 유지합니다. 잠시 후 다시 자동 재시도합니다.",
+                isStale: true
+            )
+        }
+
         do {
             let remoteData = try await fetchRemoteUsage()
-            try? cache.write(remoteData)
+            let fetchedAt = Date.now
+            try? cache.write(remoteData, timestamp: fetchedAt)
             return RemoteUsageResult(
                 data: remoteData,
+                updatedAt: fetchedAt,
                 note: "상단 bar는 Anthropic 계정 전체 usage API 기준입니다. Claude는 5분 캐시를 사용하고, 아래 토큰/세션은 This Mac 로그 기준입니다.",
                 isStale: false
             )
         } catch {
             if let cached = try? cache.read() {
+                if isRateLimited(error) {
+                    try? cache.write(cached.data, timestamp: cached.timestamp, cooldownUntil: Date.now.addingTimeInterval(5 * 60))
+                }
                 return RemoteUsageResult(
                     data: cached.data,
-                    note: "Anthropic usage API가 잠시 제한되어 최근 정상값을 표시합니다. 아래 토큰/세션은 This Mac 로그 기준입니다.",
+                    updatedAt: cached.timestamp,
+                    note: "Anthropic usage API가 제한되어 최근 정상값을 표시합니다. 아래 토큰/세션은 This Mac 로그 기준입니다.",
                     isStale: true
                 )
             }
             throw error
         }
+    }
+
+    private func isRateLimited(_ error: Error) -> Bool {
+        guard let usageError = error as? ClaudeUsageError else { return false }
+        if case .httpStatus(429) = usageError {
+            return true
+        }
+        return false
     }
 
     private func fetchRemoteUsage() async throws -> RemoteUsageData {
@@ -478,6 +502,7 @@ private struct RemoteUsageData {
 
 private struct RemoteUsageResult {
     let data: RemoteUsageData
+    let updatedAt: Date
     let note: String
     let isStale: Bool
 }
@@ -556,6 +581,7 @@ private enum ClaudeUsageError: LocalizedError {
 
 private struct ClaudeUsageCacheRecord: Codable {
     let timestamp: Date
+    let cooldownUntil: Date?
     let planName: String?
     let fiveHourUsedPercent: Int
     let weeklyUsedPercent: Int
@@ -575,6 +601,11 @@ private struct ClaudeUsageCacheRecord: Codable {
     var isFresh: Bool {
         Date().timeIntervalSince(timestamp) < 5 * 60
     }
+
+    var isCoolingDown: Bool {
+        guard let cooldownUntil else { return false }
+        return cooldownUntil > Date.now
+    }
 }
 
 private struct ClaudeUsageCache {
@@ -593,9 +624,14 @@ private struct ClaudeUsageCache {
         return try decoder.decode(ClaudeUsageCacheRecord.self, from: data)
     }
 
-    func write(_ remoteData: RemoteUsageData) throws {
+    func write(
+        _ remoteData: RemoteUsageData,
+        timestamp: Date = .now,
+        cooldownUntil: Date? = nil
+    ) throws {
         let record = ClaudeUsageCacheRecord(
-            timestamp: .now,
+            timestamp: timestamp,
+            cooldownUntil: cooldownUntil,
             planName: remoteData.planName,
             fiveHourUsedPercent: remoteData.fiveHourUsedPercent,
             weeklyUsedPercent: remoteData.weeklyUsedPercent,

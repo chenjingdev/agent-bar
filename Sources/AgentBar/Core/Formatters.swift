@@ -49,4 +49,12 @@ enum TokenFormatters {
         formatter.timeStyle = .short
         return formatter.string(from: date)
     }
+
+    static func relativeUpdateString(from now: Date = .now, updatedAt: Date) -> String {
+        let interval = abs(now.timeIntervalSince(updatedAt))
+        if interval < 5 {
+            return "방금 전"
+        }
+        return makeRelativeFormatter().localizedString(for: updatedAt, relativeTo: now)
+    }
 }
