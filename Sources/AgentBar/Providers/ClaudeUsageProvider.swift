@@ -2,8 +2,10 @@ import CryptoKit
 import Foundation
 
 private enum ClaudeUsagePolicy {
-    static let successCacheTTL: TimeInterval = 10 * 60
-    static let rateLimitCooldown: TimeInterval = 10 * 60
+    static let successCacheTTL: TimeInterval = 60
+    static let failureCacheTTL: TimeInterval = 15
+    static let rateLimitedBaseTTL: TimeInterval = 60
+    static let rateLimitedMaxTTL: TimeInterval = 5 * 60
 }
 
 struct ClaudeUsageProvider: UsageProviding {
@@ -58,85 +60,135 @@ struct ClaudeUsageProvider: UsageProviding {
 
     private func resolveRemoteUsage() async throws -> RemoteUsageResult {
         let cache = ClaudeUsageCache()
+        let now = Date.now
 
-        if let cached = try? cache.read(), cached.isFresh {
+        if let cacheState = try? cache.readState(now: now), cacheState.isFresh {
             return RemoteUsageResult(
-                data: cached.data,
-                updatedAt: cached.timestamp,
-                note: "상단 bar는 Anthropic 계정 전체 usage API 기준입니다. Claude는 10분 캐시를 사용하고, 아래 토큰/세션은 This Mac 로그 기준입니다.",
+                data: cacheState.data,
+                updatedAt: cacheState.updatedAt,
+                note: note(for: cacheState.data),
+                isStale: cacheState.data.apiUnavailable
+            )
+        }
+
+        let credentials = try readCredentials()
+        let planName = planName(from: credentials.subscriptionType)
+        let apiResult = await fetchUsageApi(accessToken: credentials.accessToken)
+
+        if let payload = apiResult.data {
+            let successData = RemoteUsageData(
+                planName: planName,
+                fiveHourUsedPercent: Self.parseUtilization(payload.fiveHour?.utilization),
+                weeklyUsedPercent: Self.parseUtilization(payload.sevenDay?.utilization),
+                fiveHourResetAt: payload.fiveHour?.parsedResetAt,
+                weeklyResetAt: payload.sevenDay?.parsedResetAt,
+                apiUnavailable: false,
+                apiError: nil
+            )
+
+            try? cache.write(
+                data: successData,
+                timestamp: now,
+                lastGoodData: successData,
+                lastGoodTimestamp: now
+            )
+
+            return RemoteUsageResult(
+                data: successData,
+                updatedAt: now,
+                note: note(for: successData),
                 isStale: false
             )
         }
 
-        if let cached = try? cache.read(), cached.isCoolingDown {
-            return RemoteUsageResult(
-                data: cached.data,
-                updatedAt: cached.timestamp,
-                note: "Anthropic usage API가 잠시 제한되어 최근 정상값을 유지합니다. 잠시 후 다시 자동 재시도합니다.",
-                isStale: true
-            )
-        }
+        let failureData = RemoteUsageData(
+            planName: planName,
+            fiveHourUsedPercent: 0,
+            weeklyUsedPercent: 0,
+            fiveHourResetAt: nil,
+            weeklyResetAt: nil,
+            apiUnavailable: true,
+            apiError: apiResult.error
+        )
 
-        do {
-            let remoteData = try await fetchRemoteUsage()
-            let fetchedAt = Date.now
-            try? cache.write(remoteData, timestamp: fetchedAt)
-            return RemoteUsageResult(
-                data: remoteData,
-                updatedAt: fetchedAt,
-                note: "상단 bar는 Anthropic 계정 전체 usage API 기준입니다. Claude는 10분 캐시를 사용하고, 아래 토큰/세션은 This Mac 로그 기준입니다.",
-                isStale: false
+        let previousCache = try? cache.readRaw()
+        let isRateLimited = apiResult.error == "rate-limited"
+        let previousRateLimitedCount = previousCache?.rateLimitedCount ?? 0
+        let rateLimitedCount = isRateLimited ? previousRateLimitedCount + 1 : 0
+        let retryAfterUntil = apiResult.retryAfterSeconds.map { now.addingTimeInterval(TimeInterval($0)) }
+
+        if isRateLimited {
+            let goodState = cache.makeLastGoodState(from: previousCache)
+            try? cache.write(
+                data: failureData,
+                timestamp: now,
+                rateLimitedCount: rateLimitedCount,
+                retryAfterUntil: retryAfterUntil,
+                lastGoodData: goodState?.data,
+                lastGoodTimestamp: goodState?.updatedAt
             )
-        } catch {
-            if let cached = try? cache.read() {
-                if isRateLimited(error) {
-                    try? cache.write(
-                        cached.data,
-                        timestamp: cached.timestamp,
-                        cooldownUntil: Date.now.addingTimeInterval(ClaudeUsagePolicy.rateLimitCooldown)
-                    )
-                }
+
+            if let goodState {
+                let displayData = goodState.data.with(apiUnavailable: true, apiError: "rate-limited")
                 return RemoteUsageResult(
-                    data: cached.data,
-                    updatedAt: cached.timestamp,
-                    note: "Anthropic usage API가 제한되어 최근 정상값을 표시합니다. 아래 토큰/세션은 This Mac 로그 기준입니다.",
+                    data: displayData,
+                    updatedAt: goodState.updatedAt,
+                    note: note(for: displayData),
                     isStale: true
                 )
             }
-            throw error
-        }
-    }
-
-    private func isRateLimited(_ error: Error) -> Bool {
-        guard let usageError = error as? ClaudeUsageError else { return false }
-        if case .httpStatus(429) = usageError {
-            return true
-        }
-        return false
-    }
-
-    private func fetchRemoteUsage() async throws -> RemoteUsageData {
-        let credentials = try readCredentials()
-        let request = try makeUsageRequest(accessToken: credentials.accessToken)
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw ClaudeUsageError.invalidResponse
         }
 
-        guard httpResponse.statusCode == 200 else {
-            throw ClaudeUsageError.httpStatus(httpResponse.statusCode)
-        }
-
-        let payload = try JSONDecoder().decode(UsageApiResponse.self, from: data)
-
-        return RemoteUsageData(
-            planName: planName(from: credentials.subscriptionType),
-            fiveHourUsedPercent: payload.fiveHour?.utilization ?? 0,
-            weeklyUsedPercent: payload.sevenDay?.utilization ?? 0,
-            fiveHourResetAt: payload.fiveHour?.parsedResetAt,
-            weeklyResetAt: payload.sevenDay?.parsedResetAt
+        try? cache.write(data: failureData, timestamp: now)
+        return RemoteUsageResult(
+            data: failureData,
+            updatedAt: now,
+            note: note(for: failureData),
+            isStale: true
         )
+    }
+
+    private func note(for data: RemoteUsageData) -> String {
+        if data.apiUnavailable {
+            if data.apiError == "rate-limited" {
+                return "Anthropic usage API가 rate limit 상태라 최근 정상값을 표시합니다. 잠시 후 자동 재시도합니다. 아래 토큰/세션은 This Mac 로그 기준입니다."
+            }
+            return "Anthropic usage API를 읽지 못했습니다 (\(data.apiError ?? "unknown")). 아래 토큰/세션은 This Mac 로그 기준입니다."
+        }
+        return "상단 bar는 Anthropic 계정 전체 usage API 기준입니다. Claude는 claude-hud 방식의 캐시/백오프를 적용하고, 아래 토큰/세션은 This Mac 로그 기준입니다."
+    }
+
+    private func fetchUsageApi(accessToken: String) async -> UsageApiResult {
+        do {
+            let request = try makeUsageRequest(accessToken: accessToken)
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                return UsageApiResult(data: nil, error: "invalid-response", retryAfterSeconds: nil)
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                let error = httpResponse.statusCode == 429 ? "rate-limited" : "http-\(httpResponse.statusCode)"
+                let retryAfterSeconds = httpResponse.statusCode == 429
+                    ? Self.parseRetryAfterSeconds(httpResponse.value(forHTTPHeaderField: "Retry-After"))
+                    : nil
+                return UsageApiResult(data: nil, error: error, retryAfterSeconds: retryAfterSeconds)
+            }
+
+            do {
+                let payload = try JSONDecoder().decode(UsageApiResponse.self, from: data)
+                return UsageApiResult(data: payload, error: nil, retryAfterSeconds: nil)
+            } catch {
+                return UsageApiResult(data: nil, error: "parse", retryAfterSeconds: nil)
+            }
+        } catch let urlError as URLError {
+            if urlError.code == .timedOut {
+                return UsageApiResult(data: nil, error: "timeout", retryAfterSeconds: nil)
+            }
+            return UsageApiResult(data: nil, error: "network", retryAfterSeconds: nil)
+        } catch {
+            return UsageApiResult(data: nil, error: "network", retryAfterSeconds: nil)
+        }
     }
 
     private func makeUsageRequest(accessToken: String) throws -> URLRequest {
@@ -445,6 +497,36 @@ struct ClaudeUsageProvider: UsageProviding {
         return String(normalized.prefix(52))
     }
 
+    private static func parseUtilization(_ value: Double?) -> Int {
+        guard let value, value.isFinite else { return 0 }
+        return Int(max(0, min(100, value)).rounded())
+    }
+
+    private static func parseRetryAfterSeconds(_ raw: String?) -> Int? {
+        guard let raw else { return nil }
+
+        if let seconds = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)), seconds > 0 {
+            return seconds
+        }
+
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: raw) {
+            let delta = Int(ceil(date.timeIntervalSinceNow))
+            return delta > 0 ? delta : nil
+        }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        dateFormatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss zzz"
+        if let date = dateFormatter.date(from: raw) {
+            let delta = Int(ceil(date.timeIntervalSinceNow))
+            return delta > 0 ? delta : nil
+        }
+
+        return nil
+    }
+
     private static func intValue(_ value: Any?) -> Int {
         if let intValue = value as? Int { return intValue }
         if let doubleValue = value as? Double { return Int(doubleValue) }
@@ -501,12 +583,26 @@ private struct LocalUsageData {
     )
 }
 
-private struct RemoteUsageData {
+private struct RemoteUsageData: Codable {
     let planName: String?
     let fiveHourUsedPercent: Int
     let weeklyUsedPercent: Int
     let fiveHourResetAt: Date?
     let weeklyResetAt: Date?
+    let apiUnavailable: Bool
+    let apiError: String?
+
+    func with(apiUnavailable: Bool, apiError: String?) -> RemoteUsageData {
+        RemoteUsageData(
+            planName: planName,
+            fiveHourUsedPercent: fiveHourUsedPercent,
+            weeklyUsedPercent: weeklyUsedPercent,
+            fiveHourResetAt: fiveHourResetAt,
+            weeklyResetAt: weeklyResetAt,
+            apiUnavailable: apiUnavailable,
+            apiError: apiError
+        )
+    }
 }
 
 private struct RemoteUsageResult {
@@ -541,8 +637,14 @@ private struct UsageApiResponse: Decodable {
     }
 }
 
+private struct UsageApiResult {
+    let data: UsageApiResponse?
+    let error: String?
+    let retryAfterSeconds: Int?
+}
+
 private struct UsageWindowPayload: Decodable {
-    let utilization: Int?
+    let utilization: Double?
     let resetsAt: String?
 
     enum CodingKeys: String, CodingKey {
@@ -567,8 +669,6 @@ private struct UsageWindowPayload: Decodable {
 
 private enum ClaudeUsageError: LocalizedError {
     case invalidURL
-    case invalidResponse
-    case httpStatus(Int)
     case missingCredentials
     case keychainTimeout
 
@@ -576,10 +676,6 @@ private enum ClaudeUsageError: LocalizedError {
         switch self {
         case .invalidURL:
             return "잘못된 usage URL"
-        case .invalidResponse:
-            return "Anthropic 응답을 해석할 수 없습니다."
-        case .httpStatus(let status):
-            return "Anthropic usage API가 HTTP \(status)를 반환했습니다."
         case .missingCredentials:
             return "Claude OAuth 토큰을 찾지 못했습니다."
         case .keychainTimeout:
@@ -589,6 +685,15 @@ private enum ClaudeUsageError: LocalizedError {
 }
 
 private struct ClaudeUsageCacheRecord: Codable {
+    let data: RemoteUsageData
+    let timestamp: Date
+    let rateLimitedCount: Int?
+    let retryAfterUntil: Date?
+    let lastGoodData: RemoteUsageData?
+    let lastGoodTimestamp: Date?
+}
+
+private struct LegacyClaudeUsageCacheRecord: Decodable {
     let timestamp: Date
     let cooldownUntil: Date?
     let planName: String?
@@ -597,24 +702,32 @@ private struct ClaudeUsageCacheRecord: Codable {
     let fiveHourResetAt: Date?
     let weeklyResetAt: Date?
 
-    var data: RemoteUsageData {
-        RemoteUsageData(
+    var upgraded: ClaudeUsageCacheRecord {
+        let data = RemoteUsageData(
             planName: planName,
             fiveHourUsedPercent: fiveHourUsedPercent,
             weeklyUsedPercent: weeklyUsedPercent,
             fiveHourResetAt: fiveHourResetAt,
-            weeklyResetAt: weeklyResetAt
+            weeklyResetAt: weeklyResetAt,
+            apiUnavailable: false,
+            apiError: nil
+        )
+
+        return ClaudeUsageCacheRecord(
+            data: data,
+            timestamp: timestamp,
+            rateLimitedCount: nil,
+            retryAfterUntil: cooldownUntil,
+            lastGoodData: data,
+            lastGoodTimestamp: timestamp
         )
     }
+}
 
-    var isFresh: Bool {
-        Date().timeIntervalSince(timestamp) < ClaudeUsagePolicy.successCacheTTL
-    }
-
-    var isCoolingDown: Bool {
-        guard let cooldownUntil else { return false }
-        return cooldownUntil > Date.now
-    }
+private struct ClaudeUsageCacheState {
+    let data: RemoteUsageData
+    let updatedAt: Date
+    let isFresh: Bool
 }
 
 private struct ClaudeUsageCache {
@@ -626,26 +739,64 @@ private struct ClaudeUsageCache {
         return base.appendingPathComponent("claude-usage-cache.json")
     }
 
-    func read() throws -> ClaudeUsageCacheRecord {
+    func readRaw() throws -> ClaudeUsageCacheRecord {
         let data = try Data(contentsOf: cacheURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(ClaudeUsageCacheRecord.self, from: data)
+        if let record = try? decoder.decode(ClaudeUsageCacheRecord.self, from: data) {
+            return record
+        }
+        return try decoder.decode(LegacyClaudeUsageCacheRecord.self, from: data).upgraded
+    }
+
+    func readState(now: Date) throws -> ClaudeUsageCacheState {
+        let cache = try readRaw()
+        let displayState = displayState(from: cache)
+
+        if let retryUntil = rateLimitedRetryUntil(for: cache), now < retryUntil {
+            return ClaudeUsageCacheState(
+                data: displayState.data,
+                updatedAt: displayState.updatedAt,
+                isFresh: true
+            )
+        }
+
+        let ttl = cache.data.apiUnavailable ? ClaudeUsagePolicy.failureCacheTTL : ClaudeUsagePolicy.successCacheTTL
+        return ClaudeUsageCacheState(
+            data: displayState.data,
+            updatedAt: displayState.updatedAt,
+            isFresh: now.timeIntervalSince(cache.timestamp) < ttl
+        )
+    }
+
+    func makeLastGoodState(from cache: ClaudeUsageCacheRecord?) -> ClaudeUsageCacheState? {
+        guard let cache else { return nil }
+        if cache.data.apiUnavailable == false {
+            return ClaudeUsageCacheState(data: cache.data, updatedAt: cache.timestamp, isFresh: false)
+        }
+        guard let lastGoodData = cache.lastGoodData else { return nil }
+        return ClaudeUsageCacheState(
+            data: lastGoodData,
+            updatedAt: cache.lastGoodTimestamp ?? cache.timestamp,
+            isFresh: false
+        )
     }
 
     func write(
-        _ remoteData: RemoteUsageData,
-        timestamp: Date = .now,
-        cooldownUntil: Date? = nil
+        data: RemoteUsageData,
+        timestamp: Date,
+        rateLimitedCount: Int? = nil,
+        retryAfterUntil: Date? = nil,
+        lastGoodData: RemoteUsageData? = nil,
+        lastGoodTimestamp: Date? = nil
     ) throws {
         let record = ClaudeUsageCacheRecord(
+            data: data,
             timestamp: timestamp,
-            cooldownUntil: cooldownUntil,
-            planName: remoteData.planName,
-            fiveHourUsedPercent: remoteData.fiveHourUsedPercent,
-            weeklyUsedPercent: remoteData.weeklyUsedPercent,
-            fiveHourResetAt: remoteData.fiveHourResetAt,
-            weeklyResetAt: remoteData.weeklyResetAt
+            rateLimitedCount: rateLimitedCount,
+            retryAfterUntil: retryAfterUntil,
+            lastGoodData: lastGoodData,
+            lastGoodTimestamp: lastGoodTimestamp
         )
         let directory = cacheURL.deletingLastPathComponent()
         if fileManager.fileExists(atPath: directory.path) == false {
@@ -655,5 +806,40 @@ private struct ClaudeUsageCache {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(record)
         try data.write(to: cacheURL, options: .atomic)
+    }
+
+    private func displayState(from cache: ClaudeUsageCacheRecord) -> ClaudeUsageCacheState {
+        if cache.data.apiError == "rate-limited", let lastGoodData = cache.lastGoodData {
+            return ClaudeUsageCacheState(
+                data: lastGoodData.with(apiUnavailable: true, apiError: "rate-limited"),
+                updatedAt: cache.lastGoodTimestamp ?? cache.timestamp,
+                isFresh: false
+            )
+        }
+
+        return ClaudeUsageCacheState(
+            data: cache.data,
+            updatedAt: cache.timestamp,
+            isFresh: false
+        )
+    }
+
+    private func rateLimitedRetryUntil(for cache: ClaudeUsageCacheRecord) -> Date? {
+        guard cache.data.apiError == "rate-limited" else { return nil }
+
+        if let retryAfterUntil = cache.retryAfterUntil, retryAfterUntil > cache.timestamp {
+            return retryAfterUntil
+        }
+
+        guard let rateLimitedCount = cache.rateLimitedCount, rateLimitedCount > 0 else {
+            return nil
+        }
+
+        let exponent = max(0, rateLimitedCount - 1)
+        let backoff = min(
+            ClaudeUsagePolicy.rateLimitedBaseTTL * pow(2.0, Double(exponent)),
+            ClaudeUsagePolicy.rateLimitedMaxTTL
+        )
+        return cache.timestamp.addingTimeInterval(backoff)
     }
 }
