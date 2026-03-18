@@ -71,7 +71,7 @@ final class UsageStore: ObservableObject {
 
     private func configureTimer() {
         refreshTimer?.invalidate()
-        let interval = max(settings.refreshIntervalSeconds, 10)
+        let interval = max(settings.refreshIntervalSeconds, 60)
         refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refreshNow()

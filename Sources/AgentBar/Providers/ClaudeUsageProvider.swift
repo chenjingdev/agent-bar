@@ -1,6 +1,11 @@
 import CryptoKit
 import Foundation
 
+private enum ClaudeUsagePolicy {
+    static let successCacheTTL: TimeInterval = 10 * 60
+    static let rateLimitCooldown: TimeInterval = 10 * 60
+}
+
 struct ClaudeUsageProvider: UsageProviding {
     func load() async -> ProviderSnapshot {
         await Task.detached(priority: .utility) {
@@ -58,7 +63,7 @@ struct ClaudeUsageProvider: UsageProviding {
             return RemoteUsageResult(
                 data: cached.data,
                 updatedAt: cached.timestamp,
-                note: "상단 bar는 Anthropic 계정 전체 usage API 기준입니다. Claude는 5분 캐시를 사용하고, 아래 토큰/세션은 This Mac 로그 기준입니다.",
+                note: "상단 bar는 Anthropic 계정 전체 usage API 기준입니다. Claude는 10분 캐시를 사용하고, 아래 토큰/세션은 This Mac 로그 기준입니다.",
                 isStale: false
             )
         }
@@ -79,13 +84,17 @@ struct ClaudeUsageProvider: UsageProviding {
             return RemoteUsageResult(
                 data: remoteData,
                 updatedAt: fetchedAt,
-                note: "상단 bar는 Anthropic 계정 전체 usage API 기준입니다. Claude는 5분 캐시를 사용하고, 아래 토큰/세션은 This Mac 로그 기준입니다.",
+                note: "상단 bar는 Anthropic 계정 전체 usage API 기준입니다. Claude는 10분 캐시를 사용하고, 아래 토큰/세션은 This Mac 로그 기준입니다.",
                 isStale: false
             )
         } catch {
             if let cached = try? cache.read() {
                 if isRateLimited(error) {
-                    try? cache.write(cached.data, timestamp: cached.timestamp, cooldownUntil: Date.now.addingTimeInterval(5 * 60))
+                    try? cache.write(
+                        cached.data,
+                        timestamp: cached.timestamp,
+                        cooldownUntil: Date.now.addingTimeInterval(ClaudeUsagePolicy.rateLimitCooldown)
+                    )
                 }
                 return RemoteUsageResult(
                     data: cached.data,
@@ -599,7 +608,7 @@ private struct ClaudeUsageCacheRecord: Codable {
     }
 
     var isFresh: Bool {
-        Date().timeIntervalSince(timestamp) < 5 * 60
+        Date().timeIntervalSince(timestamp) < ClaudeUsagePolicy.successCacheTTL
     }
 
     var isCoolingDown: Bool {

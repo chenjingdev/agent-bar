@@ -11,7 +11,8 @@ final class AppSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        self.refreshIntervalSeconds = defaults.object(forKey: Keys.refreshIntervalSeconds) as? Double ?? 30
+        let storedInterval = defaults.object(forKey: Keys.refreshIntervalSeconds) as? Double ?? 120
+        self.refreshIntervalSeconds = max(storedInterval, 60)
     }
 
     private enum Keys {
