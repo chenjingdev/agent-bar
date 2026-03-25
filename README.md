@@ -28,7 +28,7 @@ It shows compact 5-hour usage bars in the menu bar and opens a detailed popover 
 ## Requirements
 
 - macOS 14 or later
-- Swift 6.2 or later
+- Swift 6.2 or later, or Xcode Command Line Tools with `swift` available
 - Claude support: Claude Code installed, and logged in via macOS Keychain or `~/.claude/.credentials.json`
 - Codex support: `codex` in `~/.bun/bin/codex`, `/opt/homebrew/bin/codex`, or `/usr/local/bin/codex`
 - Codex support: `node` in `~/.bun/bin/node`, `/opt/homebrew/bin/node`, `/usr/local/bin/node`, or `/usr/bin/node`
@@ -43,6 +43,8 @@ cd agent-bar
 swift run agent-bar
 ```
 
+- This repository is intended to run from source with `swift run`
+- If `swift` is missing, install Xcode Command Line Tools first: `xcode-select --install`
 - The app appears in the macOS menu bar, not the Dock
 - On first launch you may briefly see `0%` placeholders while the first refresh completes
 - Available providers show up only when their local credentials or binaries are detectable
@@ -56,6 +58,7 @@ swift run agent-bar
 
 ## Notes
 
+- Running from source is the default workflow; distributing an unsigned macOS app is more fragile on other Macs
 - Top bars are account-wide
 - `This Mac` sections are local-only and do not include activity from other machines
 - Values refresh periodically and may be slightly stale by design
