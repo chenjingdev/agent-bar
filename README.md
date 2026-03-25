@@ -8,8 +8,8 @@ It shows compact 5-hour usage bars in the menu bar and opens a detailed popover 
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/claude-usage-popover.svg" alt="Claude usage popover" /></td>
-    <td width="50%"><img src="docs/images/codex-usage-popover.svg" alt="Codex usage popover" /></td>
+    <td width="50%"><img src="docs/images/claude-usage-popover.png" alt="Claude usage popover" /></td>
+    <td width="50%"><img src="docs/images/codex-usage-popover.png" alt="Codex usage popover" /></td>
   </tr>
   <tr>
     <td align="center"><strong>Claude</strong></td>
