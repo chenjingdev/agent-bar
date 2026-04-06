@@ -19,7 +19,7 @@ struct SettingsView: View {
             }
 
             Section("Notes") {
-                Text("The top 5-hour and weekly percentages come directly from your Claude and Codex accounts.")
+                Text("Claude prefers live Claude Code rate_limits from the local status line bridge when available, then falls back to the Anthropic account usage API. Codex comes directly from the Codex account rate limits API.")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
 

@@ -6,6 +6,7 @@ private enum ClaudeUsagePolicy {
     static let failureCacheTTL: TimeInterval = 15
     static let rateLimitedBaseTTL: TimeInterval = 60
     static let rateLimitedMaxTTL: TimeInterval = 5 * 60
+    static let statusLineCacheTTL: TimeInterval = 2 * 60
 }
 
 struct ClaudeUsageProvider: UsageProviding {
@@ -14,7 +15,7 @@ struct ClaudeUsageProvider: UsageProviding {
             let localData = (try? scanLocalLogs()) ?? .empty
 
             do {
-                let remoteResult = try await resolveRemoteUsage()
+                let remoteResult = try await resolveRemoteUsage(localData: localData)
                 return ProviderSnapshot(
                     provider: .claude,
                     updatedAt: remoteResult.updatedAt,
@@ -35,7 +36,7 @@ struct ClaudeUsageProvider: UsageProviding {
                     monthTokens: localData.monthTokens,
                     recentSessions: localData.recentSessions,
                     modelBreakdown: localData.modelBreakdown,
-                    sourceDescription: "Anthropic OAuth usage API + cache + ~/.claude/projects",
+                    sourceDescription: remoteResult.sourceDescription,
                     note: remoteResult.note,
                     isStale: remoteResult.isStale
                 )
@@ -58,32 +59,74 @@ struct ClaudeUsageProvider: UsageProviding {
         }.value
     }
 
-    private func resolveRemoteUsage() async throws -> RemoteUsageResult {
+    private func resolveRemoteUsage(localData: LocalUsageData) async throws -> RemoteUsageResult {
         let cache = ClaudeUsageCache()
         let now = Date.now
+
+        let credentials = try? readCredentials()
+        let resolvedPlanName = credentials.flatMap { self.planName(from: $0.subscriptionType) }
+
+        if let statusLineUsage = try? readStatusLineUsage(now: now) {
+            let statusLineData = RemoteUsageData(
+                planName: resolvedPlanName,
+                fiveHourUsedPercent: statusLineUsage.fiveHourUsedPercent,
+                weeklyUsedPercent: statusLineUsage.weeklyUsedPercent,
+                fiveHourResetAt: statusLineUsage.fiveHourResetAt,
+                weeklyResetAt: statusLineUsage.weeklyResetAt,
+                apiUnavailable: false,
+                apiError: nil,
+                usageSource: .statusLine,
+                weeklyWindowLabel: nil
+            )
+
+            try? cache.write(
+                data: statusLineData,
+                timestamp: statusLineUsage.updatedAt,
+                lastGoodData: statusLineData,
+                lastGoodTimestamp: statusLineUsage.updatedAt
+            )
+
+            return RemoteUsageResult(
+                data: statusLineData,
+                updatedAt: statusLineUsage.updatedAt,
+                note: note(for: statusLineData),
+                isStale: false,
+                sourceDescription: sourceDescription(for: statusLineData)
+            )
+        }
 
         if let cacheState = try? cache.readState(now: now), cacheState.isFresh {
             return RemoteUsageResult(
                 data: cacheState.data,
                 updatedAt: cacheState.updatedAt,
                 note: note(for: cacheState.data),
-                isStale: cacheState.data.apiUnavailable
+                isStale: cacheState.data.apiUnavailable,
+                sourceDescription: sourceDescription(for: cacheState.data)
             )
         }
 
-        let credentials = try readCredentials()
-        let planName = planName(from: credentials.subscriptionType)
+        guard let credentials else {
+            throw ClaudeUsageError.missingCredentials
+        }
+
+        let planName = resolvedPlanName ?? planName(from: credentials.subscriptionType)
         let apiResult = await fetchUsageApi(accessToken: credentials.accessToken)
 
         if let payload = apiResult.data {
+            let selectedWeeklyWindow = Self.selectWeeklyWindow(
+                from: payload,
+                preferredModelHint: localData.latestModel
+            )
             let successData = RemoteUsageData(
                 planName: planName,
                 fiveHourUsedPercent: Self.parseUtilization(payload.fiveHour?.utilization),
-                weeklyUsedPercent: Self.parseUtilization(payload.sevenDay?.utilization),
+                weeklyUsedPercent: Self.parseUtilization(selectedWeeklyWindow?.window.utilization),
                 fiveHourResetAt: payload.fiveHour?.parsedResetAt,
-                weeklyResetAt: payload.sevenDay?.parsedResetAt,
+                weeklyResetAt: selectedWeeklyWindow?.window.parsedResetAt,
                 apiUnavailable: false,
-                apiError: nil
+                apiError: nil,
+                usageSource: .oauthApi,
+                weeklyWindowLabel: selectedWeeklyWindow?.label
             )
 
             try? cache.write(
@@ -97,7 +140,8 @@ struct ClaudeUsageProvider: UsageProviding {
                 data: successData,
                 updatedAt: now,
                 note: note(for: successData),
-                isStale: false
+                isStale: false,
+                sourceDescription: sourceDescription(for: successData)
             )
         }
 
@@ -108,7 +152,9 @@ struct ClaudeUsageProvider: UsageProviding {
             fiveHourResetAt: nil,
             weeklyResetAt: nil,
             apiUnavailable: true,
-            apiError: apiResult.error
+            apiError: apiResult.error,
+            usageSource: .oauthApi,
+            weeklyWindowLabel: nil
         )
 
         let previousCache = try? cache.readRaw()
@@ -134,7 +180,8 @@ struct ClaudeUsageProvider: UsageProviding {
                     data: displayData,
                     updatedAt: goodState.updatedAt,
                     note: note(for: displayData),
-                    isStale: true
+                    isStale: true,
+                    sourceDescription: sourceDescription(for: displayData)
                 )
             }
         }
@@ -144,7 +191,8 @@ struct ClaudeUsageProvider: UsageProviding {
             data: failureData,
             updatedAt: now,
             note: note(for: failureData),
-            isStale: true
+            isStale: true,
+            sourceDescription: sourceDescription(for: failureData)
         )
     }
 
@@ -155,7 +203,28 @@ struct ClaudeUsageProvider: UsageProviding {
             }
             return "Couldn't read the Anthropic usage API (\(data.apiError ?? "unknown")). The token and session details below are from This Mac logs."
         }
-        return "The top bars reflect account-wide Anthropic usage API data. The token and session details below are from This Mac logs."
+        switch data.usageSource {
+        case .statusLine:
+            return "The top bars reflect Claude Code's live rate_limits data from your active status line session. The token and session details below are from This Mac logs."
+        case .oauthApi:
+            if let weeklyWindowLabel = data.weeklyWindowLabel {
+                return "The top bars reflect Anthropic usage API data. Weekly is following the \(weeklyWindowLabel) window. The token and session details below are from This Mac logs."
+            }
+            return "The top bars reflect account-wide Anthropic usage API data. The token and session details below are from This Mac logs."
+        case nil:
+            return "The top bars reflect account-wide Anthropic usage API data. The token and session details below are from This Mac logs."
+        }
+    }
+
+    private func sourceDescription(for data: RemoteUsageData) -> String {
+        switch data.usageSource {
+        case .statusLine:
+            return "Claude Code live rate_limits + ~/.claude/projects"
+        case .oauthApi:
+            return "Anthropic OAuth usage API + cache + ~/.claude/projects"
+        case nil:
+            return "Anthropic OAuth usage API + cache + ~/.claude/projects"
+        }
     }
 
     private func fetchUsageApi(accessToken: String) async -> UsageApiResult {
@@ -331,6 +400,36 @@ struct ClaudeUsageProvider: UsageProviding {
         return subscriptionType.capitalized
     }
 
+    private func readStatusLineUsage(now: Date) throws -> ClaudeStatusLineUsage? {
+        let url = statusLineCacheURL()
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let updatedAt = attributes[.modificationDate] as? Date else { return nil }
+        guard now.timeIntervalSince(updatedAt) <= ClaudeUsagePolicy.statusLineCacheTTL else { return nil }
+
+        let data = try Data(contentsOf: url)
+        let payload = try JSONDecoder().decode(ClaudeStatusLinePayload.self, from: data)
+        guard let rateLimits = payload.rateLimits else { return nil }
+        guard rateLimits.fiveHour?.usedPercentage != nil || rateLimits.sevenDay?.usedPercentage != nil else {
+            return nil
+        }
+
+        return ClaudeStatusLineUsage(
+            updatedAt: updatedAt,
+            fiveHourUsedPercent: Self.parseUtilization(rateLimits.fiveHour?.usedPercentage),
+            weeklyUsedPercent: Self.parseUtilization(rateLimits.sevenDay?.usedPercentage),
+            fiveHourResetAt: rateLimits.fiveHour?.parsedResetAt,
+            weeklyResetAt: rateLimits.sevenDay?.parsedResetAt
+        )
+    }
+
+    private func statusLineCacheURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".agentbar", isDirectory: true)
+            .appendingPathComponent("claude-statusline.json")
+    }
+
     private func scanLocalLogs() throws -> LocalUsageData {
         let now = Date()
         let dateFormatter = Self.makeDateFormatter()
@@ -428,7 +527,8 @@ struct ClaudeUsageProvider: UsageProviding {
             todayTokens: todayEvents.reduce(0) { $0 + $1.totalTokens },
             monthTokens: monthEvents.reduce(0) { $0 + $1.totalTokens },
             recentSessions: buildSessionSummaries(events: events, sessionTitles: sessionTitles),
-            modelBreakdown: modelBreakdown
+            modelBreakdown: modelBreakdown,
+            latestModel: events.first?.model
         )
     }
 
@@ -498,8 +598,44 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 
     private static func parseUtilization(_ value: Double?) -> Int {
-        guard let value, value.isFinite else { return 0 }
-        return Int(max(0, min(100, value)).rounded())
+        PercentageNormalizer.normalize(value)
+    }
+
+    private static func selectWeeklyWindow(
+        from payload: UsageApiResponse,
+        preferredModelHint: String?
+    ) -> SelectedUsageWindow? {
+        let normalizedHint = preferredModelHint?.lowercased() ?? ""
+
+        if normalizedHint.contains("sonnet"), let window = payload.sevenDaySonnet {
+            return SelectedUsageWindow(window: window, label: "Sonnet 7-day")
+        }
+
+        if normalizedHint.contains("opus"), let window = payload.sevenDayOpus {
+            return SelectedUsageWindow(window: window, label: "Opus 7-day")
+        }
+
+        if normalizedHint.contains("oauth"), let window = payload.sevenDayOauthApps {
+            return SelectedUsageWindow(window: window, label: "OAuth Apps 7-day")
+        }
+
+        if let window = payload.sevenDay {
+            return SelectedUsageWindow(window: window, label: nil)
+        }
+
+        if let window = payload.sevenDaySonnet {
+            return SelectedUsageWindow(window: window, label: "Sonnet 7-day")
+        }
+
+        if let window = payload.sevenDayOpus {
+            return SelectedUsageWindow(window: window, label: "Opus 7-day")
+        }
+
+        if let window = payload.sevenDayOauthApps {
+            return SelectedUsageWindow(window: window, label: "OAuth Apps 7-day")
+        }
+
+        return nil
     }
 
     private static func parseRetryAfterSeconds(_ raw: String?) -> Int? {
@@ -574,12 +710,14 @@ private struct LocalUsageData {
     let monthTokens: Int
     let recentSessions: [SessionSummary]
     let modelBreakdown: [ModelSummary]
+    let latestModel: String?
 
     static let empty = LocalUsageData(
         todayTokens: 0,
         monthTokens: 0,
         recentSessions: [],
-        modelBreakdown: []
+        modelBreakdown: [],
+        latestModel: nil
     )
 }
 
@@ -591,6 +729,8 @@ private struct RemoteUsageData: Codable {
     let weeklyResetAt: Date?
     let apiUnavailable: Bool
     let apiError: String?
+    let usageSource: ClaudeUsageSource?
+    let weeklyWindowLabel: String?
 
     func with(apiUnavailable: Bool, apiError: String?) -> RemoteUsageData {
         RemoteUsageData(
@@ -600,7 +740,9 @@ private struct RemoteUsageData: Codable {
             fiveHourResetAt: fiveHourResetAt,
             weeklyResetAt: weeklyResetAt,
             apiUnavailable: apiUnavailable,
-            apiError: apiError
+            apiError: apiError,
+            usageSource: usageSource,
+            weeklyWindowLabel: weeklyWindowLabel
         )
     }
 }
@@ -610,6 +752,12 @@ private struct RemoteUsageResult {
     let updatedAt: Date
     let note: String
     let isStale: Bool
+    let sourceDescription: String
+}
+
+private enum ClaudeUsageSource: String, Codable {
+    case oauthApi = "oauth_api"
+    case statusLine = "status_line"
 }
 
 private struct ClaudeCredentials {
@@ -630,10 +778,16 @@ private struct CredentialsFile: Decodable {
 private struct UsageApiResponse: Decodable {
     let fiveHour: UsageWindowPayload?
     let sevenDay: UsageWindowPayload?
+    let sevenDayOauthApps: UsageWindowPayload?
+    let sevenDayOpus: UsageWindowPayload?
+    let sevenDaySonnet: UsageWindowPayload?
 
     enum CodingKeys: String, CodingKey {
         case fiveHour = "five_hour"
         case sevenDay = "seven_day"
+        case sevenDayOauthApps = "seven_day_oauth_apps"
+        case sevenDayOpus = "seven_day_opus"
+        case sevenDaySonnet = "seven_day_sonnet"
     }
 }
 
@@ -664,6 +818,52 @@ private struct UsageWindowPayload: Decodable {
         let fallback = ISO8601DateFormatter()
         fallback.formatOptions = [.withInternetDateTime]
         return fallback.date(from: resetsAt)
+    }
+}
+
+private struct SelectedUsageWindow {
+    let window: UsageWindowPayload
+    let label: String?
+}
+
+private struct ClaudeStatusLineUsage {
+    let updatedAt: Date
+    let fiveHourUsedPercent: Int
+    let weeklyUsedPercent: Int
+    let fiveHourResetAt: Date?
+    let weeklyResetAt: Date?
+}
+
+private struct ClaudeStatusLinePayload: Decodable {
+    let rateLimits: ClaudeStatusLineRateLimits?
+
+    enum CodingKeys: String, CodingKey {
+        case rateLimits = "rate_limits"
+    }
+}
+
+private struct ClaudeStatusLineRateLimits: Decodable {
+    let fiveHour: ClaudeStatusLineWindow?
+    let sevenDay: ClaudeStatusLineWindow?
+
+    enum CodingKeys: String, CodingKey {
+        case fiveHour = "five_hour"
+        case sevenDay = "seven_day"
+    }
+}
+
+private struct ClaudeStatusLineWindow: Decodable {
+    let usedPercentage: Double?
+    let resetsAt: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case usedPercentage = "used_percentage"
+        case resetsAt = "resets_at"
+    }
+
+    var parsedResetAt: Date? {
+        guard let resetsAt, resetsAt > 0 else { return nil }
+        return Date(timeIntervalSince1970: resetsAt)
     }
 }
 
@@ -710,7 +910,9 @@ private struct LegacyClaudeUsageCacheRecord: Decodable {
             fiveHourResetAt: fiveHourResetAt,
             weeklyResetAt: weeklyResetAt,
             apiUnavailable: false,
-            apiError: nil
+            apiError: nil,
+            usageSource: nil,
+            weeklyWindowLabel: nil
         )
 
         return ClaudeUsageCacheRecord(

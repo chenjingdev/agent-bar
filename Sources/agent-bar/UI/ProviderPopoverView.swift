@@ -183,18 +183,13 @@ private struct WindowCard: View {
             }
 
             ZStack(alignment: .leading) {
-                Capsule().fill(AppTheme.track)
-                Capsule()
-                    .fill(AppTheme.tint(for: provider))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .mask(alignment: .leading) {
-                        GeometryReader { proxy in
-                            Capsule()
-                                .frame(width: proxy.size.width * CGFloat(min(window.utilization ?? 0, 1)))
-                        }
-                    }
+                UsageBarView(
+                    utilization: window.utilization,
+                    fill: AppTheme.tint(for: provider),
+                    height: 8,
+                    minimumVisibleWidth: 4
+                )
             }
-            .frame(height: 8)
 
             HStack {
                 switch window.displayStyle {

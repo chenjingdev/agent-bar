@@ -49,9 +49,33 @@ swift run agent-bar
 - On first launch you may briefly see `0%` placeholders while the first refresh completes
 - Available providers show up only when their local credentials or binaries are detectable
 
+## Build A Local App Bundle
+
+If you do not want to run `swift run agent-bar` every time, you can build an unsigned local `.app` bundle:
+
+```bash
+cd agent-bar
+./scripts/build-app.sh
+open AgentBar.app
+```
+
+To also copy it into `~/Applications`:
+
+```bash
+cd agent-bar
+./scripts/build-app.sh --install
+open ~/Applications/AgentBar.app
+```
+
+- This creates an ad-hoc signed local app bundle for your own Mac
+- An Apple Developer account is not required for local use
+- Gatekeeper may still warn if you move the app to another Mac
+- The app remains a menu bar app, so it will not stay in the Dock
+
 ## Data Sources
 
 - Claude account-wide usage: macOS Keychain or `~/.claude/.credentials.json`, then `https://api.anthropic.com/api/oauth/usage`
+- Claude live usage while Claude Code is open: `~/.agentbar/claude-statusline.json` from the Claude status line bridge
 - Codex account-wide usage: `codex app-server`, then `account/rateLimits/read`
 - Claude `This Mac` details: `~/.claude/projects/**/*.jsonl`
 - Codex `This Mac` details: `~/.codex/logs_1.sqlite` and `~/.codex/state_5.sqlite`
@@ -60,6 +84,7 @@ swift run agent-bar
 
 - Running from source is the default workflow; distributing an unsigned macOS app is more fragile on other Macs
 - Top bars are account-wide
+- Claude prefers live `rate_limits` from Claude Code's status line when that bridge cache is fresh, then falls back to the OAuth usage API
 - `This Mac` sections are local-only and do not include activity from other machines
 - Values refresh periodically and may be slightly stale by design
 - agent-bar keeps the last known good value during temporary upstream failures or rate limits
@@ -68,6 +93,7 @@ swift run agent-bar
 Cache files:
 
 - `~/.agentbar/claude-usage-cache.json`
+- `~/.agentbar/claude-statusline.json`
 - `~/.agentbar/codex-rate-limits-cache.json`
 
 ## Troubleshooting
@@ -75,3 +101,4 @@ Cache files:
 - Provider missing: check the required credentials or binaries above, then restart agent-bar
 - Value looks stale: open the popover and check the update timestamp; upstream may be temporarily unavailable or rate-limited
 - Top percentage does not match `This Mac`: expected when you use the same account on multiple Macs, or when local logs are incomplete
+- Claude usage still not moving while Claude Code is open: restart Claude Code once so the updated status line bridge starts writing `~/.agentbar/claude-statusline.json`

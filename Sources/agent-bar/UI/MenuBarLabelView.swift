@@ -47,28 +47,19 @@ struct DualUsageBars: View {
     let secondaryColor: Color
 
     var body: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let topWidth = width * CGFloat(min(primary ?? 0, 1))
-            let bottomWidth = width * CGFloat(min(secondary ?? 0, 1))
-            let barCornerRadius = CGFloat(1.6)
-
-            VStack(spacing: 2) {
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
-                        .fill(AppTheme.track)
-                    RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
-                        .fill(primaryColor)
-                        .frame(width: topWidth)
-                }
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
-                        .fill(AppTheme.track)
-                    RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
-                        .fill(secondaryColor)
-                        .frame(width: bottomWidth)
-                }
-            }
+        VStack(spacing: 2) {
+            UsageBarView(
+                utilization: primary,
+                fill: primaryColor,
+                height: 3,
+                minimumVisibleWidth: 1.2
+            )
+            UsageBarView(
+                utilization: secondary,
+                fill: secondaryColor,
+                height: 3,
+                minimumVisibleWidth: 1.2
+            )
         }
     }
 }
