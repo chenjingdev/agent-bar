@@ -24,8 +24,20 @@ struct ProviderPopoverView: View {
                             window: snapshot.weekly,
                             provider: snapshot.provider
                         )
-                        summaryCard
-                        sessionsCard
+                        if let sonnetWeekly = snapshot.sonnetWeekly {
+                            WindowCard(
+                                title: "Sonnet Weekly",
+                                window: sonnetWeekly,
+                                provider: snapshot.provider
+                            )
+                        }
+                        if let note = snapshot.note {
+                            Text(note)
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(AppTheme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 4)
+                        }
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 16)
@@ -42,7 +54,7 @@ struct ProviderPopoverView: View {
                     .padding(.vertical, 14)
             }
         }
-        .frame(width: 392, height: 568, alignment: .topLeading)
+        .frame(width: 392, alignment: .topLeading)
     }
 
     private var header: some View {
@@ -70,65 +82,6 @@ struct ProviderPopoverView: View {
             .buttonStyle(.plain)
             .foregroundStyle(.white.opacity(0.9))
         }
-    }
-
-    private var summaryCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Usage Details")
-                .font(.system(size: 13, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.95))
-
-            SummaryRow(label: "Plan", value: snapshot.planName ?? "n/a")
-            SummaryRow(label: "This Mac Today", value: TokenFormatters.compactTokenString(snapshot.todayTokens))
-            SummaryRow(label: "This Mac Month", value: TokenFormatters.compactTokenString(snapshot.monthTokens))
-
-            if let note = snapshot.note {
-                Text(note)
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(AppTheme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground)
-    }
-
-    private var sessionsCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Recent Sessions (This Mac)")
-                .font(.system(size: 13, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.95))
-
-            if snapshot.recentSessions.isEmpty {
-                Text("No recent sessions.")
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(AppTheme.muted)
-            } else {
-                ForEach(snapshot.recentSessions) { session in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(session.title)
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                        HStack {
-                            Text(session.subtitle)
-                            Spacer()
-                            Text(TokenFormatters.timeString(session.updatedAt))
-                        }
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(AppTheme.muted)
-                    }
-
-                    if session.id != snapshot.recentSessions.last?.id {
-                        Divider().overlay(AppTheme.stroke)
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground)
     }
 
     private var footer: some View {
@@ -160,9 +113,6 @@ struct ProviderPopoverView: View {
         }
     }
 
-    private var cardBackground: some View {
-        GlassCardBackground(cornerRadius: 16)
-    }
 }
 
 private struct WindowCard: View {
@@ -211,22 +161,6 @@ private struct WindowCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(GlassCardBackground(cornerRadius: 16))
-    }
-}
-
-private struct SummaryRow: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        HStack {
-            Text(label)
-                .foregroundStyle(AppTheme.muted)
-            Spacer()
-            Text(value)
-                .foregroundStyle(.white)
-        }
-        .font(.system(size: 12, weight: .semibold, design: .rounded))
     }
 }
 

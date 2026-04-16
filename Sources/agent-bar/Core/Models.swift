@@ -81,6 +81,7 @@ struct ProviderSnapshot: Equatable {
     let updatedAt: Date
     let fiveHour: WindowSummary
     let weekly: WindowSummary
+    let sonnetWeekly: WindowSummary?
     let planName: String?
     let todayTokens: Int
     let monthTokens: Int
@@ -100,6 +101,7 @@ struct ProviderSnapshot: Equatable {
             updatedAt: .now,
             fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
             weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+            sonnetWeekly: nil,
             planName: nil,
             todayTokens: 0,
             monthTokens: 0,

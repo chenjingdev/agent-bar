@@ -16,6 +16,9 @@ struct ClaudeUsageProvider: UsageProviding {
 
             do {
                 let remoteResult = try await resolveRemoteUsage(localData: localData)
+                let sonnetWeekly: WindowSummary? = remoteResult.data.sonnetWeeklyUsedPercent.map {
+                    WindowSummary(tokens: $0, limitTokens: 100, resetAt: remoteResult.data.sonnetWeeklyResetAt, displayStyle: .percentage)
+                }
                 return ProviderSnapshot(
                     provider: .claude,
                     updatedAt: remoteResult.updatedAt,
@@ -31,6 +34,7 @@ struct ClaudeUsageProvider: UsageProviding {
                         resetAt: remoteResult.data.weeklyResetAt,
                         displayStyle: .percentage
                     ),
+                    sonnetWeekly: sonnetWeekly,
                     planName: remoteResult.data.planName,
                     todayTokens: localData.todayTokens,
                     monthTokens: localData.monthTokens,
@@ -46,6 +50,7 @@ struct ClaudeUsageProvider: UsageProviding {
                     updatedAt: .now,
                     fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                     weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+                    sonnetWeekly: nil,
                     planName: nil,
                     todayTokens: localData.todayTokens,
                     monthTokens: localData.monthTokens,
@@ -73,6 +78,8 @@ struct ClaudeUsageProvider: UsageProviding {
                 weeklyUsedPercent: statusLineUsage.weeklyUsedPercent,
                 fiveHourResetAt: statusLineUsage.fiveHourResetAt,
                 weeklyResetAt: statusLineUsage.weeklyResetAt,
+                sonnetWeeklyUsedPercent: nil,
+                sonnetWeeklyResetAt: nil,
                 apiUnavailable: false,
                 apiError: nil,
                 usageSource: .statusLine,
@@ -113,20 +120,19 @@ struct ClaudeUsageProvider: UsageProviding {
         let apiResult = await fetchUsageApi(accessToken: credentials.accessToken)
 
         if let payload = apiResult.data {
-            let selectedWeeklyWindow = Self.selectWeeklyWindow(
-                from: payload,
-                preferredModelHint: localData.latestModel
-            )
+            let mainWeekly = payload.sevenDay ?? payload.sevenDayOpus
             let successData = RemoteUsageData(
                 planName: planName,
                 fiveHourUsedPercent: Self.parseUtilization(payload.fiveHour?.utilization),
-                weeklyUsedPercent: Self.parseUtilization(selectedWeeklyWindow?.window.utilization),
+                weeklyUsedPercent: Self.parseUtilization(mainWeekly?.utilization),
                 fiveHourResetAt: payload.fiveHour?.parsedResetAt,
-                weeklyResetAt: selectedWeeklyWindow?.window.parsedResetAt,
+                weeklyResetAt: mainWeekly?.parsedResetAt,
+                sonnetWeeklyUsedPercent: payload.sevenDaySonnet.map { Self.parseUtilization($0.utilization) },
+                sonnetWeeklyResetAt: payload.sevenDaySonnet?.parsedResetAt,
                 apiUnavailable: false,
                 apiError: nil,
                 usageSource: .oauthApi,
-                weeklyWindowLabel: selectedWeeklyWindow?.label
+                weeklyWindowLabel: nil
             )
 
             try? cache.write(
@@ -151,6 +157,8 @@ struct ClaudeUsageProvider: UsageProviding {
             weeklyUsedPercent: 0,
             fiveHourResetAt: nil,
             weeklyResetAt: nil,
+            sonnetWeeklyUsedPercent: nil,
+            sonnetWeeklyResetAt: nil,
             apiUnavailable: true,
             apiError: apiResult.error,
             usageSource: .oauthApi,
@@ -727,6 +735,8 @@ private struct RemoteUsageData: Codable {
     let weeklyUsedPercent: Int
     let fiveHourResetAt: Date?
     let weeklyResetAt: Date?
+    let sonnetWeeklyUsedPercent: Int?
+    let sonnetWeeklyResetAt: Date?
     let apiUnavailable: Bool
     let apiError: String?
     let usageSource: ClaudeUsageSource?
@@ -739,6 +749,8 @@ private struct RemoteUsageData: Codable {
             weeklyUsedPercent: weeklyUsedPercent,
             fiveHourResetAt: fiveHourResetAt,
             weeklyResetAt: weeklyResetAt,
+            sonnetWeeklyUsedPercent: sonnetWeeklyUsedPercent,
+            sonnetWeeklyResetAt: sonnetWeeklyResetAt,
             apiUnavailable: apiUnavailable,
             apiError: apiError,
             usageSource: usageSource,
@@ -909,6 +921,8 @@ private struct LegacyClaudeUsageCacheRecord: Decodable {
             weeklyUsedPercent: weeklyUsedPercent,
             fiveHourResetAt: fiveHourResetAt,
             weeklyResetAt: weeklyResetAt,
+            sonnetWeeklyUsedPercent: nil,
+            sonnetWeeklyResetAt: nil,
             apiUnavailable: false,
             apiError: nil,
             usageSource: nil,

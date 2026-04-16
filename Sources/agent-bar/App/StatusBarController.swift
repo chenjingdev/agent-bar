@@ -49,7 +49,7 @@ final class StatusBarController {
         popover.behavior = .transient
         popover.animates = true
         popover.contentViewController = hostingController
-        popover.contentSize = NSSize(width: 392, height: 568)
+        popover.contentSize = NSSize(width: 392, height: 380)
     }
 
     private func subscribe() {

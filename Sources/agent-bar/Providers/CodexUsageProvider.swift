@@ -30,6 +30,7 @@ struct CodexUsageProvider: UsageProviding {
                         resetAt: remoteResult.data.weeklyResetAt,
                         displayStyle: .percentage
                     ),
+                    sonnetWeekly: nil,
                     planName: remoteResult.data.planName,
                     todayTokens: localData.todayTokens,
                     monthTokens: localData.monthTokens,
@@ -45,6 +46,7 @@ struct CodexUsageProvider: UsageProviding {
                     updatedAt: .now,
                     fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                     weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+                    sonnetWeekly: nil,
                     planName: nil,
                     todayTokens: localData.todayTokens,
                     monthTokens: localData.monthTokens,
