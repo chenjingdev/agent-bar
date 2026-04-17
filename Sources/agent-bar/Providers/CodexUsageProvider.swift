@@ -38,7 +38,8 @@ struct CodexUsageProvider: UsageProviding {
                     modelBreakdown: localData.modelBreakdown,
                     sourceDescription: "Codex app-server account/rateLimits/read + ~/.codex",
                     note: remoteResult.note,
-                    isStale: remoteResult.isStale
+                    isStale: remoteResult.isStale,
+                    requiresLogin: false
                 )
             } catch {
                 return ProviderSnapshot(
@@ -54,7 +55,8 @@ struct CodexUsageProvider: UsageProviding {
                     modelBreakdown: localData.modelBreakdown,
                     sourceDescription: "Codex app-server account/rateLimits/read + ~/.codex",
                     note: "Couldn't read Codex account rate limits: \(error.localizedDescription)",
-                    isStale: true
+                    isStale: true,
+                    requiresLogin: false
                 )
             }
         }.value
@@ -296,23 +298,24 @@ print(json.dumps(found))
         defer { database.close() }
 
         let cutoff = Int64(since.timeIntervalSince1970)
+        let logBodyColumn = try Self.resolveLogBodyColumn(in: database)
         let sql = """
-        SELECT ts, message
+        SELECT ts, \(logBodyColumn)
         FROM logs
-        WHERE target = ?
-          AND message LIKE ?
-          AND ts >= ?
+        WHERE target IN (?, ?)
+          AND \(logBodyColumn) LIKE ?
+        AND ts >= ?
         ORDER BY ts DESC
         """
 
         var eventsByID: [String: UsageEvent] = [:]
         try database.query(sql, bindings: [
             .text("codex_api::endpoint::responses_websocket"),
-            .text("websocket event: {\"type\":\"response.completed\"%"),
+            .text("log"),
+            .text("%response.completed%"),
             .int64(cutoff),
         ]) { statement in
-            guard let message = statement.text(at: 1) else { return }
-            guard let payloadData = message.replacingOccurrences(of: "websocket event: ", with: "").data(using: .utf8) else { return }
+            guard let payloadData = Self.extractResponsePayload(from: statement.text(at: 1)) else { return }
             guard let payload = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else { return }
             guard let response = payload["response"] as? [String: Any] else { return }
             guard let responseID = response["id"] as? String else { return }
@@ -398,6 +401,37 @@ print(json.dumps(found))
         if let doubleValue = value as? Double { return Int(doubleValue) }
         if let stringValue = value as? String, let intValue = Int(stringValue) { return intValue }
         return 0
+    }
+
+    private static func resolveLogBodyColumn(in database: SQLiteDatabase) throws -> String {
+        var columnNames = Set<String>()
+        try database.query("PRAGMA table_info(logs)", bindings: []) { statement in
+            if let columnName = statement.text(at: 1) {
+                columnNames.insert(columnName)
+            }
+        }
+
+        if columnNames.contains("message") {
+            return "message"
+        }
+
+        if columnNames.contains("feedback_log_body") {
+            return "feedback_log_body"
+        }
+
+        throw CodexUsageError.appServer("Couldn't find a compatible Codex logs schema.")
+    }
+
+    private static func extractResponsePayload(from logBody: String?) -> Data? {
+        guard let logBody else { return nil }
+
+        for prefix in ["websocket event: ", "Received message "] {
+            if let range = logBody.range(of: prefix) {
+                return String(logBody[range.upperBound...]).data(using: .utf8)
+            }
+        }
+
+        return nil
     }
 }
 

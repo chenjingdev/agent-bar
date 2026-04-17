@@ -42,9 +42,11 @@ struct ClaudeUsageProvider: UsageProviding {
                     modelBreakdown: localData.modelBreakdown,
                     sourceDescription: remoteResult.sourceDescription,
                     note: remoteResult.note,
-                    isStale: remoteResult.isStale
+                    isStale: remoteResult.isStale,
+                    requiresLogin: Self.requiresLogin(for: remoteResult.data.apiError)
                 )
             } catch {
+                let requiresLogin = Self.requiresLogin(for: error)
                 return ProviderSnapshot(
                     provider: .claude,
                     updatedAt: .now,
@@ -57,8 +59,11 @@ struct ClaudeUsageProvider: UsageProviding {
                     recentSessions: localData.recentSessions,
                     modelBreakdown: localData.modelBreakdown,
                     sourceDescription: "Anthropic OAuth usage API + cache + ~/.claude/projects",
-                    note: "Couldn't read Anthropic account usage: \(error.localizedDescription)",
-                    isStale: true
+                    note: requiresLogin
+                        ? "Claude login required. Sign in to Claude Code, then refresh."
+                        : "Couldn't read Anthropic account usage: \(error.localizedDescription)",
+                    isStale: true,
+                    requiresLogin: requiresLogin
                 )
             }
         }.value
@@ -67,6 +72,7 @@ struct ClaudeUsageProvider: UsageProviding {
     private func resolveRemoteUsage(localData: LocalUsageData) async throws -> RemoteUsageResult {
         let cache = ClaudeUsageCache()
         let now = Date.now
+        let previousCache = try? cache.readRaw()
 
         let credentials = try? readCredentials()
         let resolvedPlanName = credentials.flatMap { self.planName(from: $0.subscriptionType) }
@@ -120,19 +126,19 @@ struct ClaudeUsageProvider: UsageProviding {
         let apiResult = await fetchUsageApi(accessToken: credentials.accessToken)
 
         if let payload = apiResult.data {
-            let mainWeekly = payload.sevenDay ?? payload.sevenDayOpus
+            let selectedWeeklyWindow = Self.selectWeeklyWindow(from: payload)
             let successData = RemoteUsageData(
                 planName: planName,
                 fiveHourUsedPercent: Self.parseUtilization(payload.fiveHour?.utilization),
-                weeklyUsedPercent: Self.parseUtilization(mainWeekly?.utilization),
+                weeklyUsedPercent: Self.parseUtilization(selectedWeeklyWindow?.window.utilization),
                 fiveHourResetAt: payload.fiveHour?.parsedResetAt,
-                weeklyResetAt: mainWeekly?.parsedResetAt,
+                weeklyResetAt: selectedWeeklyWindow?.window.parsedResetAt,
                 sonnetWeeklyUsedPercent: payload.sevenDaySonnet.map { Self.parseUtilization($0.utilization) },
                 sonnetWeeklyResetAt: payload.sevenDaySonnet?.parsedResetAt,
                 apiUnavailable: false,
                 apiError: nil,
                 usageSource: .oauthApi,
-                weeklyWindowLabel: nil
+                weeklyWindowLabel: selectedWeeklyWindow?.label
             )
 
             try? cache.write(
@@ -165,7 +171,6 @@ struct ClaudeUsageProvider: UsageProviding {
             weeklyWindowLabel: nil
         )
 
-        let previousCache = try? cache.readRaw()
         let isRateLimited = apiResult.error == "rate-limited"
         let previousRateLimitedCount = previousCache?.rateLimitedCount ?? 0
         let rateLimitedCount = isRateLimited ? previousRateLimitedCount + 1 : 0
@@ -206,6 +211,9 @@ struct ClaudeUsageProvider: UsageProviding {
 
     private func note(for data: RemoteUsageData) -> String {
         if data.apiUnavailable {
+            if Self.requiresLogin(for: data.apiError) {
+                return "Claude login required. Sign in to Claude Code, then refresh. The token and session details below are from This Mac logs."
+            }
             if data.apiError == "rate-limited" {
                 return "The Anthropic usage API is rate-limited. Showing the last known good value and retrying automatically. The token and session details below are from This Mac logs."
             }
@@ -216,7 +224,7 @@ struct ClaudeUsageProvider: UsageProviding {
             return "The top bars reflect Claude Code's live rate_limits data from your active status line session. The token and session details below are from This Mac logs."
         case .oauthApi:
             if let weeklyWindowLabel = data.weeklyWindowLabel {
-                return "The top bars reflect Anthropic usage API data. Weekly is following the \(weeklyWindowLabel) window. The token and session details below are from This Mac logs."
+                return "The top bars reflect Anthropic usage API data. Anthropic did not return an account-wide weekly window, so Weekly is following the \(weeklyWindowLabel) window. The token and session details below are from This Mac logs."
             }
             return "The top bars reflect account-wide Anthropic usage API data. The token and session details below are from This Mac logs."
         case nil:
@@ -364,6 +372,10 @@ struct ClaudeUsageProvider: UsageProviding {
         let credentialsFile = try JSONDecoder().decode(CredentialsFile.self, from: data)
 
         guard let accessToken = credentialsFile.claudeAiOauth?.accessToken, accessToken.isEmpty == false else {
+            throw ClaudeUsageError.missingCredentials
+        }
+
+        if let expiresAt = credentialsFile.claudeAiOauth?.expiresAt, expiresAt <= Int(Date().timeIntervalSince1970 * 1000) {
             throw ClaudeUsageError.missingCredentials
         }
 
@@ -535,8 +547,7 @@ struct ClaudeUsageProvider: UsageProviding {
             todayTokens: todayEvents.reduce(0) { $0 + $1.totalTokens },
             monthTokens: monthEvents.reduce(0) { $0 + $1.totalTokens },
             recentSessions: buildSessionSummaries(events: events, sessionTitles: sessionTitles),
-            modelBreakdown: modelBreakdown,
-            latestModel: events.first?.model
+            modelBreakdown: modelBreakdown
         )
     }
 
@@ -609,26 +620,35 @@ struct ClaudeUsageProvider: UsageProviding {
         PercentageNormalizer.normalize(value)
     }
 
-    private static func selectWeeklyWindow(
-        from payload: UsageApiResponse,
-        preferredModelHint: String?
-    ) -> SelectedUsageWindow? {
-        let normalizedHint = preferredModelHint?.lowercased() ?? ""
+    private static func requiresLogin(for apiError: String?) -> Bool {
+        switch apiError {
+        case "missing-credentials", "http-401", "http-403":
+            return true
+        default:
+            return false
+        }
+    }
 
-        if normalizedHint.contains("sonnet"), let window = payload.sevenDaySonnet {
-            return SelectedUsageWindow(window: window, label: "Sonnet 7-day")
+    private static func requiresLogin(for error: Error) -> Bool {
+        guard let usageError = error as? ClaudeUsageError else {
+            return false
         }
 
-        if normalizedHint.contains("opus"), let window = payload.sevenDayOpus {
-            return SelectedUsageWindow(window: window, label: "Opus 7-day")
+        switch usageError {
+        case .missingCredentials:
+            return true
+        case .invalidURL, .keychainTimeout:
+            return false
         }
+    }
 
-        if normalizedHint.contains("oauth"), let window = payload.sevenDayOauthApps {
-            return SelectedUsageWindow(window: window, label: "OAuth Apps 7-day")
-        }
-
+    private static func selectWeeklyWindow(from payload: UsageApiResponse) -> SelectedUsageWindow? {
         if let window = payload.sevenDay {
             return SelectedUsageWindow(window: window, label: nil)
+        }
+
+        if let window = payload.sevenDayOauthApps {
+            return SelectedUsageWindow(window: window, label: "OAuth Apps 7-day")
         }
 
         if let window = payload.sevenDaySonnet {
@@ -637,10 +657,6 @@ struct ClaudeUsageProvider: UsageProviding {
 
         if let window = payload.sevenDayOpus {
             return SelectedUsageWindow(window: window, label: "Opus 7-day")
-        }
-
-        if let window = payload.sevenDayOauthApps {
-            return SelectedUsageWindow(window: window, label: "OAuth Apps 7-day")
         }
 
         return nil
@@ -718,14 +734,12 @@ private struct LocalUsageData {
     let monthTokens: Int
     let recentSessions: [SessionSummary]
     let modelBreakdown: [ModelSummary]
-    let latestModel: String?
 
     static let empty = LocalUsageData(
         todayTokens: 0,
         monthTokens: 0,
         recentSessions: [],
-        modelBreakdown: [],
-        latestModel: nil
+        modelBreakdown: []
     )
 }
 

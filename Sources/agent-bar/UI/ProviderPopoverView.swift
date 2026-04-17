@@ -87,12 +87,21 @@ struct ProviderPopoverView: View {
     private var footer: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(snapshot.isStale ? "Last good value \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))" : "Last updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(AppTheme.muted)
-                Text(TokenFormatters.dateTimeString(snapshot.updatedAt))
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(AppTheme.muted.opacity(0.8))
+                if snapshot.requiresLogin {
+                    Text("Login required")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(AppTheme.muted)
+                    Text("Sign in to Claude Code, then refresh.")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(AppTheme.muted.opacity(0.8))
+                } else {
+                    Text(snapshot.isStale ? "Last good value \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))" : "Last updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(AppTheme.muted)
+                    Text(TokenFormatters.dateTimeString(snapshot.updatedAt))
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(AppTheme.muted.opacity(0.8))
+                }
             }
 
             Spacer()

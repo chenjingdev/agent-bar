@@ -85,6 +85,7 @@ open ~/Applications/AgentBar.app
 - Running from source is the default workflow; distributing an unsigned macOS app is more fragile on other Macs
 - Top bars are account-wide
 - Claude prefers live `rate_limits` from Claude Code's status line when that bridge cache is fresh, then falls back to the OAuth usage API
+- Claude weekly usage prefers the account-wide `seven_day` window. Model-specific weekly windows are only used as a fallback when Anthropic does not return the account-wide window.
 - `This Mac` sections are local-only and do not include activity from other machines
 - Values refresh periodically and may be slightly stale by design
 - agent-bar keeps the last known good value during temporary upstream failures or rate limits

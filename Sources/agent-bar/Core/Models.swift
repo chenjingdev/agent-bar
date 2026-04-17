@@ -90,6 +90,7 @@ struct ProviderSnapshot: Equatable {
     let sourceDescription: String
     let note: String?
     let isStale: Bool
+    let requiresLogin: Bool
 
     var topModelName: String {
         modelBreakdown.first?.name ?? "n/a"
@@ -109,7 +110,8 @@ struct ProviderSnapshot: Equatable {
             modelBreakdown: [],
             sourceDescription: provider.sourceDescription,
             note: "Account usage has not loaded yet.",
-            isStale: true
+            isStale: true,
+            requiresLogin: false
         )
     }
 }
