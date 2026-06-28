@@ -1,7 +1,4 @@
 import Foundation
-import SQLite3
-
-private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 private enum CodexUsagePolicy {
     static let successCacheTTL: TimeInterval = 60
@@ -11,8 +8,6 @@ private enum CodexUsagePolicy {
 struct CodexUsageProvider: UsageProviding {
     func load() async -> ProviderSnapshot {
         await Task.detached(priority: .utility) {
-            let localData = (try? scanLocalLogs()) ?? .empty
-
             do {
                 let remoteResult = try resolveRemoteRateLimits()
                 return ProviderSnapshot(
@@ -32,11 +27,7 @@ struct CodexUsageProvider: UsageProviding {
                     ),
                     sonnetWeekly: nil,
                     planName: remoteResult.data.planName,
-                    todayTokens: localData.todayTokens,
-                    monthTokens: localData.monthTokens,
-                    recentSessions: localData.recentSessions,
-                    modelBreakdown: localData.modelBreakdown,
-                    sourceDescription: "Codex app-server account/rateLimits/read + ~/.codex",
+                    sourceDescription: "Codex app-server account/rateLimits/read",
                     note: remoteResult.note,
                     isStale: remoteResult.isStale,
                     requiresLogin: false
@@ -49,11 +40,7 @@ struct CodexUsageProvider: UsageProviding {
                     weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                     sonnetWeekly: nil,
                     planName: nil,
-                    todayTokens: localData.todayTokens,
-                    monthTokens: localData.monthTokens,
-                    recentSessions: localData.recentSessions,
-                    modelBreakdown: localData.modelBreakdown,
-                    sourceDescription: "Codex app-server account/rateLimits/read + ~/.codex",
+                    sourceDescription: "Codex app-server account/rateLimits/read",
                     note: "Couldn't read Codex account rate limits: \(error.localizedDescription)",
                     isStale: true,
                     requiresLogin: false
@@ -131,11 +118,11 @@ struct CodexUsageProvider: UsageProviding {
     private func note(for data: RemoteRateLimitData) -> String {
         if data.apiUnavailable {
             if let apiError = data.apiError {
-                return "Couldn't read Codex rate limits. Showing the last known good value (\(apiError)). The token and session details below are from This Mac logs."
+                return "Couldn't read Codex rate limits. Showing the last known good value (\(apiError))."
             }
-            return "Couldn't read Codex rate limits. Showing the last known good value. The token and session details below are from This Mac logs."
+            return "Couldn't read Codex rate limits. Showing the last known good value."
         }
-        return "The top bars reflect account-wide Codex rate limits. The token and session details below are from This Mac logs."
+        return "Showing account-wide Codex rate limits."
     }
 
     private func fetchAccountRateLimits() throws -> RemoteRateLimitData {
@@ -256,197 +243,6 @@ print(json.dumps(found))
         throw CodexUsageError.appServer("Couldn't find the Node executable.")
     }
 
-    private func scanLocalLogs() throws -> LocalUsageData {
-        let now = Date()
-        let weekCutoff = now.addingTimeInterval(-7 * 24 * 60 * 60)
-        let monthCutoff = Calendar.current.date(byAdding: .day, value: -35, to: now) ?? weekCutoff
-        let monthStart = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: now)) ?? monthCutoff
-
-        let baseURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
-        let logURL = baseURL.appendingPathComponent("logs_1.sqlite")
-        let stateURL = baseURL.appendingPathComponent("state_5.sqlite")
-
-        guard FileManager.default.fileExists(atPath: logURL.path) else {
-            return .empty
-        }
-
-        let events = try loadUsageEvents(from: logURL, since: monthCutoff)
-        let recentSessions = try loadRecentSessions(from: stateURL, since: monthCutoff)
-
-        let todayEvents = events.filter { Calendar.current.isDate($0.timestamp, inSameDayAs: now) }
-        let monthEvents = events.filter { $0.timestamp >= monthStart }
-        let weeklyEvents = events.filter { $0.timestamp >= weekCutoff }
-
-        let modelBreakdown = Dictionary(grouping: weeklyEvents, by: \.model)
-            .map { key, values in
-                ModelSummary(id: key, name: key, tokens: values.reduce(0) { $0 + $1.totalTokens })
-            }
-            .sorted(by: { $0.tokens > $1.tokens })
-            .prefix(4)
-            .map { $0 }
-
-        return LocalUsageData(
-            todayTokens: todayEvents.reduce(0) { $0 + $1.totalTokens },
-            monthTokens: monthEvents.reduce(0) { $0 + $1.totalTokens },
-            recentSessions: recentSessions,
-            modelBreakdown: modelBreakdown
-        )
-    }
-
-    private func loadUsageEvents(from url: URL, since: Date) throws -> [UsageEvent] {
-        let database = try SQLiteDatabase(readonlyAt: url)
-        defer { database.close() }
-
-        let cutoff = Int64(since.timeIntervalSince1970)
-        let logBodyColumn = try Self.resolveLogBodyColumn(in: database)
-        let sql = """
-        SELECT ts, \(logBodyColumn)
-        FROM logs
-        WHERE target IN (?, ?)
-          AND \(logBodyColumn) LIKE ?
-        AND ts >= ?
-        ORDER BY ts DESC
-        """
-
-        var eventsByID: [String: UsageEvent] = [:]
-        try database.query(sql, bindings: [
-            .text("codex_api::endpoint::responses_websocket"),
-            .text("log"),
-            .text("%response.completed%"),
-            .int64(cutoff),
-        ]) { statement in
-            guard let payloadData = Self.extractResponsePayload(from: statement.text(at: 1)) else { return }
-            guard let payload = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else { return }
-            guard let response = payload["response"] as? [String: Any] else { return }
-            guard let responseID = response["id"] as? String else { return }
-            guard let usage = response["usage"] as? [String: Any] else { return }
-
-            let inputTokens = Self.intValue(usage["input_tokens"])
-            let outputTokens = Self.intValue(usage["output_tokens"])
-            let totalTokens = Self.intValue(usage["total_tokens"])
-            let inputDetails = usage["input_tokens_details"] as? [String: Any]
-            let cachedTokens = Self.intValue(inputDetails?["cached_tokens"])
-            let interactiveTokens = max(totalTokens - cachedTokens, 0)
-            let createdAt = Self.intValue(response["completed_at"]) > 0 ? Self.intValue(response["completed_at"]) : Self.intValue(response["created_at"])
-            let timestamp = Date(timeIntervalSince1970: TimeInterval(createdAt))
-            let model = (response["model"] as? String) ?? "unknown"
-
-            guard interactiveTokens > 0 || cachedTokens > 0 else { return }
-
-            let event = UsageEvent(
-                id: responseID,
-                timestamp: timestamp,
-                model: model,
-                totalTokens: interactiveTokens,
-                inputTokens: inputTokens,
-                outputTokens: outputTokens,
-                cachedTokens: cachedTokens,
-                sessionID: nil
-            )
-
-            if let existing = eventsByID[responseID] {
-                if event.totalTokens >= existing.totalTokens {
-                    eventsByID[responseID] = event
-                }
-            } else {
-                eventsByID[responseID] = event
-            }
-        }
-
-        return eventsByID.values.sorted(by: { $0.timestamp > $1.timestamp })
-    }
-
-    private func loadRecentSessions(from url: URL, since: Date) throws -> [SessionSummary] {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return []
-        }
-
-        let database = try SQLiteDatabase(readonlyAt: url)
-        defer { database.close() }
-
-        let cutoff = Int64(since.timeIntervalSince1970)
-        let sql = """
-        SELECT id, title, updated_at, tokens_used, cwd
-        FROM threads
-        WHERE updated_at >= ?
-        ORDER BY updated_at DESC
-        LIMIT 8
-        """
-
-        var sessions: [SessionSummary] = []
-        try database.query(sql, bindings: [.int64(cutoff)]) { statement in
-            let sessionID = statement.text(at: 0) ?? UUID().uuidString
-            let title = statement.text(at: 1) ?? "Untitled"
-            let updatedAt = Date(timeIntervalSince1970: TimeInterval(statement.int64(at: 2)))
-            let tokensUsed = Int(statement.int64(at: 3))
-            let cwd = statement.text(at: 4) ?? ""
-            let location = cwd.isEmpty ? "workspace" : URL(fileURLWithPath: cwd).lastPathComponent
-            sessions.append(
-                SessionSummary(
-                    id: sessionID,
-                    title: String(title.prefix(52)),
-                    subtitle: "\(location) · \(TokenFormatters.compactTokenString(tokensUsed))",
-                    updatedAt: updatedAt,
-                    tokens: tokensUsed
-                )
-            )
-        }
-
-        return sessions
-    }
-
-    private static func intValue(_ value: Any?) -> Int {
-        if let intValue = value as? Int { return intValue }
-        if let int64Value = value as? Int64 { return Int(int64Value) }
-        if let doubleValue = value as? Double { return Int(doubleValue) }
-        if let stringValue = value as? String, let intValue = Int(stringValue) { return intValue }
-        return 0
-    }
-
-    private static func resolveLogBodyColumn(in database: SQLiteDatabase) throws -> String {
-        var columnNames = Set<String>()
-        try database.query("PRAGMA table_info(logs)", bindings: []) { statement in
-            if let columnName = statement.text(at: 1) {
-                columnNames.insert(columnName)
-            }
-        }
-
-        if columnNames.contains("message") {
-            return "message"
-        }
-
-        if columnNames.contains("feedback_log_body") {
-            return "feedback_log_body"
-        }
-
-        throw CodexUsageError.appServer("Couldn't find a compatible Codex logs schema.")
-    }
-
-    private static func extractResponsePayload(from logBody: String?) -> Data? {
-        guard let logBody else { return nil }
-
-        for prefix in ["websocket event: ", "Received message "] {
-            if let range = logBody.range(of: prefix) {
-                return String(logBody[range.upperBound...]).data(using: .utf8)
-            }
-        }
-
-        return nil
-    }
-}
-
-private struct LocalUsageData {
-    let todayTokens: Int
-    let monthTokens: Int
-    let recentSessions: [SessionSummary]
-    let modelBreakdown: [ModelSummary]
-
-    static let empty = LocalUsageData(
-        todayTokens: 0,
-        monthTokens: 0,
-        recentSessions: [],
-        modelBreakdown: []
-    )
 }
 
 private struct RemoteRateLimitData: Codable {
@@ -650,114 +446,4 @@ private func runProcess(
     }
 
     return ProcessOutput(stdout: stdout, stderr: stderr)
-}
-
-private enum SQLiteValue {
-    case text(String)
-    case int64(Int64)
-}
-
-private final class SQLiteDatabase {
-    private var handle: OpaquePointer?
-
-    init(readonlyAt url: URL) throws {
-        var db: OpaquePointer?
-        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
-        if sqlite3_open_v2(url.path, &db, flags, nil) != SQLITE_OK {
-            defer { sqlite3_close(db) }
-            throw SQLiteError.openDatabase(message: Self.lastError(from: db))
-        }
-        self.handle = db
-    }
-
-    func close() {
-        if let handle {
-            sqlite3_close(handle)
-            self.handle = nil
-        }
-    }
-
-    func query(
-        _ sql: String,
-        bindings: [SQLiteValue],
-        rowHandler: (SQLiteStatement) throws -> Void
-    ) throws {
-        guard let handle else {
-            throw SQLiteError.prepare(message: "DB handle is nil")
-        }
-
-        var statementPointer: OpaquePointer?
-        if sqlite3_prepare_v2(handle, sql, -1, &statementPointer, nil) != SQLITE_OK {
-            throw SQLiteError.prepare(message: Self.lastError(from: handle))
-        }
-
-        defer { sqlite3_finalize(statementPointer) }
-
-        guard let statementPointer else {
-            throw SQLiteError.prepare(message: "statement is nil")
-        }
-
-        for (index, binding) in bindings.enumerated() {
-            let parameterIndex = Int32(index + 1)
-            let result: Int32
-            switch binding {
-            case .text(let value):
-                result = sqlite3_bind_text(statementPointer, parameterIndex, value, -1, SQLITE_TRANSIENT)
-            case .int64(let value):
-                result = sqlite3_bind_int64(statementPointer, parameterIndex, value)
-            }
-
-            if result != SQLITE_OK {
-                throw SQLiteError.bind(message: Self.lastError(from: handle))
-            }
-        }
-
-        while true {
-            switch sqlite3_step(statementPointer) {
-            case SQLITE_ROW:
-                try rowHandler(SQLiteStatement(pointer: statementPointer))
-            case SQLITE_DONE:
-                return
-            default:
-                throw SQLiteError.step(message: Self.lastError(from: handle))
-            }
-        }
-    }
-
-    private static func lastError(from handle: OpaquePointer?) -> String {
-        if let handle, let message = sqlite3_errmsg(handle) {
-            return String(cString: message)
-        }
-        return "Unknown SQLite error"
-    }
-}
-
-private struct SQLiteStatement {
-    let pointer: OpaquePointer
-
-    func text(at column: Int32) -> String? {
-        guard let cString = sqlite3_column_text(pointer, column) else { return nil }
-        return String(cString: cString)
-    }
-
-    func int64(at column: Int32) -> Int64 {
-        sqlite3_column_int64(pointer, column)
-    }
-}
-
-private enum SQLiteError: LocalizedError {
-    case openDatabase(message: String)
-    case prepare(message: String)
-    case bind(message: String)
-    case step(message: String)
-
-    var errorDescription: String? {
-        switch self {
-        case .openDatabase(let message),
-             .prepare(let message),
-             .bind(let message),
-             .step(let message):
-            return message
-        }
-    }
 }

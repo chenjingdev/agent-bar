@@ -23,10 +23,6 @@ struct SettingsView: View {
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
 
-                Text("The This Mac token summaries and recent sessions in the popover are based on local logs on this Mac.")
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(.secondary)
-
                 Text("The Claude usage API can be rate-limited if polled too frequently, so very short refresh intervals are usually not useful.")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)

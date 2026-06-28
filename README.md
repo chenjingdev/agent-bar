@@ -2,7 +2,7 @@
 
 agent-bar is a macOS menu bar app for watching Claude Code and Codex usage at a glance.
 
-It shows compact 5-hour usage bars in the menu bar and opens a detailed popover when clicked. The top bars are account-wide. The lower `This Mac` details come from local logs on the current machine.
+It shows compact 5-hour and weekly usage bars in the menu bar and opens a detailed popover when clicked.
 
 ## Screenshots
 
@@ -21,7 +21,7 @@ It shows compact 5-hour usage bars in the menu bar and opens a detailed popover 
 
 - Shows separate menu bar items for Claude and Codex
 - Shows account-wide 5-hour and weekly usage percentages
-- Shows reset times, plan name, and local `This Mac` summaries
+- Shows remaining usage, reset times, and plan name
 - Hides providers that are not available on the current Mac
 - Keeps the last known good usage when an upstream usage endpoint is temporarily unavailable
 
@@ -77,8 +77,6 @@ open ~/Applications/AgentBar.app
 - Claude account-wide usage: macOS Keychain or `~/.claude/.credentials.json`, then `https://api.anthropic.com/api/oauth/usage`
 - Claude live usage while Claude Code is open: `~/.agentbar/claude-statusline.json` from the Claude status line bridge
 - Codex account-wide usage: `codex app-server`, then `account/rateLimits/read`
-- Claude `This Mac` details: `~/.claude/projects/**/*.jsonl`
-- Codex `This Mac` details: `~/.codex/logs_1.sqlite` and `~/.codex/state_5.sqlite`
 
 ## Notes
 
@@ -86,7 +84,6 @@ open ~/Applications/AgentBar.app
 - Top bars are account-wide
 - Claude prefers live `rate_limits` from Claude Code's status line when that bridge cache is fresh, then falls back to the OAuth usage API
 - Claude weekly usage prefers the account-wide `seven_day` window. Model-specific weekly windows are only used as a fallback when Anthropic does not return the account-wide window.
-- `This Mac` sections are local-only and do not include activity from other machines
 - Values refresh periodically and may be slightly stale by design
 - agent-bar keeps the last known good value during temporary upstream failures or rate limits
 - There is no backend service, telemetry, or browser-cookie setup
@@ -101,5 +98,4 @@ Cache files:
 
 - Provider missing: check the required credentials or binaries above, then restart agent-bar
 - Value looks stale: open the popover and check the update timestamp; upstream may be temporarily unavailable or rate-limited
-- Top percentage does not match `This Mac`: expected when you use the same account on multiple Macs, or when local logs are incomplete
 - Claude usage still not moving while Claude Code is open: restart Claude Code once so the updated status line bridge starts writing `~/.agentbar/claude-statusline.json`

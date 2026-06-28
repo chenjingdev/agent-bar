@@ -12,10 +12,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "agent_bar",
-            path: "Sources/agent-bar",
-            linkerSettings: [
-                .linkedLibrary("sqlite3"),
-            ]
+            path: "Sources/agent-bar"
         ),
     ]
 )

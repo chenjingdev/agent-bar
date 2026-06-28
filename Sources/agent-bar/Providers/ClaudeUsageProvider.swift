@@ -12,10 +12,8 @@ private enum ClaudeUsagePolicy {
 struct ClaudeUsageProvider: UsageProviding {
     func load() async -> ProviderSnapshot {
         await Task.detached(priority: .utility) {
-            let localData = (try? scanLocalLogs()) ?? .empty
-
             do {
-                let remoteResult = try await resolveRemoteUsage(localData: localData)
+                let remoteResult = try await resolveRemoteUsage()
                 let sonnetWeekly: WindowSummary? = remoteResult.data.sonnetWeeklyUsedPercent.map {
                     WindowSummary(tokens: $0, limitTokens: 100, resetAt: remoteResult.data.sonnetWeeklyResetAt, displayStyle: .percentage)
                 }
@@ -36,10 +34,6 @@ struct ClaudeUsageProvider: UsageProviding {
                     ),
                     sonnetWeekly: sonnetWeekly,
                     planName: remoteResult.data.planName,
-                    todayTokens: localData.todayTokens,
-                    monthTokens: localData.monthTokens,
-                    recentSessions: localData.recentSessions,
-                    modelBreakdown: localData.modelBreakdown,
                     sourceDescription: remoteResult.sourceDescription,
                     note: remoteResult.note,
                     isStale: remoteResult.isStale,
@@ -54,11 +48,7 @@ struct ClaudeUsageProvider: UsageProviding {
                     weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                     sonnetWeekly: nil,
                     planName: nil,
-                    todayTokens: localData.todayTokens,
-                    monthTokens: localData.monthTokens,
-                    recentSessions: localData.recentSessions,
-                    modelBreakdown: localData.modelBreakdown,
-                    sourceDescription: "Anthropic OAuth usage API + cache + ~/.claude/projects",
+                    sourceDescription: "Anthropic OAuth usage API + cache",
                     note: requiresLogin
                         ? "Claude login required. Sign in to Claude Code, then refresh."
                         : "Couldn't read Anthropic account usage: \(error.localizedDescription)",
@@ -69,7 +59,7 @@ struct ClaudeUsageProvider: UsageProviding {
         }.value
     }
 
-    private func resolveRemoteUsage(localData: LocalUsageData) async throws -> RemoteUsageResult {
+    private func resolveRemoteUsage() async throws -> RemoteUsageResult {
         let cache = ClaudeUsageCache()
         let now = Date.now
         let previousCache = try? cache.readRaw()
@@ -108,7 +98,7 @@ struct ClaudeUsageProvider: UsageProviding {
             )
         }
 
-        if let cacheState = try? cache.readState(now: now), cacheState.isFresh {
+        if let cacheState = try? cache.readState(now: now, credentialCacheKey: credentials?.cacheKey), cacheState.isFresh {
             return RemoteUsageResult(
                 data: cacheState.data,
                 updatedAt: cacheState.updatedAt,
@@ -144,6 +134,7 @@ struct ClaudeUsageProvider: UsageProviding {
             try? cache.write(
                 data: successData,
                 timestamp: now,
+                credentialCacheKey: credentials.cacheKey,
                 lastGoodData: successData,
                 lastGoodTimestamp: now
             )
@@ -177,10 +168,11 @@ struct ClaudeUsageProvider: UsageProviding {
         let retryAfterUntil = apiResult.retryAfterSeconds.map { now.addingTimeInterval(TimeInterval($0)) }
 
         if isRateLimited {
-            let goodState = cache.makeLastGoodState(from: previousCache)
+            let goodState = cache.makeLastGoodState(from: previousCache, credentialCacheKey: credentials.cacheKey)
             try? cache.write(
                 data: failureData,
                 timestamp: now,
+                credentialCacheKey: credentials.cacheKey,
                 rateLimitedCount: rateLimitedCount,
                 retryAfterUntil: retryAfterUntil,
                 lastGoodData: goodState?.data,
@@ -199,7 +191,7 @@ struct ClaudeUsageProvider: UsageProviding {
             }
         }
 
-        try? cache.write(data: failureData, timestamp: now)
+        try? cache.write(data: failureData, timestamp: now, credentialCacheKey: credentials.cacheKey)
         return RemoteUsageResult(
             data: failureData,
             updatedAt: now,
@@ -212,34 +204,34 @@ struct ClaudeUsageProvider: UsageProviding {
     private func note(for data: RemoteUsageData) -> String {
         if data.apiUnavailable {
             if Self.requiresLogin(for: data.apiError) {
-                return "Claude login required. Sign in to Claude Code, then refresh. The token and session details below are from This Mac logs."
+                return "Claude login required. Sign in to Claude Code, then refresh."
             }
             if data.apiError == "rate-limited" {
-                return "The Anthropic usage API is rate-limited. Showing the last known good value and retrying automatically. The token and session details below are from This Mac logs."
+                return "The Anthropic usage API is rate-limited. Showing the last known good value and retrying automatically."
             }
-            return "Couldn't read the Anthropic usage API (\(data.apiError ?? "unknown")). The token and session details below are from This Mac logs."
+            return "Couldn't read the Anthropic usage API (\(data.apiError ?? "unknown"))."
         }
         switch data.usageSource {
         case .statusLine:
-            return "The top bars reflect Claude Code's live rate_limits data from your active status line session. The token and session details below are from This Mac logs."
+            return "Showing Claude Code live rate_limits from your active status line session."
         case .oauthApi:
             if let weeklyWindowLabel = data.weeklyWindowLabel {
-                return "The top bars reflect Anthropic usage API data. Anthropic did not return an account-wide weekly window, so Weekly is following the \(weeklyWindowLabel) window. The token and session details below are from This Mac logs."
+                return "Anthropic did not return an account-wide weekly window, so Weekly is following the \(weeklyWindowLabel) window."
             }
-            return "The top bars reflect account-wide Anthropic usage API data. The token and session details below are from This Mac logs."
+            return "Showing account-wide Anthropic usage API data."
         case nil:
-            return "The top bars reflect account-wide Anthropic usage API data. The token and session details below are from This Mac logs."
+            return "Showing account-wide Anthropic usage API data."
         }
     }
 
     private func sourceDescription(for data: RemoteUsageData) -> String {
         switch data.usageSource {
         case .statusLine:
-            return "Claude Code live rate_limits + ~/.claude/projects"
+            return "Claude Code live rate_limits"
         case .oauthApi:
-            return "Anthropic OAuth usage API + cache + ~/.claude/projects"
+            return "Anthropic OAuth usage API + cache"
         case nil:
-            return "Anthropic OAuth usage API + cache + ~/.claude/projects"
+            return "Anthropic OAuth usage API + cache"
         }
     }
 
@@ -304,7 +296,8 @@ struct ClaudeUsageProvider: UsageProviding {
             if let fallback = try? readFileCredentials(configDirectory: configDirectory) {
                 return ClaudeCredentials(
                     accessToken: credentials.accessToken,
-                    subscriptionType: fallback.subscriptionType
+                    subscriptionType: fallback.subscriptionType,
+                    cacheKey: credentials.cacheKey
                 )
             }
 
@@ -362,7 +355,8 @@ struct ClaudeUsageProvider: UsageProviding {
 
         return ClaudeCredentials(
             accessToken: accessToken,
-            subscriptionType: credentialsFile.claudeAiOauth?.subscriptionType ?? ""
+            subscriptionType: credentialsFile.claudeAiOauth?.subscriptionType ?? "",
+            cacheKey: Self.cacheKey(for: data)
         )
     }
 
@@ -381,8 +375,16 @@ struct ClaudeUsageProvider: UsageProviding {
 
         return ClaudeCredentials(
             accessToken: accessToken,
-            subscriptionType: credentialsFile.claudeAiOauth?.subscriptionType ?? ""
+            subscriptionType: credentialsFile.claudeAiOauth?.subscriptionType ?? "",
+            cacheKey: Self.cacheKey(for: data)
         )
+    }
+
+    private static func cacheKey(for data: Data) -> String {
+        SHA256.hash(data: data)
+            .prefix(16)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private func claudeConfigDirectory(homeDirectory: URL) -> URL {
@@ -448,172 +450,6 @@ struct ClaudeUsageProvider: UsageProviding {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".agentbar", isDirectory: true)
             .appendingPathComponent("claude-statusline.json")
-    }
-
-    private func scanLocalLogs() throws -> LocalUsageData {
-        let now = Date()
-        let dateFormatter = Self.makeDateFormatter()
-        let monthCutoff = Calendar.current.date(byAdding: .day, value: -35, to: now) ?? now
-        let monthStart = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: now)) ?? monthCutoff
-
-        var eventsByRequestID: [String: UsageEvent] = [:]
-        var sessionTitles: [String: String] = [:]
-
-        let baseURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude")
-            .appendingPathComponent("projects")
-
-        guard FileManager.default.fileExists(atPath: baseURL.path) else {
-            return .empty
-        }
-
-        let resourceKeys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
-        let enumerator = FileManager.default.enumerator(
-            at: baseURL,
-            includingPropertiesForKeys: Array(resourceKeys),
-            options: [.skipsHiddenFiles]
-        )
-
-        while let fileURL = enumerator?.nextObject() as? URL {
-            guard fileURL.pathExtension == "jsonl" else { continue }
-            let resourceValues = try? fileURL.resourceValues(forKeys: resourceKeys)
-            guard resourceValues?.isRegularFile == true else { continue }
-            if let modifiedAt = resourceValues?.contentModificationDate, modifiedAt < monthCutoff {
-                continue
-            }
-
-            let content = try String(contentsOf: fileURL, encoding: .utf8)
-            for rawLine in content.split(whereSeparator: \.isNewline) {
-                guard let data = rawLine.data(using: .utf8) else { continue }
-                guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-
-                if let sessionID = object["sessionId"] as? String,
-                   sessionTitles[sessionID] == nil,
-                   let title = extractUserTitle(from: object) {
-                    sessionTitles[sessionID] = title
-                }
-
-                guard let type = object["type"] as? String, type == "assistant" else { continue }
-                guard let sessionID = object["sessionId"] as? String else { continue }
-                guard let requestID = object["requestId"] as? String else { continue }
-                guard let timestampString = object["timestamp"] as? String else { continue }
-                guard let timestamp = dateFormatter.date(from: timestampString) else { continue }
-                guard timestamp >= monthCutoff else { continue }
-                guard let message = object["message"] as? [String: Any] else { continue }
-                guard let usage = message["usage"] as? [String: Any] else { continue }
-
-                let inputTokens = Self.intValue(usage["input_tokens"])
-                let outputTokens = Self.intValue(usage["output_tokens"])
-                let cacheReadTokens = Self.intValue(usage["cache_read_input_tokens"])
-                let cacheCreationTokens = Self.intValue(usage["cache_creation_input_tokens"])
-                let interactiveTokens = inputTokens + outputTokens
-                let cachedTokens = cacheReadTokens + cacheCreationTokens
-                guard interactiveTokens > 0 || cachedTokens > 0 else { continue }
-
-                let model = (message["model"] as? String) ?? "unknown"
-                let event = UsageEvent(
-                    id: requestID,
-                    timestamp: timestamp,
-                    model: model,
-                    totalTokens: interactiveTokens,
-                    inputTokens: inputTokens,
-                    outputTokens: outputTokens,
-                    cachedTokens: cachedTokens,
-                    sessionID: sessionID
-                )
-
-                if let existing = eventsByRequestID[requestID] {
-                    if event.totalTokens >= existing.totalTokens {
-                        eventsByRequestID[requestID] = event
-                    }
-                } else {
-                    eventsByRequestID[requestID] = event
-                }
-            }
-        }
-
-        let events = eventsByRequestID.values.sorted(by: { $0.timestamp > $1.timestamp })
-        let todayEvents = events.filter { Calendar.current.isDate($0.timestamp, inSameDayAs: now) }
-        let monthEvents = events.filter { $0.timestamp >= monthStart }
-        let modelBreakdown = Dictionary(grouping: monthEvents, by: \.model)
-            .map { key, values in
-                ModelSummary(id: key, name: key, tokens: values.reduce(0) { $0 + $1.totalTokens })
-            }
-            .sorted(by: { $0.tokens > $1.tokens })
-            .prefix(4)
-            .map { $0 }
-
-        return LocalUsageData(
-            todayTokens: todayEvents.reduce(0) { $0 + $1.totalTokens },
-            monthTokens: monthEvents.reduce(0) { $0 + $1.totalTokens },
-            recentSessions: buildSessionSummaries(events: events, sessionTitles: sessionTitles),
-            modelBreakdown: modelBreakdown
-        )
-    }
-
-    private func buildSessionSummaries(
-        events: [UsageEvent],
-        sessionTitles: [String: String]
-    ) -> [SessionSummary] {
-        struct Aggregate {
-            var updatedAt: Date
-            var tokens: Int
-            var models: [String: Int]
-        }
-
-        var aggregates: [String: Aggregate] = [:]
-
-        for event in events {
-            guard let sessionID = event.sessionID else { continue }
-            var aggregate = aggregates[sessionID] ?? Aggregate(updatedAt: event.timestamp, tokens: 0, models: [:])
-            aggregate.updatedAt = max(aggregate.updatedAt, event.timestamp)
-            aggregate.tokens += event.totalTokens
-            aggregate.models[event.model, default: 0] += event.totalTokens
-            aggregates[sessionID] = aggregate
-        }
-
-        return aggregates
-            .map { sessionID, aggregate in
-                let title = sessionTitles[sessionID] ?? "Session \(sessionID.prefix(6))"
-                let topModel = aggregate.models.max(by: { $0.value < $1.value })?.key ?? "unknown"
-                return SessionSummary(
-                    id: sessionID,
-                    title: title,
-                    subtitle: "\(topModel) · \(TokenFormatters.compactTokenString(aggregate.tokens))",
-                    updatedAt: aggregate.updatedAt,
-                    tokens: aggregate.tokens
-                )
-            }
-            .sorted(by: { $0.updatedAt > $1.updatedAt })
-            .prefix(5)
-            .map { $0 }
-    }
-
-    private func extractUserTitle(from object: [String: Any]) -> String? {
-        guard let type = object["type"] as? String, type == "user" else { return nil }
-        if let message = object["message"] as? [String: Any] {
-            if let content = message["content"] as? String {
-                return Self.compactTitle(content)
-            }
-            if let parts = message["content"] as? [[String: Any]] {
-                let text = parts
-                    .compactMap { $0["text"] as? String }
-                    .joined(separator: " ")
-                return Self.compactTitle(text)
-            }
-        }
-        if let prompt = object["prompt"] as? String {
-            return Self.compactTitle(prompt)
-        }
-        return nil
-    }
-
-    private static func compactTitle(_ text: String) -> String? {
-        let normalized = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalized.isEmpty == false else { return nil }
-        return String(normalized.prefix(52))
     }
 
     private static func parseUtilization(_ value: Double?) -> Int {
@@ -687,19 +523,6 @@ struct ClaudeUsageProvider: UsageProviding {
         return nil
     }
 
-    private static func intValue(_ value: Any?) -> Int {
-        if let intValue = value as? Int { return intValue }
-        if let doubleValue = value as? Double { return Int(doubleValue) }
-        if let stringValue = value as? String, let intValue = Int(stringValue) { return intValue }
-        return 0
-    }
-
-    private static func makeDateFormatter() -> ISO8601DateFormatter {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }
-
     private func runSecurityCommand(arguments: [String], timeout: TimeInterval) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
@@ -727,20 +550,6 @@ struct ClaudeUsageProvider: UsageProviding {
 
         return outputPipe.fileHandleForReading.readDataToEndOfFile()
     }
-}
-
-private struct LocalUsageData {
-    let todayTokens: Int
-    let monthTokens: Int
-    let recentSessions: [SessionSummary]
-    let modelBreakdown: [ModelSummary]
-
-    static let empty = LocalUsageData(
-        todayTokens: 0,
-        monthTokens: 0,
-        recentSessions: [],
-        modelBreakdown: []
-    )
 }
 
 private struct RemoteUsageData: Codable {
@@ -789,6 +598,7 @@ private enum ClaudeUsageSource: String, Codable {
 private struct ClaudeCredentials {
     let accessToken: String
     let subscriptionType: String
+    let cacheKey: String
 }
 
 private struct CredentialsFile: Decodable {
@@ -913,6 +723,7 @@ private enum ClaudeUsageError: LocalizedError {
 private struct ClaudeUsageCacheRecord: Codable {
     let data: RemoteUsageData
     let timestamp: Date
+    let credentialCacheKey: String?
     let rateLimitedCount: Int?
     let retryAfterUntil: Date?
     let lastGoodData: RemoteUsageData?
@@ -946,6 +757,7 @@ private struct LegacyClaudeUsageCacheRecord: Decodable {
         return ClaudeUsageCacheRecord(
             data: data,
             timestamp: timestamp,
+            credentialCacheKey: nil,
             rateLimitedCount: nil,
             retryAfterUntil: cooldownUntil,
             lastGoodData: data,
@@ -979,8 +791,14 @@ private struct ClaudeUsageCache {
         return try decoder.decode(LegacyClaudeUsageCacheRecord.self, from: data).upgraded
     }
 
-    func readState(now: Date) throws -> ClaudeUsageCacheState {
+    func readState(now: Date, credentialCacheKey: String?) throws -> ClaudeUsageCacheState {
         let cache = try readRaw()
+        if let credentialCacheKey,
+           let cachedCredentialKey = cache.credentialCacheKey,
+           cachedCredentialKey != credentialCacheKey {
+            return ClaudeUsageCacheState(data: cache.data, updatedAt: cache.timestamp, isFresh: false)
+        }
+
         let displayState = displayState(from: cache)
 
         if let retryUntil = rateLimitedRetryUntil(for: cache), now < retryUntil {
@@ -999,8 +817,14 @@ private struct ClaudeUsageCache {
         )
     }
 
-    func makeLastGoodState(from cache: ClaudeUsageCacheRecord?) -> ClaudeUsageCacheState? {
+    func makeLastGoodState(from cache: ClaudeUsageCacheRecord?, credentialCacheKey: String?) -> ClaudeUsageCacheState? {
         guard let cache else { return nil }
+        if let credentialCacheKey,
+           let cachedCredentialKey = cache.credentialCacheKey,
+           cachedCredentialKey != credentialCacheKey {
+            return nil
+        }
+
         if cache.data.apiUnavailable == false {
             return ClaudeUsageCacheState(data: cache.data, updatedAt: cache.timestamp, isFresh: false)
         }
@@ -1015,6 +839,7 @@ private struct ClaudeUsageCache {
     func write(
         data: RemoteUsageData,
         timestamp: Date,
+        credentialCacheKey: String? = nil,
         rateLimitedCount: Int? = nil,
         retryAfterUntil: Date? = nil,
         lastGoodData: RemoteUsageData? = nil,
@@ -1023,6 +848,7 @@ private struct ClaudeUsageCache {
         let record = ClaudeUsageCacheRecord(
             data: data,
             timestamp: timestamp,
+            credentialCacheKey: credentialCacheKey,
             rateLimitedCount: rateLimitedCount,
             retryAfterUntil: retryAfterUntil,
             lastGoodData: lastGoodData,

@@ -153,6 +153,8 @@ private struct WindowCard: View {
             HStack {
                 switch window.displayStyle {
                 case .percentage:
+                    Text("Remaining \(max(0, 100 - window.tokens))%")
+                    Spacer()
                     Text("Used \(window.tokens)%")
                 case .tokens:
                     Text("Used \(TokenFormatters.compactTokenString(window.tokens))")

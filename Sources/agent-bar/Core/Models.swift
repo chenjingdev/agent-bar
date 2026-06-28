@@ -39,31 +39,6 @@ enum WindowDisplayStyle: Equatable {
     case percentage
 }
 
-struct UsageEvent: Identifiable, Hashable {
-    let id: String
-    let timestamp: Date
-    let model: String
-    let totalTokens: Int
-    let inputTokens: Int
-    let outputTokens: Int
-    let cachedTokens: Int
-    let sessionID: String?
-}
-
-struct SessionSummary: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let subtitle: String
-    let updatedAt: Date
-    let tokens: Int
-}
-
-struct ModelSummary: Identifiable, Hashable {
-    let id: String
-    let name: String
-    let tokens: Int
-}
-
 struct WindowSummary: Equatable {
     let tokens: Int
     let limitTokens: Int
@@ -83,18 +58,10 @@ struct ProviderSnapshot: Equatable {
     let weekly: WindowSummary
     let sonnetWeekly: WindowSummary?
     let planName: String?
-    let todayTokens: Int
-    let monthTokens: Int
-    let recentSessions: [SessionSummary]
-    let modelBreakdown: [ModelSummary]
     let sourceDescription: String
     let note: String?
     let isStale: Bool
     let requiresLogin: Bool
-
-    var topModelName: String {
-        modelBreakdown.first?.name ?? "n/a"
-    }
 
     static func placeholder(for provider: ProviderKind) -> ProviderSnapshot {
         ProviderSnapshot(
@@ -104,10 +71,6 @@ struct ProviderSnapshot: Equatable {
             weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
             sonnetWeekly: nil,
             planName: nil,
-            todayTokens: 0,
-            monthTokens: 0,
-            recentSessions: [],
-            modelBreakdown: [],
             sourceDescription: provider.sourceDescription,
             note: "Account usage has not loaded yet.",
             isStale: true,
