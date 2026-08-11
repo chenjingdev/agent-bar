@@ -17,7 +17,9 @@ struct ClaudeUsageProvider: UsageProviding {
                 let modelWeeklies: [ModelWeeklySummary] = (remoteResult.data.modelWeeklies ?? []).map { cached in
                     ModelWeeklySummary(
                         label: cached.label,
-                        window: WindowSummary(tokens: cached.usedPercent, limitTokens: 100, resetAt: cached.resetAt, displayStyle: .percentage)
+                        window: cached.usedPercent.map {
+                            WindowSummary(tokens: $0, limitTokens: 100, resetAt: cached.resetAt, displayStyle: .percentage)
+                        } ?? WindowSummary(tokens: 0, limitTokens: 0, resetAt: cached.resetAt, displayStyle: .percentage)
                     )
                 }
                 return ProviderSnapshot(
@@ -511,7 +513,7 @@ struct ClaudeUsageProvider: UsageProviding {
             return scoped.map { limit in
                 CachedModelWeekly(
                     label: limit.scope?.model?.displayName ?? "Model",
-                    usedPercent: parseUtilization(limit.percent),
+                    usedPercent: limit.percent.map { parseUtilization($0) },
                     resetAt: limit.parsedResetAt
                 )
             }
@@ -522,7 +524,7 @@ struct ClaudeUsageProvider: UsageProviding {
             fallback.append(
                 CachedModelWeekly(
                     label: "Sonnet",
-                    usedPercent: parseUtilization(sonnet.utilization),
+                    usedPercent: sonnet.utilization.map { parseUtilization($0) },
                     resetAt: sonnet.parsedResetAt
                 )
             )
@@ -531,7 +533,7 @@ struct ClaudeUsageProvider: UsageProviding {
             fallback.append(
                 CachedModelWeekly(
                     label: "Opus",
-                    usedPercent: parseUtilization(opus.utilization),
+                    usedPercent: opus.utilization.map { parseUtilization($0) },
                     resetAt: opus.parsedResetAt
                 )
             )
@@ -623,7 +625,7 @@ private struct RemoteUsageData: Codable {
 
 private struct CachedModelWeekly: Codable, Equatable {
     let label: String
-    let usedPercent: Int
+    let usedPercent: Int?
     let resetAt: Date?
 }
 

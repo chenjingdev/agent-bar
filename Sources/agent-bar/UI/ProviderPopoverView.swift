@@ -24,11 +24,14 @@ struct ProviderPopoverView: View {
                             window: snapshot.weekly,
                             provider: snapshot.provider
                         )
-                        ForEach(snapshot.modelWeeklies, id: \.label) { modelWeekly in
+                        ForEach(Array(snapshot.displayedModelWeeklies.enumerated()), id: \.offset) { _, modelWeekly in
                             WindowCard(
                                 title: "\(modelWeekly.label) Weekly",
                                 window: modelWeekly.window,
-                                provider: snapshot.provider
+                                provider: snapshot.provider,
+                                unavailableMessage: modelWeekly.window.utilization == nil
+                                    ? "\(modelWeekly.label) usage data is unavailable."
+                                    : nil
                             )
                         }
                         if let note = snapshot.note {
@@ -128,6 +131,7 @@ private struct WindowCard: View {
     let title: String
     let window: WindowSummary
     let provider: ProviderKind
+    var unavailableMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -150,24 +154,30 @@ private struct WindowCard: View {
                 )
             }
 
-            HStack {
-                switch window.displayStyle {
-                case .percentage:
-                    Text("Remaining \(max(0, 100 - window.tokens))%")
-                    Spacer()
-                    Text("Used \(window.tokens)%")
-                case .tokens:
-                    Text("Used \(TokenFormatters.compactTokenString(window.tokens))")
-                    Spacer()
-                    Text("Budget \(TokenFormatters.compactTokenString(window.limitTokens))")
+            if window.utilization == nil {
+                Text(unavailableMessage ?? "Usage data is unavailable.")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(AppTheme.muted)
+            } else {
+                HStack {
+                    switch window.displayStyle {
+                    case .percentage:
+                        Text("Remaining \(max(0, 100 - window.tokens))%")
+                        Spacer()
+                        Text("Used \(window.tokens)%")
+                    case .tokens:
+                        Text("Used \(TokenFormatters.compactTokenString(window.tokens))")
+                        Spacer()
+                        Text("Budget \(TokenFormatters.compactTokenString(window.limitTokens))")
+                    }
                 }
-            }
-            .font(.system(size: 11, weight: .medium, design: .rounded))
-            .foregroundStyle(AppTheme.muted)
-
-            Text(TokenFormatters.resetLabelString(resetAt: window.resetAt))
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(AppTheme.muted)
+
+                Text(TokenFormatters.resetLabelString(resetAt: window.resetAt))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(AppTheme.muted)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -21,6 +21,7 @@ It shows compact 5-hour and weekly usage bars in the menu bar and opens a detail
 
 - Shows separate menu bar items for Claude and Codex
 - Shows account-wide 5-hour and weekly usage percentages
+- Keeps the Fable weekly row visible even when Fable usage data is unavailable
 - Shows remaining usage, reset times, and plan name
 - Hides providers that are not available on the current Mac
 - Keeps the last known good usage when an upstream usage endpoint is temporarily unavailable
@@ -29,7 +30,7 @@ It shows compact 5-hour and weekly usage bars in the menu bar and opens a detail
 
 - macOS 14 or later
 - Swift 6.2 or later, or Xcode Command Line Tools with `swift` available
-- Claude support: Claude Code installed, and logged in via macOS Keychain or `~/.claude/.credentials.json`
+- Claude support: Claude Code installed; sign-in via macOS Keychain or `~/.claude/.credentials.json` is required for live account usage
 - Codex support: `codex` in `~/.bun/bin/codex`, `/opt/homebrew/bin/codex`, or `/usr/local/bin/codex`
 - Codex support: `node` in `~/.bun/bin/node`, `/opt/homebrew/bin/node`, `/usr/local/bin/node`, or `/usr/bin/node`
 
@@ -83,7 +84,7 @@ open ~/Applications/AgentBar.app
 - Running from source is the default workflow; distributing an unsigned macOS app is more fragile on other Macs
 - Top bars are account-wide
 - Claude prefers live `rate_limits` from Claude Code's status line when that bridge cache is fresh, then falls back to the OAuth usage API
-- Claude weekly usage prefers the account-wide `seven_day` window. Model-specific weekly windows are only used as a fallback when Anthropic does not return the account-wide window.
+- Claude weekly usage prefers the account-wide `seven_day` window. Model-specific weekly windows are shown as additional cards; Fable remains visible when its usage data is unavailable.
 - Values refresh periodically and may be slightly stale by design
 - agent-bar keeps the last known good value during temporary upstream failures or rate limits
 - There is no backend service, telemetry, or browser-cookie setup

@@ -29,7 +29,7 @@ struct MenuBarLabelView: View {
                 color: AppTheme.accent(for: snapshot.provider)
             ),
         ]
-        if let modelWeekly = snapshot.modelWeeklies.first {
+        if let modelWeekly = snapshot.displayedModelWeeklies.first {
             bars.append(StackedUsageBars.Bar(utilization: modelWeekly.window.utilization, color: AppTheme.accentGlow))
         }
         return bars

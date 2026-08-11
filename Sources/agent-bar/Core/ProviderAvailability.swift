@@ -25,8 +25,18 @@ enum ProviderAvailability {
             return true
         }
 
-        return keychainServiceNames(configDirectory: configDirectory, homeDirectory: homeDirectory)
-            .contains { hasKeychainCredentials(serviceName: $0) }
+        if keychainServiceNames(configDirectory: configDirectory, homeDirectory: homeDirectory)
+            .contains(where: { hasKeychainCredentials(serviceName: $0) }) {
+            return true
+        }
+
+        let executableCandidates = [
+            homeDirectory.appendingPathComponent(".local/bin/claude"),
+            homeDirectory.appendingPathComponent(".bun/bin/claude"),
+            URL(fileURLWithPath: "/opt/homebrew/bin/claude"),
+            URL(fileURLWithPath: "/usr/local/bin/claude"),
+        ]
+        return executableCandidates.contains { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
     private static func isCodexAvailable() -> Bool {

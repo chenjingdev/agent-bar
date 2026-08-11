@@ -54,6 +54,15 @@ struct WindowSummary: Equatable {
 struct ModelWeeklySummary: Equatable {
     let label: String
     let window: WindowSummary
+
+    var isFable: Bool {
+        label.localizedCaseInsensitiveContains("fable")
+    }
+
+    static let unavailableFable = ModelWeeklySummary(
+        label: "Fable",
+        window: WindowSummary(tokens: 0, limitTokens: 0, resetAt: nil, displayStyle: .percentage)
+    )
 }
 
 struct ProviderSnapshot: Equatable {
@@ -67,6 +76,23 @@ struct ProviderSnapshot: Equatable {
     let note: String?
     let isStale: Bool
     let requiresLogin: Bool
+
+    var displayedModelWeeklies: [ModelWeeklySummary] {
+        guard provider == .claude else { return modelWeeklies }
+
+        guard let fableIndex = modelWeeklies.firstIndex(where: \.isFable) else {
+            return [.unavailableFable] + modelWeeklies
+        }
+
+        guard fableIndex != modelWeeklies.startIndex else {
+            return modelWeeklies
+        }
+
+        var orderedWeeklies = modelWeeklies
+        let fableWeekly = orderedWeeklies.remove(at: fableIndex)
+        orderedWeeklies.insert(fableWeekly, at: orderedWeeklies.startIndex)
+        return orderedWeeklies
+    }
 
     static func placeholder(for provider: ProviderKind) -> ProviderSnapshot {
         ProviderSnapshot(
