@@ -13,12 +13,14 @@ struct CodexUsageProvider: UsageProviding {
                 return ProviderSnapshot(
                     provider: .codex,
                     updatedAt: remoteResult.updatedAt,
-                    fiveHour: WindowSummary(
-                        tokens: remoteResult.data.fiveHourUsedPercent,
-                        limitTokens: 100,
-                        resetAt: remoteResult.data.fiveHourResetAt,
-                        displayStyle: .percentage
-                    ),
+                    fiveHour: remoteResult.data.fiveHourUsedPercent.map {
+                        WindowSummary(
+                            tokens: $0,
+                            limitTokens: 100,
+                            resetAt: remoteResult.data.fiveHourResetAt,
+                            displayStyle: .percentage
+                        )
+                    },
                     weekly: WindowSummary(
                         tokens: remoteResult.data.weeklyUsedPercent,
                         limitTokens: 100,
@@ -36,7 +38,7 @@ struct CodexUsageProvider: UsageProviding {
                 return ProviderSnapshot(
                     provider: .codex,
                     updatedAt: .now,
-                    fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+                    fiveHour: nil,
                     weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                     modelWeeklies: [],
                     planName: nil,
@@ -81,7 +83,7 @@ struct CodexUsageProvider: UsageProviding {
             let goodState = cache.makeLastGoodState(from: previousCache)
             let failureData = RemoteRateLimitData(
                 planName: goodState?.data.planName,
-                fiveHourUsedPercent: 0,
+                fiveHourUsedPercent: nil,
                 weeklyUsedPercent: 0,
                 fiveHourResetAt: nil,
                 weeklyResetAt: nil,
@@ -130,29 +132,19 @@ struct CodexUsageProvider: UsageProviding {
         let data = try JSONSerialization.data(withJSONObject: response)
         let payload = try JSONDecoder().decode(CodexRateLimitResponse.self, from: data)
 
-        return RemoteRateLimitData(
-            planName: payload.result.rateLimits.planType?.capitalized,
-            fiveHourUsedPercent: payload.result.rateLimits.primary?.usedPercent ?? 0,
-            weeklyUsedPercent: payload.result.rateLimits.secondary?.usedPercent ?? 0,
-            fiveHourResetAt: payload.result.rateLimits.primary?.resetsAtDate,
-            weeklyResetAt: payload.result.rateLimits.secondary?.resetsAtDate,
-            apiUnavailable: false,
-            apiError: nil
-        )
+        return CodexRateLimitMapper.map(payload.result.rateLimits)
     }
 
     private func runAppServerRateLimitRequest() throws -> [String: Any] {
         let codexBinary = try resolveCodexBinary()
-        let nodeBinary = try resolveNodeBinary()
         let escapedCodexPath = codexBinary.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let escapedNodePath = nodeBinary.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let pythonScript = """
 import json, os, pty, select, subprocess, sys, termios, time
 master, slave = pty.openpty()
 attrs = termios.tcgetattr(slave)
 attrs[3] = attrs[3] & ~termios.ECHO
 termios.tcsetattr(slave, termios.TCSANOW, attrs)
-process = subprocess.Popen(["\(escapedNodePath)", "\(escapedCodexPath)", "app-server", "--listen", "stdio://"], stdin=slave, stdout=slave, stderr=slave, text=False)
+process = subprocess.Popen(["\(escapedCodexPath)", "app-server", "--listen", "stdio://"], stdin=slave, stdout=slave, stderr=slave, text=False)
 os.close(slave)
 messages = [
   {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-bar","version":"0.1"},"capabilities":{"experimentalApi":True}}},
@@ -227,35 +219,25 @@ print(json.dumps(found))
         throw CodexUsageError.appServer("Couldn't find the Codex executable.")
     }
 
-    private func resolveNodeBinary() throws -> URL {
-        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [
-            homeDirectory.appendingPathComponent(".bun/bin/node"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/node"),
-            URL(fileURLWithPath: "/usr/local/bin/node"),
-            URL(fileURLWithPath: "/usr/bin/node"),
-        ]
-
-        if let match = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
-            return match
-        }
-
-        throw CodexUsageError.appServer("Couldn't find the Node executable.")
-    }
-
 }
 
-private struct RemoteRateLimitData: Codable {
+struct RemoteRateLimitData: Codable {
     let planName: String?
-    let fiveHourUsedPercent: Int
+    let fiveHourUsedPercent: Int?
     let weeklyUsedPercent: Int
     let fiveHourResetAt: Date?
     let weeklyResetAt: Date?
     let apiUnavailable: Bool
     let apiError: String?
 
+    var visibleWindowTitles: [String] {
+        fiveHourUsedPercent == nil
+            ? ["Weekly Limit"]
+            : ["5-Hour Session", "Weekly Limit"]
+    }
+
     func with(apiUnavailable: Bool, apiError: String?) -> RemoteRateLimitData {
-        RemoteRateLimitData(
+        return RemoteRateLimitData(
             planName: planName,
             fiveHourUsedPercent: fiveHourUsedPercent,
             weeklyUsedPercent: weeklyUsedPercent,
@@ -274,7 +256,7 @@ private struct RemoteRateLimitResult {
     let isStale: Bool
 }
 
-private struct CodexRateLimitResponse: Decodable {
+struct CodexRateLimitResponse: Decodable {
     let result: ResultPayload
 
     struct ResultPayload: Decodable {
@@ -293,12 +275,36 @@ private struct CodexRateLimitResponse: Decodable {
 
     struct RateLimitWindow: Decodable {
         let usedPercent: Int
+        let windowDurationMins: Int?
         let resetsAt: Int64?
 
         var resetsAtDate: Date? {
             guard let resetsAt else { return nil }
             return Date(timeIntervalSince1970: TimeInterval(resetsAt))
         }
+    }
+}
+
+enum CodexRateLimitMapper {
+    static func map(_ rateLimits: CodexRateLimitResponse.RateLimitSnapshot) -> RemoteRateLimitData {
+        let windows = [rateLimits.primary, rateLimits.secondary].compactMap { $0 }
+        let hasDurationMetadata = windows.contains { $0.windowDurationMins != nil }
+        let fiveHour = hasDurationMetadata
+            ? windows.first { $0.windowDurationMins == 300 }
+            : rateLimits.primary
+        let weekly = hasDurationMetadata
+            ? windows.first { $0.windowDurationMins == 10_080 }
+            : rateLimits.secondary
+
+        return RemoteRateLimitData(
+            planName: rateLimits.planType?.capitalized,
+            fiveHourUsedPercent: fiveHour?.usedPercent,
+            weeklyUsedPercent: weekly?.usedPercent ?? 0,
+            fiveHourResetAt: fiveHour?.resetsAtDate,
+            weeklyResetAt: weekly?.resetsAtDate,
+            apiUnavailable: false,
+            apiError: nil
+        )
     }
 }
 

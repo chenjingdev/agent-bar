@@ -14,11 +14,13 @@ struct ProviderPopoverView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         header
-                        WindowCard(
-                            title: "5-Hour Session",
-                            window: snapshot.fiveHour,
-                            provider: snapshot.provider
-                        )
+                        if let fiveHour = snapshot.fiveHour {
+                            WindowCard(
+                                title: "5-Hour Session",
+                                window: fiveHour,
+                                provider: snapshot.provider
+                            )
+                        }
                         WindowCard(
                             title: "Weekly Limit",
                             window: snapshot.weekly,

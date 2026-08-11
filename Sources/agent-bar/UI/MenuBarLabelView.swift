@@ -9,7 +9,7 @@ struct MenuBarLabelView: View {
             StackedUsageBars(bars: bars)
                 .frame(width: 28, height: 13)
 
-            Text(TokenFormatters.percentageString(for: snapshot.fiveHour.utilization))
+            Text(TokenFormatters.percentageString(for: snapshot.primaryWindow.utilization))
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundStyle(.white.opacity(0.96))
         }
@@ -19,16 +19,21 @@ struct MenuBarLabelView: View {
     }
 
     private var bars: [StackedUsageBars.Bar] {
-        var bars: [StackedUsageBars.Bar] = [
-            StackedUsageBars.Bar(
-                utilization: snapshot.fiveHour.utilization,
-                color: AppTheme.tint(for: snapshot.provider)
-            ),
+        var bars: [StackedUsageBars.Bar] = []
+        if let fiveHour = snapshot.fiveHour {
+            bars.append(
+                StackedUsageBars.Bar(
+                    utilization: fiveHour.utilization,
+                    color: AppTheme.tint(for: snapshot.provider)
+                )
+            )
+        }
+        bars.append(
             StackedUsageBars.Bar(
                 utilization: snapshot.weekly.utilization,
                 color: AppTheme.accent(for: snapshot.provider)
-            ),
-        ]
+            )
+        )
         if let modelWeekly = snapshot.displayedModelWeeklies.first {
             bars.append(StackedUsageBars.Bar(utilization: modelWeekly.window.utilization, color: AppTheme.accentGlow))
         }

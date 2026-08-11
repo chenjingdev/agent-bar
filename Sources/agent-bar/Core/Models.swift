@@ -68,7 +68,7 @@ struct ModelWeeklySummary: Equatable {
 struct ProviderSnapshot: Equatable {
     let provider: ProviderKind
     let updatedAt: Date
-    let fiveHour: WindowSummary
+    let fiveHour: WindowSummary?
     let weekly: WindowSummary
     let modelWeeklies: [ModelWeeklySummary]
     let planName: String?
@@ -92,6 +92,10 @@ struct ProviderSnapshot: Equatable {
         let fableWeekly = orderedWeeklies.remove(at: fableIndex)
         orderedWeeklies.insert(fableWeekly, at: orderedWeeklies.startIndex)
         return orderedWeeklies
+    }
+
+    var primaryWindow: WindowSummary {
+        fiveHour ?? weekly
     }
 
     static func placeholder(for provider: ProviderKind) -> ProviderSnapshot {

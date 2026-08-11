@@ -76,7 +76,7 @@ final class StatusBarController {
         statusItem.length = max(rendered.size.width, 28)
         button.image = rendered.image
         button.imagePosition = .imageOnly
-        button.toolTip = "\(snapshot.provider.displayName) \(TokenFormatters.percentageString(for: snapshot.fiveHour.utilization))"
+        button.toolTip = "\(snapshot.provider.displayName) \(TokenFormatters.percentageString(for: snapshot.primaryWindow.utilization))"
     }
 
     @objc
