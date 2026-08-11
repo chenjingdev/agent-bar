@@ -35,6 +35,21 @@ struct CodexWindowVisibilityTests {
     }
 
     @Test
+    func secondaryOnlyWeeklyPayloadHidesFiveHourLimit() throws {
+        let rateLimits = try decodeRateLimits(
+            primary: nil,
+            secondary: window(usedPercent: 30, durationMinutes: 10_080, resetsAt: 1_800_100_000)
+        )
+
+        let mapped = CodexRateLimitMapper.map(rateLimits)
+
+        #expect(mapped.fiveHourResetAt == nil)
+        #expect(mapped.weeklyUsedPercent == 30)
+        #expect(mapped.weeklyResetAt == Date(timeIntervalSince1970: 1_800_100_000))
+        #expect(mapped.visibleWindowTitles == ["Weekly Limit"])
+    }
+
+    @Test
     func durationlessPayloadKeepsLegacyPrimarySecondaryOrder() throws {
         let rateLimits = try decodeRateLimits(
             primary: window(usedPercent: 15, durationMinutes: nil, resetsAt: 1_800_000_000),
