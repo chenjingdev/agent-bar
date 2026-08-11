@@ -6,13 +6,8 @@ struct MenuBarLabelView: View {
     var body: some View {
         HStack(spacing: 4) {
             ProviderBadge(provider: snapshot.provider, compact: true)
-            DualUsageBars(
-                primary: snapshot.fiveHour.utilization,
-                secondary: snapshot.weekly.utilization,
-                primaryColor: AppTheme.tint(for: snapshot.provider),
-                secondaryColor: AppTheme.accent(for: snapshot.provider)
-            )
-            .frame(width: 24, height: 8)
+            StackedUsageBars(bars: bars)
+                .frame(width: 28, height: 13)
 
             Text(TokenFormatters.percentageString(for: snapshot.fiveHour.utilization))
                 .font(.system(size: 11, weight: .bold, design: .rounded))
@@ -21,6 +16,23 @@ struct MenuBarLabelView: View {
         .padding(.horizontal, 5)
         .padding(.vertical, 3)
         .background(MenuBarGlassBackground(provider: snapshot.provider))
+    }
+
+    private var bars: [StackedUsageBars.Bar] {
+        var bars: [StackedUsageBars.Bar] = [
+            StackedUsageBars.Bar(
+                utilization: snapshot.fiveHour.utilization,
+                color: AppTheme.tint(for: snapshot.provider)
+            ),
+            StackedUsageBars.Bar(
+                utilization: snapshot.weekly.utilization,
+                color: AppTheme.accent(for: snapshot.provider)
+            ),
+        ]
+        if let modelWeekly = snapshot.modelWeeklies.first {
+            bars.append(StackedUsageBars.Bar(utilization: modelWeekly.window.utilization, color: AppTheme.accentGlow))
+        }
+        return bars
     }
 }
 
@@ -40,26 +52,27 @@ struct ProviderBadge: View {
     }
 }
 
-struct DualUsageBars: View {
-    let primary: Double?
-    let secondary: Double?
-    let primaryColor: Color
-    let secondaryColor: Color
+struct StackedUsageBars: View {
+    struct Bar {
+        let utilization: Double?
+        let color: Color
+    }
+
+    let bars: [Bar]
+
+    private var barHeight: CGFloat { bars.count > 2 ? 3 : 5 }
+    private var barSpacing: CGFloat { bars.count > 2 ? 2 : 3 }
 
     var body: some View {
-        VStack(spacing: 2) {
-            UsageBarView(
-                utilization: primary,
-                fill: primaryColor,
-                height: 3,
-                minimumVisibleWidth: 1.2
-            )
-            UsageBarView(
-                utilization: secondary,
-                fill: secondaryColor,
-                height: 3,
-                minimumVisibleWidth: 1.2
-            )
+        VStack(spacing: barSpacing) {
+            ForEach(Array(bars.enumerated()), id: \.offset) { _, bar in
+                UsageBarView(
+                    utilization: bar.utilization,
+                    fill: bar.color,
+                    height: barHeight,
+                    minimumVisibleWidth: 1.2
+                )
+            }
         }
     }
 }

@@ -25,7 +25,7 @@ struct CodexUsageProvider: UsageProviding {
                         resetAt: remoteResult.data.weeklyResetAt,
                         displayStyle: .percentage
                     ),
-                    sonnetWeekly: nil,
+                    modelWeeklies: [],
                     planName: remoteResult.data.planName,
                     sourceDescription: "Codex app-server account/rateLimits/read",
                     note: remoteResult.note,
@@ -38,7 +38,7 @@ struct CodexUsageProvider: UsageProviding {
                     updatedAt: .now,
                     fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                     weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
-                    sonnetWeekly: nil,
+                    modelWeeklies: [],
                     planName: nil,
                     sourceDescription: "Codex app-server account/rateLimits/read",
                     note: "Couldn't read Codex account rate limits: \(error.localizedDescription)",

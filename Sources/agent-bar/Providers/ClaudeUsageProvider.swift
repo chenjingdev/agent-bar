@@ -14,8 +14,11 @@ struct ClaudeUsageProvider: UsageProviding {
         await Task.detached(priority: .utility) {
             do {
                 let remoteResult = try await resolveRemoteUsage()
-                let sonnetWeekly: WindowSummary? = remoteResult.data.sonnetWeeklyUsedPercent.map {
-                    WindowSummary(tokens: $0, limitTokens: 100, resetAt: remoteResult.data.sonnetWeeklyResetAt, displayStyle: .percentage)
+                let modelWeeklies: [ModelWeeklySummary] = (remoteResult.data.modelWeeklies ?? []).map { cached in
+                    ModelWeeklySummary(
+                        label: cached.label,
+                        window: WindowSummary(tokens: cached.usedPercent, limitTokens: 100, resetAt: cached.resetAt, displayStyle: .percentage)
+                    )
                 }
                 return ProviderSnapshot(
                     provider: .claude,
@@ -32,7 +35,7 @@ struct ClaudeUsageProvider: UsageProviding {
                         resetAt: remoteResult.data.weeklyResetAt,
                         displayStyle: .percentage
                     ),
-                    sonnetWeekly: sonnetWeekly,
+                    modelWeeklies: modelWeeklies,
                     planName: remoteResult.data.planName,
                     sourceDescription: remoteResult.sourceDescription,
                     note: remoteResult.note,
@@ -46,7 +49,7 @@ struct ClaudeUsageProvider: UsageProviding {
                     updatedAt: .now,
                     fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                     weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
-                    sonnetWeekly: nil,
+                    modelWeeklies: [],
                     planName: nil,
                     sourceDescription: "Anthropic OAuth usage API + cache",
                     note: requiresLogin
@@ -68,14 +71,14 @@ struct ClaudeUsageProvider: UsageProviding {
         let resolvedPlanName = credentials.flatMap { self.planName(from: $0.subscriptionType) }
 
         if let statusLineUsage = try? readStatusLineUsage(now: now) {
+            let carriedModelWeeklies = previousCache?.lastGoodData?.modelWeeklies ?? previousCache?.data.modelWeeklies
             let statusLineData = RemoteUsageData(
                 planName: resolvedPlanName,
                 fiveHourUsedPercent: statusLineUsage.fiveHourUsedPercent,
                 weeklyUsedPercent: statusLineUsage.weeklyUsedPercent,
                 fiveHourResetAt: statusLineUsage.fiveHourResetAt,
                 weeklyResetAt: statusLineUsage.weeklyResetAt,
-                sonnetWeeklyUsedPercent: nil,
-                sonnetWeeklyResetAt: nil,
+                modelWeeklies: carriedModelWeeklies,
                 apiUnavailable: false,
                 apiError: nil,
                 usageSource: .statusLine,
@@ -123,8 +126,7 @@ struct ClaudeUsageProvider: UsageProviding {
                 weeklyUsedPercent: Self.parseUtilization(selectedWeeklyWindow?.window.utilization),
                 fiveHourResetAt: payload.fiveHour?.parsedResetAt,
                 weeklyResetAt: selectedWeeklyWindow?.window.parsedResetAt,
-                sonnetWeeklyUsedPercent: payload.sevenDaySonnet.map { Self.parseUtilization($0.utilization) },
-                sonnetWeeklyResetAt: payload.sevenDaySonnet?.parsedResetAt,
+                modelWeeklies: Self.modelWeeklies(from: payload),
                 apiUnavailable: false,
                 apiError: nil,
                 usageSource: .oauthApi,
@@ -154,8 +156,7 @@ struct ClaudeUsageProvider: UsageProviding {
             weeklyUsedPercent: 0,
             fiveHourResetAt: nil,
             weeklyResetAt: nil,
-            sonnetWeeklyUsedPercent: nil,
-            sonnetWeeklyResetAt: nil,
+            modelWeeklies: nil,
             apiUnavailable: true,
             apiError: apiResult.error,
             usageSource: .oauthApi,
@@ -483,6 +484,13 @@ struct ClaudeUsageProvider: UsageProviding {
             return SelectedUsageWindow(window: window, label: nil)
         }
 
+        if let limit = payload.limits?.first(where: { $0.kind == "weekly_all" }) {
+            return SelectedUsageWindow(
+                window: UsageWindowPayload(utilization: limit.percent, resetsAt: limit.resetsAt),
+                label: nil
+            )
+        }
+
         if let window = payload.sevenDayOauthApps {
             return SelectedUsageWindow(window: window, label: "OAuth Apps 7-day")
         }
@@ -496,6 +504,39 @@ struct ClaudeUsageProvider: UsageProviding {
         }
 
         return nil
+    }
+
+    private static func modelWeeklies(from payload: UsageApiResponse) -> [CachedModelWeekly] {
+        if let scoped = payload.limits?.filter({ $0.kind == "weekly_scoped" }), scoped.isEmpty == false {
+            return scoped.map { limit in
+                CachedModelWeekly(
+                    label: limit.scope?.model?.displayName ?? "Model",
+                    usedPercent: parseUtilization(limit.percent),
+                    resetAt: limit.parsedResetAt
+                )
+            }
+        }
+
+        var fallback: [CachedModelWeekly] = []
+        if let sonnet = payload.sevenDaySonnet {
+            fallback.append(
+                CachedModelWeekly(
+                    label: "Sonnet",
+                    usedPercent: parseUtilization(sonnet.utilization),
+                    resetAt: sonnet.parsedResetAt
+                )
+            )
+        }
+        if let opus = payload.sevenDayOpus {
+            fallback.append(
+                CachedModelWeekly(
+                    label: "Opus",
+                    usedPercent: parseUtilization(opus.utilization),
+                    resetAt: opus.parsedResetAt
+                )
+            )
+        }
+        return fallback
     }
 
     private static func parseRetryAfterSeconds(_ raw: String?) -> Int? {
@@ -558,8 +599,7 @@ private struct RemoteUsageData: Codable {
     let weeklyUsedPercent: Int
     let fiveHourResetAt: Date?
     let weeklyResetAt: Date?
-    let sonnetWeeklyUsedPercent: Int?
-    let sonnetWeeklyResetAt: Date?
+    let modelWeeklies: [CachedModelWeekly]?
     let apiUnavailable: Bool
     let apiError: String?
     let usageSource: ClaudeUsageSource?
@@ -572,14 +612,19 @@ private struct RemoteUsageData: Codable {
             weeklyUsedPercent: weeklyUsedPercent,
             fiveHourResetAt: fiveHourResetAt,
             weeklyResetAt: weeklyResetAt,
-            sonnetWeeklyUsedPercent: sonnetWeeklyUsedPercent,
-            sonnetWeeklyResetAt: sonnetWeeklyResetAt,
+            modelWeeklies: modelWeeklies,
             apiUnavailable: apiUnavailable,
             apiError: apiError,
             usageSource: usageSource,
             weeklyWindowLabel: weeklyWindowLabel
         )
     }
+}
+
+private struct CachedModelWeekly: Codable, Equatable {
+    let label: String
+    let usedPercent: Int
+    let resetAt: Date?
 }
 
 private struct RemoteUsageResult {
@@ -617,6 +662,7 @@ private struct UsageApiResponse: Decodable {
     let sevenDayOauthApps: UsageWindowPayload?
     let sevenDayOpus: UsageWindowPayload?
     let sevenDaySonnet: UsageWindowPayload?
+    let limits: [UsageLimitPayload]?
 
     enum CodingKeys: String, CodingKey {
         case fiveHour = "five_hour"
@@ -624,6 +670,47 @@ private struct UsageApiResponse: Decodable {
         case sevenDayOauthApps = "seven_day_oauth_apps"
         case sevenDayOpus = "seven_day_opus"
         case sevenDaySonnet = "seven_day_sonnet"
+        case limits
+    }
+}
+
+private struct UsageLimitPayload: Decodable {
+    let kind: String?
+    let percent: Double?
+    let resetsAt: String?
+    let scope: UsageLimitScope?
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case percent
+        case resetsAt = "resets_at"
+        case scope
+    }
+
+    var parsedResetAt: Date? {
+        guard let resetsAt else { return nil }
+
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoFormatter.date(from: resetsAt) {
+            return date
+        }
+
+        let fallback = ISO8601DateFormatter()
+        fallback.formatOptions = [.withInternetDateTime]
+        return fallback.date(from: resetsAt)
+    }
+}
+
+private struct UsageLimitScope: Decodable {
+    let model: UsageLimitScopeModel?
+}
+
+private struct UsageLimitScopeModel: Decodable {
+    let displayName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case displayName = "display_name"
     }
 }
 
@@ -746,8 +833,7 @@ private struct LegacyClaudeUsageCacheRecord: Decodable {
             weeklyUsedPercent: weeklyUsedPercent,
             fiveHourResetAt: fiveHourResetAt,
             weeklyResetAt: weeklyResetAt,
-            sonnetWeeklyUsedPercent: nil,
-            sonnetWeeklyResetAt: nil,
+            modelWeeklies: nil,
             apiUnavailable: false,
             apiError: nil,
             usageSource: nil,

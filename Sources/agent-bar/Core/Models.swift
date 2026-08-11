@@ -51,12 +51,17 @@ struct WindowSummary: Equatable {
     }
 }
 
+struct ModelWeeklySummary: Equatable {
+    let label: String
+    let window: WindowSummary
+}
+
 struct ProviderSnapshot: Equatable {
     let provider: ProviderKind
     let updatedAt: Date
     let fiveHour: WindowSummary
     let weekly: WindowSummary
-    let sonnetWeekly: WindowSummary?
+    let modelWeeklies: [ModelWeeklySummary]
     let planName: String?
     let sourceDescription: String
     let note: String?
@@ -69,7 +74,7 @@ struct ProviderSnapshot: Equatable {
             updatedAt: .now,
             fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
             weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
-            sonnetWeekly: nil,
+            modelWeeklies: [],
             planName: nil,
             sourceDescription: provider.sourceDescription,
             note: "Account usage has not loaded yet.",

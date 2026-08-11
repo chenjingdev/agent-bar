@@ -24,10 +24,10 @@ struct ProviderPopoverView: View {
                             window: snapshot.weekly,
                             provider: snapshot.provider
                         )
-                        if let sonnetWeekly = snapshot.sonnetWeekly {
+                        ForEach(snapshot.modelWeeklies, id: \.label) { modelWeekly in
                             WindowCard(
-                                title: "Sonnet Weekly",
-                                window: sonnetWeekly,
+                                title: "\(modelWeekly.label) Weekly",
+                                window: modelWeekly.window,
                                 provider: snapshot.provider
                             )
                         }
