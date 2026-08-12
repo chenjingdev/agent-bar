@@ -4,6 +4,7 @@ import SwiftUI
 struct ProviderPopoverView: View {
     let snapshot: ProviderSnapshot
 
+    @Environment(\.openSettings) private var openSettings
     @EnvironmentObject private var store: UsageStore
 
     var body: some View {
@@ -21,11 +22,13 @@ struct ProviderPopoverView: View {
                                 provider: snapshot.provider
                             )
                         }
-                        WindowCard(
-                            title: "Weekly Limit",
-                            window: snapshot.weekly,
-                            provider: snapshot.provider
-                        )
+                        if let weekly = snapshot.weekly {
+                            WindowCard(
+                                title: "Weekly Limit",
+                                window: weekly,
+                                provider: snapshot.provider
+                            )
+                        }
                         ForEach(Array(snapshot.displayedModelWeeklies.enumerated()), id: \.offset) { _, modelWeekly in
                             WindowCard(
                                 title: "\(modelWeekly.label) Weekly",
@@ -84,6 +87,7 @@ struct ProviderPopoverView: View {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 14, weight: .semibold))
             }
+            .accessibilityLabel("Refresh")
             .buttonStyle(.plain)
             .foregroundStyle(.white.opacity(0.9))
         }
@@ -111,11 +115,18 @@ struct ProviderPopoverView: View {
 
             Spacer()
 
-            SettingsLink {
-                Text("Settings")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+            Button("Settings") {
+                SettingsWindowPresenter(
+                    activateApplication: {
+                        NSApplication.shared.activate(ignoringOtherApps: true)
+                    },
+                    openSettings: {
+                        openSettings()
+                    }
+                ).present()
             }
             .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .bold, design: .rounded))
             .foregroundStyle(.white)
 
             Button("Quit") {
@@ -127,6 +138,17 @@ struct ProviderPopoverView: View {
         }
     }
 
+}
+
+@MainActor
+struct SettingsWindowPresenter {
+    let activateApplication: () -> Void
+    let openSettings: () -> Void
+
+    func present() {
+        activateApplication()
+        openSettings()
+    }
 }
 
 private struct WindowCard: View {

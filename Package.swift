@@ -12,7 +12,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/swiftlang/swift-testing.git",
-            revision: "swift-6.2.4-RELEASE"
+            revision: "5ee435b15ad40ec1f644b5eb9d247f263ccd2170"
         ),
     ],
     targets: [

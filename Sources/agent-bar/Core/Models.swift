@@ -69,7 +69,7 @@ struct ProviderSnapshot: Equatable {
     let provider: ProviderKind
     let updatedAt: Date
     let fiveHour: WindowSummary?
-    let weekly: WindowSummary
+    let weekly: WindowSummary?
     let modelWeeklies: [ModelWeeklySummary]
     let planName: String?
     let sourceDescription: String
@@ -94,7 +94,7 @@ struct ProviderSnapshot: Equatable {
         return orderedWeeklies
     }
 
-    var primaryWindow: WindowSummary {
+    var primaryWindow: WindowSummary? {
         fiveHour ?? weekly
     }
 

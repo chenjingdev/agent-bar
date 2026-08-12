@@ -31,7 +31,7 @@ struct ProviderSnapshotWindowTests {
         )
 
         #expect(snapshot.fiveHour != nil)
-        #expect(snapshot.primaryWindow.tokens == 20)
+        #expect(snapshot.primaryWindow?.tokens == 20)
     }
 
     @Test @MainActor
@@ -53,10 +53,73 @@ struct ProviderSnapshotWindowTests {
             isStale: false,
             requiresLogin: false
         )
-        let hostingView = NSHostingView(rootView: MenuBarLabelView(snapshot: snapshot))
+
+        #expect(snapshot.fiveHour == nil)
+        #expect(snapshot.primaryWindow?.tokens == 11)
+        let hostingView = NSHostingView(
+            rootView: MenuBarLabelView(
+                snapshot: snapshot,
+                displaySettings: ProviderDisplaySettings(
+                    isEnabled: true,
+                    showsBadge: true,
+                    showsUsageBars: true,
+                    showsPercentage: true
+                )
+            )
+        )
 
         #expect(hostingView.fittingSize.width > 28)
         #expect(hostingView.fittingSize.height > 0)
     }
 
+    @Test @MainActor
+    func weeklyOnlyStatusItemHasDescriptiveAccessibility() async {
+        let snapshot = ProviderSnapshot(
+            provider: .codex,
+            updatedAt: .now,
+            fiveHour: nil,
+            weekly: WindowSummary(
+                tokens: 11,
+                limitTokens: 100,
+                resetAt: nil,
+                displayStyle: .percentage
+            ),
+            modelWeeklies: [],
+            planName: "Pro",
+            sourceDescription: ProviderKind.codex.sourceDescription,
+            note: nil,
+            isStale: false,
+            requiresLogin: false
+        )
+        let identifier = "ProviderSnapshotWindowTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: identifier)!
+        defaults.removePersistentDomain(forName: identifier)
+        let settings = AppSettings(availableProviders: [.codex], defaults: defaults)
+        let store = UsageStore(
+            settings: settings,
+            availableProviders: [.codex],
+            claudeProvider: SnapshotUsageProvider(snapshot: .placeholder(for: .claude)),
+            codexProvider: SnapshotUsageProvider(snapshot: snapshot),
+            refreshOnInit: false
+        )
+
+        await store.refresh()
+        let coordinator = StatusBarCoordinator(
+            store: store,
+            settings: settings,
+            providers: [.codex]
+        )
+
+        #expect(coordinator.statusItemAccessibilityLabel(for: .codex) == "Codex weekly usage")
+        #expect(coordinator.statusItemAccessibilityValue(for: .codex) == "11%")
+    }
+
+}
+
+private struct SnapshotUsageProvider: UsageProviding {
+    let snapshot: ProviderSnapshot
+
+    func load() async -> ProviderSnapshot {
+        snapshot
+    }
 }

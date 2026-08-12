@@ -2,23 +2,32 @@ import SwiftUI
 
 struct MenuBarLabelView: View {
     let snapshot: ProviderSnapshot
+    let displaySettings: ProviderDisplaySettings
 
     var body: some View {
         HStack(spacing: 4) {
-            ProviderBadge(provider: snapshot.provider, compact: true)
-            StackedUsageBars(bars: bars)
-                .frame(width: 28, height: 13)
+            if displaySettings.showsBadge {
+                ProviderBadge(provider: snapshot.provider, compact: true)
+            }
 
-            Text(TokenFormatters.percentageString(for: snapshot.primaryWindow.utilization))
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.96))
+            if displaySettings.showsUsageBars {
+                StackedUsageBars(bars: bars)
+                    .frame(width: 28, height: 13)
+            }
+
+            if displaySettings.showsPercentage {
+                Text(TokenFormatters.percentageString(for: snapshot.primaryWindow?.utilization))
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.96))
+            }
         }
+        .frame(height: 14)
         .padding(.horizontal, 5)
         .padding(.vertical, 3)
         .background(MenuBarGlassBackground(provider: snapshot.provider))
     }
 
-    private var bars: [StackedUsageBars.Bar] {
+    var bars: [StackedUsageBars.Bar] {
         var bars: [StackedUsageBars.Bar] = []
         if let fiveHour = snapshot.fiveHour {
             bars.append(
@@ -28,14 +37,24 @@ struct MenuBarLabelView: View {
                 )
             )
         }
-        bars.append(
-            StackedUsageBars.Bar(
-                utilization: snapshot.weekly.utilization,
-                color: AppTheme.accent(for: snapshot.provider)
+        if let weekly = snapshot.weekly {
+            bars.append(
+                StackedUsageBars.Bar(
+                    utilization: weekly.utilization,
+                    color: AppTheme.accent(for: snapshot.provider)
+                )
             )
-        )
+        }
         if let modelWeekly = snapshot.displayedModelWeeklies.first {
             bars.append(StackedUsageBars.Bar(utilization: modelWeekly.window.utilization, color: AppTheme.accentGlow))
+        }
+        if bars.isEmpty {
+            bars.append(
+                StackedUsageBars.Bar(
+                    utilization: nil,
+                    color: AppTheme.accent(for: snapshot.provider)
+                )
+            )
         }
         return bars
     }

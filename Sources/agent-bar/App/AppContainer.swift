@@ -9,10 +9,15 @@ final class AppContainer {
     let availableProviders: [ProviderKind]
 
     private init() {
-        let settings = AppSettings()
         let availableProviders = ProviderAvailability.availableProviders()
+        let settings = AppSettings(availableProviders: availableProviders)
         self.settings = settings
         self.availableProviders = availableProviders
-        self.store = UsageStore(settings: settings, availableProviders: availableProviders)
+        self.store = UsageStore(
+            settings: settings,
+            availableProviders: availableProviders,
+            claudeProvider: ClaudeUsageProvider(),
+            codexProvider: CodexUsageProvider()
+        )
     }
 }
