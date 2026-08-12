@@ -4,11 +4,30 @@ import SwiftUI
 
 @MainActor
 final class StatusBarCoordinator {
-    private let controllers: [StatusBarController]
+    private let controllers: [ProviderKind: StatusBarController]
 
-    init(store: UsageStore, providers: [ProviderKind]) {
-        self.controllers = providers.map { StatusBarController(provider: $0, store: store) }
+    init(store: UsageStore, settings: AppSettings, providers: [ProviderKind]) {
+        self.controllers = Dictionary(
+            uniqueKeysWithValues: providers.map { provider in
+                (
+                    provider,
+                    StatusBarController(
+                        provider: provider,
+                        store: store,
+                        settings: settings
+                    )
+                )
+            }
+        )
         _ = controllers
+    }
+
+    func isStatusItemVisible(for provider: ProviderKind) -> Bool {
+        controllers[provider]?.isStatusItemVisible ?? false
+    }
+
+    func statusItemLength(for provider: ProviderKind) -> CGFloat {
+        controllers[provider]?.statusItemLength ?? 0
     }
 }
 
@@ -16,14 +35,16 @@ final class StatusBarCoordinator {
 final class StatusBarController {
     private let provider: ProviderKind
     private let store: UsageStore
+    private let settings: AppSettings
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private let hostingController: NSHostingController<AnyView>
     private var cancellables = Set<AnyCancellable>()
 
-    init(provider: ProviderKind, store: UsageStore) {
+    init(provider: ProviderKind, store: UsageStore, settings: AppSettings) {
         self.provider = provider
         self.store = store
+        self.settings = settings
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
         self.hostingController = NSHostingController(
@@ -35,7 +56,10 @@ final class StatusBarController {
         configureStatusItem()
         configurePopover()
         subscribe()
-        apply(snapshot: store.snapshot(for: provider))
+        apply(
+            snapshot: store.snapshot(for: provider),
+            displaySettings: settings.getProviderDisplaySettings(provider)
+        )
     }
 
     private func configureStatusItem() {
@@ -54,29 +78,60 @@ final class StatusBarController {
 
     private func subscribe() {
         store.$claudeSnapshot
-            .receive(on: RunLoop.main)
             .sink { [weak self] snapshot in
                 guard let self, self.provider == .claude else { return }
-                self.apply(snapshot: snapshot)
+                self.apply(
+                    snapshot: snapshot,
+                    displaySettings: self.settings.getProviderDisplaySettings(self.provider)
+                )
             }
             .store(in: &cancellables)
 
         store.$codexSnapshot
-            .receive(on: RunLoop.main)
             .sink { [weak self] snapshot in
                 guard let self, self.provider == .codex else { return }
-                self.apply(snapshot: snapshot)
+                self.apply(
+                    snapshot: snapshot,
+                    displaySettings: self.settings.getProviderDisplaySettings(self.provider)
+                )
+            }
+            .store(in: &cancellables)
+
+        settings.$providerSettings
+            .sink { [weak self] providerSettings in
+                guard let self, let displaySettings = providerSettings[self.provider] else {
+                    return
+                }
+                self.apply(
+                    snapshot: self.store.snapshot(for: self.provider),
+                    displaySettings: displaySettings
+                )
             }
             .store(in: &cancellables)
     }
 
-    private func apply(snapshot: ProviderSnapshot) {
+    private func apply(
+        snapshot: ProviderSnapshot,
+        displaySettings: ProviderDisplaySettings
+    ) {
+        statusItem.isVisible = displaySettings.isEnabled
         guard let button = statusItem.button else { return }
-        let rendered = StatusItemRenderer.render(snapshot: snapshot)
+        let rendered = StatusItemRenderer.render(
+            snapshot: snapshot,
+            displaySettings: displaySettings
+        )
         statusItem.length = max(rendered.size.width, 28)
         button.image = rendered.image
         button.imagePosition = .imageOnly
         button.toolTip = "\(snapshot.provider.displayName) \(TokenFormatters.percentageString(for: snapshot.fiveHour.utilization))"
+    }
+
+    var isStatusItemVisible: Bool {
+        statusItem.isVisible
+    }
+
+    var statusItemLength: CGFloat {
+        statusItem.length
     }
 
     @objc
@@ -104,8 +159,14 @@ private struct ProviderPopoverContainerView: View {
 
 @MainActor
 private enum StatusItemRenderer {
-    static func render(snapshot: ProviderSnapshot) -> (image: NSImage, size: NSSize) {
-        let rootView = MenuBarLabelView(snapshot: snapshot)
+    static func render(
+        snapshot: ProviderSnapshot,
+        displaySettings: ProviderDisplaySettings
+    ) -> (image: NSImage, size: NSSize) {
+        let rootView = MenuBarLabelView(
+            snapshot: snapshot,
+            displaySettings: displaySettings
+        )
             .background(Color.clear)
         let hostingView = NSHostingView(rootView: rootView)
         let size = hostingView.fittingSize
