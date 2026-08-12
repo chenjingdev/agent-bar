@@ -4,6 +4,7 @@ import SwiftUI
 struct ProviderPopoverView: View {
     let snapshot: ProviderSnapshot
 
+    @Environment(\.openSettings) private var openSettings
     @EnvironmentObject private var store: UsageStore
 
     var body: some View {
@@ -82,6 +83,7 @@ struct ProviderPopoverView: View {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 14, weight: .semibold))
             }
+            .accessibilityLabel("Refresh")
             .buttonStyle(.plain)
             .foregroundStyle(.white.opacity(0.9))
         }
@@ -109,11 +111,18 @@ struct ProviderPopoverView: View {
 
             Spacer()
 
-            SettingsLink {
-                Text("Settings")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+            Button("Settings") {
+                SettingsWindowPresenter(
+                    activateApplication: {
+                        NSApplication.shared.activate(ignoringOtherApps: true)
+                    },
+                    openSettings: {
+                        openSettings()
+                    }
+                ).present()
             }
             .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .bold, design: .rounded))
             .foregroundStyle(.white)
 
             Button("Quit") {
@@ -125,6 +134,17 @@ struct ProviderPopoverView: View {
         }
     }
 
+}
+
+@MainActor
+struct SettingsWindowPresenter {
+    let activateApplication: () -> Void
+    let openSettings: () -> Void
+
+    func present() {
+        openSettings()
+        activateApplication()
+    }
 }
 
 private struct WindowCard: View {

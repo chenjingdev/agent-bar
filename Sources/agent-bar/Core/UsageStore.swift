@@ -10,19 +10,35 @@ final class UsageStore: ObservableObject {
 
     private let settings: AppSettings
     private let availableProviders: Set<ProviderKind>
-    private let claudeProvider = ClaudeUsageProvider()
-    private let codexProvider = CodexUsageProvider()
+    private let claudeProvider: any UsageProviding
+    private let codexProvider: any UsageProviding
 
+    private var enabledProviders: Set<ProviderKind>
+    private var pendingProviders = Set<ProviderKind>()
     private var refreshTask: Task<Void, Never>?
     private var refreshTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
 
-    init(settings: AppSettings, availableProviders: [ProviderKind]) {
+    init(
+        settings: AppSettings,
+        availableProviders: [ProviderKind],
+        claudeProvider: any UsageProviding,
+        codexProvider: any UsageProviding,
+        refreshOnInit: Bool = true
+    ) {
         self.settings = settings
         self.availableProviders = Set(availableProviders)
+        self.claudeProvider = claudeProvider
+        self.codexProvider = codexProvider
+        self.enabledProviders = Set(
+            availableProviders.filter { settings.getProviderDisplaySettings($0).isEnabled }
+        )
         bindSettings()
         configureTimer()
-        refreshNow()
+
+        if refreshOnInit {
+            refreshNow()
+        }
     }
 
     func snapshot(for provider: ProviderKind) -> ProviderSnapshot {
@@ -35,30 +51,61 @@ final class UsageStore: ObservableObject {
     }
 
     func refreshNow() {
+        Task { @MainActor [weak self] in
+            await self?.refresh()
+        }
+    }
+
+    func refresh() async {
+        await refresh(only: availableProviders)
+    }
+
+    private func refresh(only requestedProviders: Set<ProviderKind>) async {
+        requestRefresh(only: requestedProviders)
+        await refreshTask?.value
+    }
+
+    private func requestRefresh(only requestedProviders: Set<ProviderKind>) {
+        pendingProviders.formUnion(requestedProviders)
+
         guard refreshTask == nil else { return }
 
         isRefreshing = true
-        refreshTask = Task { [weak self] in
-            guard let self else { return }
+        refreshTask = Task { @MainActor [weak self] in
+            await self?.drainRefreshQueue()
+        }
+    }
 
-            var nextClaudeSnapshot = self.claudeSnapshot
-            var nextCodexSnapshot = self.codexSnapshot
+    private func drainRefreshQueue() async {
+        defer {
+            isRefreshing = false
+            refreshTask = nil
+        }
 
-            if availableProviders.contains(.claude) {
+        while pendingProviders.isEmpty == false {
+            let requestedProviders = pendingProviders
+            pendingProviders.removeAll()
+            let providersToRefresh = requestedProviders
+                .intersection(availableProviders)
+                .filter { settings.getProviderDisplaySettings($0).isEnabled }
+            let claudeProvider = self.claudeProvider
+            let codexProvider = self.codexProvider
+            var nextClaudeSnapshot = claudeSnapshot
+            var nextCodexSnapshot = codexSnapshot
+
+            if providersToRefresh.contains(.claude) {
                 nextClaudeSnapshot = await claudeProvider.load()
             }
 
-            if availableProviders.contains(.codex) {
+            if providersToRefresh.contains(.codex) {
                 nextCodexSnapshot = await codexProvider.load()
             }
 
             guard Task.isCancelled == false else { return }
 
-            self.claudeSnapshot = nextClaudeSnapshot
-            self.codexSnapshot = nextCodexSnapshot
-            self.lastRefresh = .now
-            self.isRefreshing = false
-            self.refreshTask = nil
+            claudeSnapshot = nextClaudeSnapshot
+            codexSnapshot = nextCodexSnapshot
+            lastRefresh = .now
         }
     }
 
@@ -70,12 +117,24 @@ final class UsageStore: ObservableObject {
             }
             .store(in: &cancellables)
 
-        settings.objectWillChange
-            .debounce(for: .milliseconds(250), scheduler: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.refreshNow()
+        settings.$providerSettings
+            .dropFirst()
+            .sink { [weak self] providerSettings in
+                self?.providerSettingsDidChange(providerSettings)
             }
             .store(in: &cancellables)
+    }
+
+    private func providerSettingsDidChange(_ providerSettings: [ProviderKind: ProviderDisplaySettings]) {
+        let nextEnabledProviders = Set(
+            availableProviders.filter { providerSettings[$0]?.isEnabled == true }
+        )
+        let newlyEnabledProviders = nextEnabledProviders.subtracting(enabledProviders)
+        enabledProviders = nextEnabledProviders
+
+        guard newlyEnabledProviders.isEmpty == false else { return }
+
+        requestRefresh(only: newlyEnabledProviders)
     }
 
     private func configureTimer() {
@@ -83,7 +142,7 @@ final class UsageStore: ObservableObject {
         let interval = max(settings.refreshIntervalSeconds, 60)
         refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.refreshNow()
+                await self?.refresh()
             }
         }
     }

@@ -1,5 +1,5 @@
 import Foundation
 
-protocol UsageProviding {
+protocol UsageProviding: Sendable {
     func load() async -> ProviderSnapshot
 }
