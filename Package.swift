@@ -1,27 +1,5 @@
 // swift-tools-version: 6.2
 import PackageDescription
-import Foundation
-
-let selectedDeveloperDirectory =
-    ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
-    ?? (try? FileManager.default.destinationOfSymbolicLink(
-        atPath: "/var/db/xcode_select_link"
-    ))
-let developerLibraries = selectedDeveloperDirectory.map {
-    "\($0)/Library/Developer/usr/lib"
-}
-let testingLinkerSettings: [LinkerSetting]
-if let developerLibraries {
-    testingLinkerSettings = [
-        .unsafeFlags([
-            "-L", developerLibraries,
-            "-Xlinker", "-rpath",
-            "-Xlinker", developerLibraries,
-        ]),
-    ]
-} else {
-    testingLinkerSettings = []
-}
 
 let package = Package(
     name: "agent-bar",
@@ -34,7 +12,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/swiftlang/swift-testing.git",
-            revision: "48d727cc1cf4eda667c858c501495f1018f69d21"
+            revision: "5ee435b15ad40ec1f644b5eb9d247f263ccd2170"
         ),
     ],
     targets: [
@@ -48,8 +26,7 @@ let package = Package(
                 "agent_bar",
                 .product(name: "Testing", package: "swift-testing"),
             ],
-            path: "Tests/agent-barTests",
-            linkerSettings: testingLinkerSettings
+            path: "Tests/agent-barTests"
         ),
     ]
 )

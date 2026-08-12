@@ -29,6 +29,14 @@ final class StatusBarCoordinator {
     func statusItemLength(for provider: ProviderKind) -> CGFloat {
         controllers[provider]?.statusItemLength ?? 0
     }
+
+    func statusItemAccessibilityLabel(for provider: ProviderKind) -> String? {
+        controllers[provider]?.statusItemAccessibilityLabel
+    }
+
+    func statusItemAccessibilityValue(for provider: ProviderKind) -> String? {
+        controllers[provider]?.statusItemAccessibilityValue
+    }
 }
 
 @MainActor
@@ -123,7 +131,18 @@ final class StatusBarController {
         statusItem.length = max(rendered.size.width, 28)
         button.image = rendered.image
         button.imagePosition = .imageOnly
-        button.toolTip = "\(snapshot.provider.displayName) \(TokenFormatters.percentageString(for: snapshot.fiveHour.utilization))"
+        let usageLabel: String
+        if snapshot.fiveHour != nil {
+            usageLabel = "\(snapshot.provider.displayName) 5-hour usage"
+        } else if snapshot.weekly != nil {
+            usageLabel = "\(snapshot.provider.displayName) weekly usage"
+        } else {
+            usageLabel = "\(snapshot.provider.displayName) usage"
+        }
+        let percentage = TokenFormatters.percentageString(for: snapshot.primaryWindow?.utilization)
+        button.toolTip = "\(usageLabel) \(percentage)"
+        button.setAccessibilityLabel(usageLabel)
+        button.setAccessibilityValue(percentage)
     }
 
     var isStatusItemVisible: Bool {
@@ -132,6 +151,14 @@ final class StatusBarController {
 
     var statusItemLength: CGFloat {
         statusItem.length
+    }
+
+    var statusItemAccessibilityLabel: String? {
+        statusItem.button?.accessibilityLabel()
+    }
+
+    var statusItemAccessibilityValue: String? {
+        statusItem.button?.accessibilityValue() as? String
     }
 
     @objc

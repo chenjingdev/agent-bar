@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 private enum CodexUsagePolicy {
@@ -13,18 +14,22 @@ struct CodexUsageProvider: UsageProviding {
                 return ProviderSnapshot(
                     provider: .codex,
                     updatedAt: remoteResult.updatedAt,
-                    fiveHour: WindowSummary(
-                        tokens: remoteResult.data.fiveHourUsedPercent,
-                        limitTokens: 100,
-                        resetAt: remoteResult.data.fiveHourResetAt,
-                        displayStyle: .percentage
-                    ),
-                    weekly: WindowSummary(
-                        tokens: remoteResult.data.weeklyUsedPercent,
-                        limitTokens: 100,
-                        resetAt: remoteResult.data.weeklyResetAt,
-                        displayStyle: .percentage
-                    ),
+                    fiveHour: remoteResult.data.fiveHourUsedPercent.map {
+                        WindowSummary(
+                            tokens: $0,
+                            limitTokens: 100,
+                            resetAt: remoteResult.data.fiveHourResetAt,
+                            displayStyle: .percentage
+                        )
+                    },
+                    weekly: remoteResult.data.weeklyUsedPercent.map {
+                        WindowSummary(
+                            tokens: $0,
+                            limitTokens: 100,
+                            resetAt: remoteResult.data.weeklyResetAt,
+                            displayStyle: .percentage
+                        )
+                    },
                     modelWeeklies: [],
                     planName: remoteResult.data.planName,
                     sourceDescription: "Codex app-server account/rateLimits/read",
@@ -36,8 +41,8 @@ struct CodexUsageProvider: UsageProviding {
                 return ProviderSnapshot(
                     provider: .codex,
                     updatedAt: .now,
-                    fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
-                    weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+                    fiveHour: nil,
+                    weekly: nil,
                     modelWeeklies: [],
                     planName: nil,
                     sourceDescription: "Codex app-server account/rateLimits/read",
@@ -81,8 +86,8 @@ struct CodexUsageProvider: UsageProviding {
             let goodState = cache.makeLastGoodState(from: previousCache)
             let failureData = RemoteRateLimitData(
                 planName: goodState?.data.planName,
-                fiveHourUsedPercent: 0,
-                weeklyUsedPercent: 0,
+                fiveHourUsedPercent: nil,
+                weeklyUsedPercent: nil,
                 fiveHourResetAt: nil,
                 weeklyResetAt: nil,
                 apiUnavailable: true,
@@ -130,86 +135,15 @@ struct CodexUsageProvider: UsageProviding {
         let data = try JSONSerialization.data(withJSONObject: response)
         let payload = try JSONDecoder().decode(CodexRateLimitResponse.self, from: data)
 
-        return RemoteRateLimitData(
-            planName: payload.result.rateLimits.planType?.capitalized,
-            fiveHourUsedPercent: payload.result.rateLimits.primary?.usedPercent ?? 0,
-            weeklyUsedPercent: payload.result.rateLimits.secondary?.usedPercent ?? 0,
-            fiveHourResetAt: payload.result.rateLimits.primary?.resetsAtDate,
-            weeklyResetAt: payload.result.rateLimits.secondary?.resetsAtDate,
-            apiUnavailable: false,
-            apiError: nil
-        )
+        return CodexRateLimitMapper.map(payload.result.rateLimits)
     }
 
     private func runAppServerRateLimitRequest() throws -> [String: Any] {
         let codexBinary = try resolveCodexBinary()
-        let nodeBinary = try resolveNodeBinary()
-        let escapedCodexPath = codexBinary.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let escapedNodePath = nodeBinary.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let pythonScript = """
-import json, os, pty, select, subprocess, sys, termios, time
-master, slave = pty.openpty()
-attrs = termios.tcgetattr(slave)
-attrs[3] = attrs[3] & ~termios.ECHO
-termios.tcsetattr(slave, termios.TCSANOW, attrs)
-process = subprocess.Popen(["\(escapedNodePath)", "\(escapedCodexPath)", "app-server", "--listen", "stdio://"], stdin=slave, stdout=slave, stderr=slave, text=False)
-os.close(slave)
-messages = [
-  {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-bar","version":"0.1"},"capabilities":{"experimentalApi":True}}},
-  {"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":None},
-]
-for message in messages:
-  os.write(master, (json.dumps(message) + "\\n").encode())
-
-buffer = b""
-deadline = time.time() + 8
-found = None
-while time.time() < deadline:
-  readable, _, _ = select.select([master], [], [], 0.25)
-  if not readable:
-    continue
-  chunk = os.read(master, 4096)
-  if not chunk:
-    break
-  buffer += chunk
-  for line in buffer.splitlines():
-    try:
-      obj = json.loads(line.decode(errors="ignore"))
-    except Exception:
-      continue
-    if obj.get("id") == 2 and "result" in obj:
-      found = obj
-      break
-  if found is not None:
-    break
-
-try:
-  process.terminate()
-except Exception:
-  pass
-
-if found is None:
-  sys.exit(2)
-
-print(json.dumps(found))
-"""
-
-        let result = try runProcess(
-            executableURL: URL(fileURLWithPath: "/usr/bin/python3"),
-            arguments: ["-c", pythonScript],
-            timeout: 10
+        return try CodexAppServerClient().request(
+            codexBinary: codexBinary,
+            runtimeDirectories: resolveRuntimeDirectories(for: codexBinary)
         )
-
-        guard let data = result.stdout.data(using: .utf8),
-              let response = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            let trimmed = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw CodexUsageError.appServer(trimmed.isEmpty ? "Couldn't find a Codex rate limit response." : trimmed)
-        }
-
-        if let error = response["error"] as? [String: Any] {
-            throw CodexUsageError.appServer((error["message"] as? String) ?? "Codex app-server error")
-        }
-        return response
     }
 
     private func resolveCodexBinary() throws -> URL {
@@ -227,35 +161,191 @@ print(json.dumps(found))
         throw CodexUsageError.appServer("Couldn't find the Codex executable.")
     }
 
-    private func resolveNodeBinary() throws -> URL {
+    private func resolveRuntimeDirectories(for codexBinary: URL) -> [URL] {
         let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
         let candidates = [
-            homeDirectory.appendingPathComponent(".bun/bin/node"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/node"),
-            URL(fileURLWithPath: "/usr/local/bin/node"),
-            URL(fileURLWithPath: "/usr/bin/node"),
+            codexBinary.deletingLastPathComponent(),
+            homeDirectory.appendingPathComponent(".bun/bin"),
+            URL(fileURLWithPath: "/opt/homebrew/bin"),
+            URL(fileURLWithPath: "/usr/local/bin"),
+            URL(fileURLWithPath: "/usr/bin"),
         ]
 
-        if let match = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
-            return match
+        var seen = Set<String>()
+        return candidates.filter { directory in
+            guard seen.insert(directory.standardizedFileURL.path).inserted else {
+                return false
+            }
+            return ["node", "bun"].contains { runtime in
+                FileManager.default.isExecutableFile(
+                    atPath: directory.appendingPathComponent(runtime).path
+                )
+            }
         }
-
-        throw CodexUsageError.appServer("Couldn't find the Node executable.")
     }
-
 }
 
-private struct RemoteRateLimitData: Codable {
+struct CodexAppServerClient {
+    func request(
+        codexBinary: URL,
+        runtimeDirectories: [URL],
+        environment: [String: String]? = nil,
+        timeout: TimeInterval = 10
+    ) throws -> [String: Any] {
+        let runtimePathPrefix = runtimeDirectories
+            .map(\.standardizedFileURL.path)
+            .joined(separator: ":")
+        let pythonScript = """
+import json, os, pty, select, signal, subprocess, sys, termios, time
+codex_path = sys.argv[1]
+runtime_path_prefix = sys.argv[2]
+child_environment = os.environ.copy()
+if runtime_path_prefix:
+  existing_path = child_environment.get("PATH", "")
+  child_environment["PATH"] = runtime_path_prefix + (os.pathsep + existing_path if existing_path else "")
+
+master = None
+slave = None
+process = None
+buffer = b""
+found = None
+cleaning_up = False
+
+def exit_on_signal(signum, frame):
+  if not cleaning_up:
+    raise SystemExit(128 + signum)
+
+signal.signal(signal.SIGTERM, exit_on_signal)
+signal.signal(signal.SIGINT, exit_on_signal)
+
+try:
+  master, slave = pty.openpty()
+  attrs = termios.tcgetattr(slave)
+  attrs[3] = attrs[3] & ~termios.ECHO
+  termios.tcsetattr(slave, termios.TCSANOW, attrs)
+  process = subprocess.Popen(
+    [codex_path, "app-server", "--listen", "stdio://"],
+    stdin=slave,
+    stdout=slave,
+    stderr=slave,
+    text=False,
+    env=child_environment,
+    start_new_session=True,
+  )
+  os.close(slave)
+  slave = None
+
+  messages = [
+    {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-bar","version":"0.1"},"capabilities":{"experimentalApi":True}}},
+    {"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":None},
+  ]
+  for message in messages:
+    os.write(master, (json.dumps(message) + "\\n").encode())
+
+  deadline = time.time() + 8
+  while time.time() < deadline:
+    readable, _, _ = select.select([master], [], [], 0.25)
+    if not readable:
+      continue
+    try:
+      chunk = os.read(master, 4096)
+    except OSError:
+      break
+    if not chunk:
+      break
+    buffer += chunk
+    for line in buffer.splitlines():
+      try:
+        obj = json.loads(line.decode(errors="ignore"))
+      except Exception:
+        continue
+      if obj.get("id") == 2 and ("result" in obj or "error" in obj):
+        found = obj
+        break
+    if found is not None:
+      break
+
+  if found is None:
+    diagnostic = buffer.decode(errors="ignore").strip()
+    raise RuntimeError(diagnostic or "Couldn't find a Codex rate limit response.")
+
+  print(json.dumps(found))
+except Exception as error:
+  print("Codex app-server failed: " + str(error), file=sys.stderr)
+  sys.exit(2)
+finally:
+  cleaning_up = True
+  if slave is not None:
+    try:
+      os.close(slave)
+    except Exception:
+      pass
+  if process is not None:
+    try:
+      os.killpg(process.pid, signal.SIGTERM)
+    except OSError:
+      pass
+    try:
+      process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+      try:
+        os.killpg(process.pid, signal.SIGKILL)
+      except OSError:
+        pass
+      process.wait()
+    try:
+      os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+      pass
+  if master is not None:
+    try:
+      os.close(master)
+    except Exception:
+      pass
+"""
+
+        let result = try runProcess(
+            executableURL: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: ["-c", pythonScript, codexBinary.path, runtimePathPrefix],
+            environment: environment,
+            timeout: timeout
+        )
+
+        guard let data = result.stdout.data(using: .utf8),
+              let response = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let trimmed = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw CodexUsageError.appServer(trimmed.isEmpty ? "Couldn't find a Codex rate limit response." : trimmed)
+        }
+
+        if let error = response["error"] as? [String: Any] {
+            throw CodexUsageError.appServer((error["message"] as? String) ?? "Codex app-server error")
+        }
+        return response
+    }
+}
+
+struct RemoteRateLimitData: Codable {
     let planName: String?
-    let fiveHourUsedPercent: Int
-    let weeklyUsedPercent: Int
+    let fiveHourUsedPercent: Int?
+    let weeklyUsedPercent: Int?
     let fiveHourResetAt: Date?
     let weeklyResetAt: Date?
     let apiUnavailable: Bool
     let apiError: String?
 
+    var visibleWindowTitles: [String] {
+        var titles: [String] = []
+        if fiveHourUsedPercent != nil {
+            titles.append("5-Hour Session")
+        }
+        if weeklyUsedPercent != nil {
+            titles.append("Weekly Limit")
+        }
+        return titles
+    }
+
     func with(apiUnavailable: Bool, apiError: String?) -> RemoteRateLimitData {
-        RemoteRateLimitData(
+        return RemoteRateLimitData(
             planName: planName,
             fiveHourUsedPercent: fiveHourUsedPercent,
             weeklyUsedPercent: weeklyUsedPercent,
@@ -274,7 +364,7 @@ private struct RemoteRateLimitResult {
     let isStale: Bool
 }
 
-private struct CodexRateLimitResponse: Decodable {
+struct CodexRateLimitResponse: Decodable {
     let result: ResultPayload
 
     struct ResultPayload: Decodable {
@@ -293,12 +383,36 @@ private struct CodexRateLimitResponse: Decodable {
 
     struct RateLimitWindow: Decodable {
         let usedPercent: Int
+        let windowDurationMins: Int?
         let resetsAt: Int64?
 
         var resetsAtDate: Date? {
             guard let resetsAt else { return nil }
             return Date(timeIntervalSince1970: TimeInterval(resetsAt))
         }
+    }
+}
+
+enum CodexRateLimitMapper {
+    static func map(_ rateLimits: CodexRateLimitResponse.RateLimitSnapshot) -> RemoteRateLimitData {
+        let fiveHour = [rateLimits.primary, rateLimits.secondary]
+            .compactMap { $0 }
+            .first { $0.windowDurationMins == 300 }
+            ?? rateLimits.primary.flatMap { $0.windowDurationMins == nil ? $0 : nil }
+        let weekly = [rateLimits.primary, rateLimits.secondary]
+            .compactMap { $0 }
+            .first { $0.windowDurationMins == 10_080 }
+            ?? rateLimits.secondary.flatMap { $0.windowDurationMins == nil ? $0 : nil }
+
+        return RemoteRateLimitData(
+            planName: rateLimits.planType?.capitalized,
+            fiveHourUsedPercent: fiveHour?.usedPercent,
+            weeklyUsedPercent: weekly?.usedPercent,
+            fiveHourResetAt: fiveHour?.resetsAtDate,
+            weeklyResetAt: weekly?.resetsAtDate,
+            apiUnavailable: false,
+            apiError: nil
+        )
     }
 }
 
@@ -413,25 +527,31 @@ private struct ProcessOutput {
 private func runProcess(
     executableURL: URL,
     arguments: [String],
+    environment: [String: String]? = nil,
     timeout: TimeInterval
 ) throws -> ProcessOutput {
     let process = Process()
     process.executableURL = executableURL
     process.arguments = arguments
+    process.environment = environment
 
     let outputPipe = Pipe()
     let errorPipe = Pipe()
     process.standardOutput = outputPipe
     process.standardError = errorPipe
 
-    try process.run()
-
     let group = DispatchGroup()
     group.enter()
     process.terminationHandler = { _ in group.leave() }
 
+    try process.run()
+
     if group.wait(timeout: .now() + timeout) == .timedOut {
         process.terminate()
+        if group.wait(timeout: .now() + 2) == .timedOut {
+            kill(process.processIdentifier, SIGKILL)
+            _ = group.wait(timeout: .now() + 1)
+        }
         throw CodexUsageError.appServer("External process did not finish within \(Int(timeout)) seconds.")
     }
 

@@ -81,6 +81,30 @@ struct MenuBarLabelCompositionTests {
         #expect(size.height > 0)
     }
 
+    @Test("Bars-only label keeps an unavailable track when no usage window exists")
+    func barsOnlyUnavailableComposition() {
+        let unavailable = ProviderSnapshot(
+            provider: .codex,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            fiveHour: nil,
+            weekly: nil,
+            modelWeeklies: [],
+            planName: nil,
+            sourceDescription: ProviderKind.codex.sourceDescription,
+            note: "Usage unavailable.",
+            isStale: true,
+            requiresLogin: false
+        )
+        let view = MenuBarLabelView(
+            snapshot: unavailable,
+            displaySettings: displaySettings(badge: false, bars: true, percentage: false)
+        )
+
+        #expect(view.bars.count == 1)
+        #expect(view.bars[0].utilization == nil)
+        #expect(NSHostingView(rootView: view).fittingSize.width == Self.expectedWidth(componentWidths: [Self.barsWidth]))
+    }
+
     @Test("Percentage only renders a text-width label and reports the percentage component")
     func percentageOnlyComposition() {
         let settings = displaySettings(badge: false, bars: false, percentage: true)
