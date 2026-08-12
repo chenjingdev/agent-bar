@@ -111,6 +111,146 @@ struct UsageStoreProviderVisibilityTests {
         idleCancellable.cancel()
     }
 
+    @Test("Disabling a provider during an in-flight refresh prevents its queued load")
+    func disablingProviderDuringRefreshPreventsQueuedLoad() async {
+        let settings = AppSettings(
+            availableProviders: [.claude, .codex],
+            defaults: createTestDefaults()
+        )
+        let claudeProvider = RecordingUsageProvider(provider: .claude, suspendsLoads: true)
+        let codexProvider = RecordingUsageProvider(provider: .codex)
+        let store = UsageStore(
+            settings: settings,
+            availableProviders: [.claude, .codex],
+            claudeProvider: claudeProvider,
+            codexProvider: codexProvider,
+            refreshOnInit: false
+        )
+        let claudeSuspended = Task { await claudeProvider.waitUntilSuspended() }
+        let refreshTask = Task { @MainActor in
+            await store.refresh()
+        }
+
+        await claudeSuspended.value
+        let disabled = settings.setProviderEnabled(.codex, enabled: false)
+        await claudeProvider.resumeLoad()
+        await refreshTask.value
+
+        #expect(disabled == true)
+        #expect(await claudeProvider.loadCount() == 1)
+        #expect(await codexProvider.loadCount() == 0)
+    }
+
+    @Test("Disabling a provider during its load preserves the previous snapshot")
+    func disablingProviderDuringItsLoadDiscardsResult() async {
+        let settings = AppSettings(
+            availableProviders: [.claude, .codex],
+            defaults: createTestDefaults()
+        )
+        let loadedSnapshot = ProviderSnapshot(
+            provider: .claude,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            fiveHour: WindowSummary(
+                tokens: 88,
+                limitTokens: 100,
+                resetAt: nil,
+                displayStyle: .percentage
+            ),
+            weekly: WindowSummary(
+                tokens: 55,
+                limitTokens: 100,
+                resetAt: nil,
+                displayStyle: .percentage
+            ),
+            modelWeeklies: [],
+            planName: "Test",
+            sourceDescription: "Test provider",
+            note: nil,
+            isStale: false,
+            requiresLogin: false
+        )
+        let claudeProvider = RecordingUsageProvider(
+            provider: .claude,
+            suspendsLoads: true,
+            snapshot: loadedSnapshot
+        )
+        let codexProvider = RecordingUsageProvider(provider: .codex)
+        let store = UsageStore(
+            settings: settings,
+            availableProviders: [.claude, .codex],
+            claudeProvider: claudeProvider,
+            codexProvider: codexProvider,
+            refreshOnInit: false
+        )
+        let originalSnapshot = store.snapshot(for: .claude)
+        let claudeSuspended = Task { await claudeProvider.waitUntilSuspended() }
+        let refreshTask = Task { @MainActor in
+            await store.refresh()
+        }
+
+        await claudeSuspended.value
+        let disabled = settings.setProviderEnabled(.claude, enabled: false)
+        await claudeProvider.resumeLoad()
+        await refreshTask.value
+
+        #expect(disabled == true)
+        #expect(await claudeProvider.loadCount() == 1)
+        #expect(store.snapshot(for: .claude) == originalSnapshot)
+    }
+
+    @Test("Disabling a loaded provider before batch commit preserves its previous snapshot")
+    func disablingLoadedProviderBeforeBatchCommitDiscardsResult() async {
+        let settings = AppSettings(
+            availableProviders: [.claude, .codex],
+            defaults: createTestDefaults()
+        )
+        let loadedSnapshot = ProviderSnapshot(
+            provider: .claude,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            fiveHour: WindowSummary(
+                tokens: 88,
+                limitTokens: 100,
+                resetAt: nil,
+                displayStyle: .percentage
+            ),
+            weekly: WindowSummary(
+                tokens: 55,
+                limitTokens: 100,
+                resetAt: nil,
+                displayStyle: .percentage
+            ),
+            modelWeeklies: [],
+            planName: "Test",
+            sourceDescription: "Test provider",
+            note: nil,
+            isStale: false,
+            requiresLogin: false
+        )
+        let claudeProvider = RecordingUsageProvider(provider: .claude, snapshot: loadedSnapshot)
+        let codexProvider = RecordingUsageProvider(provider: .codex, suspendsLoads: true)
+        let store = UsageStore(
+            settings: settings,
+            availableProviders: [.claude, .codex],
+            claudeProvider: claudeProvider,
+            codexProvider: codexProvider,
+            refreshOnInit: false
+        )
+        let originalSnapshot = store.snapshot(for: .claude)
+        let codexSuspended = Task { await codexProvider.waitUntilSuspended() }
+        let refreshTask = Task { @MainActor in
+            await store.refresh()
+        }
+
+        await codexSuspended.value
+        let disabled = settings.setProviderEnabled(.claude, enabled: false)
+        await codexProvider.resumeLoad()
+        await refreshTask.value
+
+        #expect(disabled == true)
+        #expect(await claudeProvider.loadCount() == 1)
+        #expect(store.snapshot(for: .claude) == originalSnapshot)
+    }
+
     @Test("Re-enabling a provider immediately loads only that provider once")
     func reenablingProviderImmediatelyLoadsOnlyThatProviderOnce() async {
         let settings = AppSettings(
@@ -158,8 +298,12 @@ private actor RecordingUsageProvider: UsageProviding {
     private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseContinuation: CheckedContinuation<Void, Never>?
 
-    init(provider: ProviderKind, suspendsLoads: Bool = false) {
-        self.snapshot = .placeholder(for: provider)
+    init(
+        provider: ProviderKind,
+        suspendsLoads: Bool = false,
+        snapshot: ProviderSnapshot? = nil
+    ) {
+        self.snapshot = snapshot ?? .placeholder(for: provider)
         self.suspendsLoads = suspendsLoads
     }
 

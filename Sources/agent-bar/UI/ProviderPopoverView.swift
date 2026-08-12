@@ -142,8 +142,8 @@ struct SettingsWindowPresenter {
     let openSettings: () -> Void
 
     func present() {
-        openSettings()
         activateApplication()
+        openSettings()
     }
 }
 

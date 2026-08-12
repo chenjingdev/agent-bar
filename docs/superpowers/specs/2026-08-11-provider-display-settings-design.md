@@ -34,6 +34,9 @@ Turning off `Show in Menu Bar` immediately hides that provider's status item and
 provider from timer-driven and manual refreshes. Turning it back on immediately refreshes that
 provider and resumes scheduled refreshes.
 
+If a provider load has already started when it is hidden, the underlying operation may finish,
+but its returned snapshot is discarded and the hidden provider receives no later refresh calls.
+
 The three visual components are independent. A provider that is enabled must retain at least
 one visible component. At least one locally available provider must remain enabled so the
 menu-bar-only application remains accessible.

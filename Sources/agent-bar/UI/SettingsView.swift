@@ -34,7 +34,14 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(20)
-        .frame(width: 430, height: settings.availableProviders.count > 1 ? 840 : 640)
+        .frame(
+            minWidth: 430,
+            idealWidth: 430,
+            maxWidth: 430,
+            minHeight: 360,
+            idealHeight: 600,
+            maxHeight: 640
+        )
     }
 
     private func providerSection(_ provider: ProviderKind) -> some View {

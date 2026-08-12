@@ -85,28 +85,43 @@ final class UsageStore: ObservableObject {
         while pendingProviders.isEmpty == false {
             let requestedProviders = pendingProviders
             pendingProviders.removeAll()
-            let providersToRefresh = requestedProviders
-                .intersection(availableProviders)
-                .filter { settings.getProviderDisplaySettings($0).isEnabled }
             let claudeProvider = self.claudeProvider
             let codexProvider = self.codexProvider
             var nextClaudeSnapshot = claudeSnapshot
             var nextCodexSnapshot = codexSnapshot
+            var loadedProviders = Set<ProviderKind>()
 
-            if providersToRefresh.contains(.claude) {
+            if shouldRefresh(.claude, requestedProviders: requestedProviders) {
                 nextClaudeSnapshot = await claudeProvider.load()
+                loadedProviders.insert(.claude)
             }
 
-            if providersToRefresh.contains(.codex) {
+            if shouldRefresh(.codex, requestedProviders: requestedProviders) {
                 nextCodexSnapshot = await codexProvider.load()
+                loadedProviders.insert(.codex)
             }
 
             guard Task.isCancelled == false else { return }
 
-            claudeSnapshot = nextClaudeSnapshot
-            codexSnapshot = nextCodexSnapshot
+            if loadedProviders.contains(.claude),
+               settings.getProviderDisplaySettings(.claude).isEnabled {
+                claudeSnapshot = nextClaudeSnapshot
+            }
+            if loadedProviders.contains(.codex),
+               settings.getProviderDisplaySettings(.codex).isEnabled {
+                codexSnapshot = nextCodexSnapshot
+            }
             lastRefresh = .now
         }
+    }
+
+    private func shouldRefresh(
+        _ provider: ProviderKind,
+        requestedProviders: Set<ProviderKind>
+    ) -> Bool {
+        requestedProviders.contains(provider)
+            && availableProviders.contains(provider)
+            && settings.getProviderDisplaySettings(provider).isEnabled
     }
 
     private func bindSettings() {

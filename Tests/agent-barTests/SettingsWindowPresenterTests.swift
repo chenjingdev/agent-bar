@@ -4,7 +4,7 @@ import Testing
 @MainActor
 struct SettingsWindowPresenterTests {
     @Test
-    func opensSettingsBeforeActivatingApplication() {
+    func activatesApplicationBeforeOpeningSettings() {
         var events: [String] = []
         let presenter = SettingsWindowPresenter(
             activateApplication: { events.append("activate") },
@@ -13,7 +13,7 @@ struct SettingsWindowPresenterTests {
 
         presenter.present()
 
-        #expect(events == ["open", "activate"])
+        #expect(events == ["activate", "open"])
     }
 
     @Test
