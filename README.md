@@ -2,7 +2,7 @@
 
 `agent-bar` is a small macOS menu bar app for monitoring Claude Code and Codex usage limits without switching to either client.
 
-Each detected provider gets its own menu bar item. The label shows the current 5-hour usage percentage beside compact stacked limit bars; click it to see used and remaining percentages, reset times, data freshness, and model-specific Claude limits.
+Detected providers share one compact menu bar group, with an independently clickable capsule for each provider. Each capsule shows the current 5-hour usage percentage beside compact stacked limit bars; click it to see used and remaining percentages, reset times, data freshness, and model-specific Claude limits.
 
 ## Screenshots
 
@@ -21,7 +21,7 @@ Each detected provider gets its own menu bar item. The label shows the current 5
 
 ## What It Shows
 
-- Separate menu bar items for Claude and Codex
+- Independently clickable Claude and Codex capsules in one compact menu bar group
 - Provider-reported 5-hour and weekly usage limits
 - Used percentage, remaining percentage, and reset time for each available window
 - Claude model-specific weekly limits returned by Anthropic, with Fable pinned first
@@ -30,7 +30,7 @@ Each detected provider gets its own menu bar item. The label shows the current 5
 - Login-required, unavailable, stale, and last-known-good states
 - No backend service, telemetry, browser-cookie access, or local session-log scanning
 
-The compact Claude item uses three stacked bars for the 5-hour, overall weekly, and Fable weekly limits. The Codex item uses two bars for its 5-hour and weekly limits.
+The compact Claude item uses three stacked bars for the 5-hour, overall weekly, and Fable weekly limits. The Codex item uses up to two bars for its 5-hour and weekly limits; when only one window is reported, that bar stays vertically centered. A dashed track means no usage window was reported; it is distinct from a reported `0%`, which keeps a solid empty track.
 
 ## Requirements
 

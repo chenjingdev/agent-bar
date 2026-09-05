@@ -11,7 +11,7 @@ struct MenuBarLabelCompositionTests {
     private static let horizontalPadding: CGFloat = 5
     private static let componentSpacing: CGFloat = 4
     private static let badgeWidth: CGFloat = 15
-    private static let barsWidth: CGFloat = 28
+    private static let barsWidth: CGFloat = 30
 
     private static func expectedWidth(componentWidths: [CGFloat]) -> CGFloat {
         let content = componentWidths.reduce(0, +)
@@ -81,7 +81,7 @@ struct MenuBarLabelCompositionTests {
         #expect(size.height > 0)
     }
 
-    @Test("Bars-only label keeps an unavailable track when no usage window exists")
+    @Test("Bars-only label centers one unavailable track when no usage window exists")
     func barsOnlyUnavailableComposition() {
         let unavailable = ProviderSnapshot(
             provider: .codex,
@@ -101,8 +101,79 @@ struct MenuBarLabelCompositionTests {
         )
 
         #expect(view.bars.count == 1)
-        #expect(view.bars[0].utilization == nil)
+        #expect(view.bars[0].value == .unavailable)
         #expect(NSHostingView(rootView: view).fittingSize.width == Self.expectedWidth(componentWidths: [Self.barsWidth]))
+    }
+
+    @Test("Weekly-only Codex centers its reported usage bar")
+    func weeklyOnlyCodexCentersReportedBar() {
+        let weeklyOnly = ProviderSnapshot(
+            provider: .codex,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            fiveHour: nil,
+            weekly: WindowSummary(tokens: 25, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+            modelWeeklies: [],
+            planName: "Pro",
+            sourceDescription: ProviderKind.codex.sourceDescription,
+            note: nil,
+            isStale: false,
+            requiresLogin: false
+        )
+        let view = MenuBarLabelView(
+            snapshot: weeklyOnly,
+            displaySettings: displaySettings(badge: true, bars: true, percentage: true)
+        )
+
+        #expect(view.bars.count == 1)
+        #expect(view.bars[0].value == .available(0.25))
+    }
+
+    @Test("A reported zero remains available and differs from a missing Codex window")
+    func actualZeroDiffersFromUnavailableWindow() {
+        let fiveHourOnly = ProviderSnapshot(
+            provider: .codex,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+            weekly: nil,
+            modelWeeklies: [],
+            planName: "Pro",
+            sourceDescription: ProviderKind.codex.sourceDescription,
+            note: nil,
+            isStale: false,
+            requiresLogin: false
+        )
+        let view = MenuBarLabelView(
+            snapshot: fiveHourOnly,
+            displaySettings: displaySettings(badge: true, bars: true, percentage: true)
+        )
+
+        #expect(view.bars.count == 1)
+        #expect(view.bars[0].value == .available(0))
+    }
+
+    @Test("Dual-window Codex keeps five-hour and weekly bars in order")
+    func dualWindowCodexKeepsBarOrder() {
+        let view = MenuBarLabelView(
+            snapshot: snapshot(for: .codex),
+            displaySettings: displaySettings(badge: true, bars: true, percentage: true)
+        )
+
+        #expect(view.bars.count == 2)
+        #expect(view.bars[0].value == .available(0.42))
+        #expect(view.bars[1].value == .available(0.63))
+    }
+
+    @Test("Claude keeps three fixed menu-bar slots including unavailable Fable usage")
+    func claudeKeepsThreeFixedSlots() {
+        let view = MenuBarLabelView(
+            snapshot: snapshot(for: .claude),
+            displaySettings: displaySettings(badge: true, bars: true, percentage: true)
+        )
+
+        #expect(view.bars.count == 3)
+        #expect(view.bars[0].value.isAvailable)
+        #expect(view.bars[1].value.isAvailable)
+        #expect(view.bars[2].value == .unavailable)
     }
 
     @Test("Percentage only renders a text-width label and reports the percentage component")
@@ -200,6 +271,87 @@ struct MenuBarLabelCompositionTests {
             let size = fittingSize(badge: badge, bars: bars, percentage: percentage)
             #expect(size.height == all.height)
         }
+    }
+
+    @Test("Status item renderer includes a 2x bitmap without changing logical size")
+    func statusItemRendererUsesHighResolutionRepresentation() {
+        let rendered = StatusItemRenderer.render(
+            snapshot: snapshot(),
+            displaySettings: displaySettings(badge: true, bars: true, percentage: true)
+        )
+        let bitmap = rendered.image.representations
+            .compactMap { $0 as? NSBitmapImageRep }
+            .first
+
+        #expect(bitmap != nil)
+        #expect(bitmap?.size == rendered.size)
+        #expect(bitmap?.pixelsWide == Int(ceil(rendered.size.width * StatusItemRenderer.renderScale)))
+        #expect(bitmap?.pixelsHigh == Int(ceil(rendered.size.height * StatusItemRenderer.renderScale)))
+    }
+
+    @Test("Providers share one status item with a four-point capsule gap")
+    func providersShareOneStatusItem() {
+        let defaults = createTestDefaults()
+        let providers: [ProviderKind] = [.claude, .codex]
+        let settings = AppSettings(availableProviders: providers, defaults: defaults)
+        let store = UsageStore(
+            settings: settings,
+            availableProviders: providers,
+            claudeProvider: StubUsageProvider(provider: .claude),
+            codexProvider: StubUsageProvider(provider: .codex),
+            refreshOnInit: false
+        )
+        let coordinator = StatusBarCoordinator(store: store, settings: settings, providers: providers)
+
+        #expect(StatusBarController.interProviderSpacing == 4)
+        #expect(coordinator.physicalStatusItemCount == 1)
+        #expect(coordinator.visibleProviderOrder == [.codex, .claude])
+
+        let codexFrame = coordinator.statusItemFrame(for: .codex)
+        let claudeFrame = coordinator.statusItemFrame(for: .claude)
+        #expect(codexFrame != nil)
+        #expect(claudeFrame != nil)
+        #expect(claudeFrame!.minX - codexFrame!.maxX == StatusBarController.interProviderSpacing)
+        #expect(
+            coordinator.combinedStatusItemLength
+                == coordinator.statusItemLength(for: .codex)
+                    + StatusBarController.interProviderSpacing
+                    + coordinator.statusItemLength(for: .claude)
+        )
+
+        let gapMidpoint = (codexFrame!.maxX + claudeFrame!.minX) / 2
+        #expect(coordinator.provider(atStatusItemImageX: gapMidpoint - 0.1) == .codex)
+        #expect(coordinator.provider(atStatusItemImageX: gapMidpoint + 0.1) == .claude)
+    }
+
+    @Test("Disabling one provider removes its capsule and the inter-provider gap")
+    func disablingProviderCompactsSharedStatusItem() {
+        let defaults = createTestDefaults()
+        let providers: [ProviderKind] = [.claude, .codex]
+        let settings = AppSettings(availableProviders: providers, defaults: defaults)
+        let store = UsageStore(
+            settings: settings,
+            availableProviders: providers,
+            claudeProvider: StubUsageProvider(provider: .claude),
+            codexProvider: StubUsageProvider(provider: .codex),
+            refreshOnInit: false
+        )
+        let coordinator = StatusBarCoordinator(store: store, settings: settings, providers: providers)
+        let originalLength = coordinator.combinedStatusItemLength
+        let claudeLength = coordinator.statusItemLength(for: .claude)
+
+        #expect(settings.setProviderEnabled(.claude, enabled: false) == true)
+        #expect(coordinator.visibleProviderOrder == [.codex])
+        #expect(coordinator.statusItemFrame(for: .claude) == nil)
+        #expect(coordinator.combinedStatusItemLength == coordinator.statusItemLength(for: .codex))
+        #expect(
+            originalLength - coordinator.combinedStatusItemLength
+                == claudeLength + StatusBarController.interProviderSpacing
+        )
+
+        #expect(settings.setProviderEnabled(.claude, enabled: true) == true)
+        #expect(coordinator.visibleProviderOrder == [.codex, .claude])
+        #expect(coordinator.combinedStatusItemLength == originalLength)
     }
 
     @Test("StatusBarCoordinator hides status items for disabled providers")

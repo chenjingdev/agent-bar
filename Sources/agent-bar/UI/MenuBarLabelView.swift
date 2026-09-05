@@ -12,7 +12,7 @@ struct MenuBarLabelView: View {
 
             if displaySettings.showsUsageBars {
                 StackedUsageBars(bars: bars)
-                    .frame(width: 28, height: 13)
+                    .frame(width: 30, height: 13)
             }
 
             if displaySettings.showsPercentage {
@@ -28,35 +28,53 @@ struct MenuBarLabelView: View {
     }
 
     var bars: [StackedUsageBars.Bar] {
-        var bars: [StackedUsageBars.Bar] = []
-        if let fiveHour = snapshot.fiveHour {
-            bars.append(
+        switch snapshot.provider {
+        case .claude:
+            return [
                 StackedUsageBars.Bar(
-                    utilization: fiveHour.utilization,
-                    color: AppTheme.tint(for: snapshot.provider)
-                )
-            )
-        }
-        if let weekly = snapshot.weekly {
-            bars.append(
+                    utilization: snapshot.fiveHour?.utilization,
+                    color: AppTheme.compactTint(for: snapshot.provider)
+                ),
                 StackedUsageBars.Bar(
-                    utilization: weekly.utilization,
-                    color: AppTheme.accent(for: snapshot.provider)
-                )
-            )
-        }
-        if let modelWeekly = snapshot.displayedModelWeeklies.first {
-            bars.append(StackedUsageBars.Bar(utilization: modelWeekly.window.utilization, color: AppTheme.accentGlow))
-        }
-        if bars.isEmpty {
-            bars.append(
+                    utilization: snapshot.weekly?.utilization,
+                    color: AppTheme.compactAccent(for: snapshot.provider)
+                ),
                 StackedUsageBars.Bar(
-                    utilization: nil,
-                    color: AppTheme.accent(for: snapshot.provider)
+                    utilization: snapshot.displayedModelWeeklies.first?.window.utilization,
+                    color: AppTheme.compactAccentGlow
+                ),
+            ]
+        case .codex:
+            // Center a single reported window instead of reserving an empty
+            // row above it. This keeps weekly-only Codex usage from looking
+            // visually pinned to the bottom of the capsule.
+            var reportedBars: [StackedUsageBars.Bar] = []
+            if let fiveHour = snapshot.fiveHour {
+                reportedBars.append(
+                    StackedUsageBars.Bar(
+                        utilization: fiveHour.utilization,
+                        color: AppTheme.compactTint(for: snapshot.provider)
+                    )
                 )
-            )
+            }
+            if let weekly = snapshot.weekly {
+                reportedBars.append(
+                    StackedUsageBars.Bar(
+                        utilization: weekly.utilization,
+                        color: AppTheme.compactAccent(for: snapshot.provider)
+                    )
+                )
+            }
+            if reportedBars.isEmpty {
+                return [
+                    StackedUsageBars.Bar(
+                        utilization: nil,
+                        color: AppTheme.compactTint(for: snapshot.provider)
+                    )
+                ]
+            }
+            return reportedBars
         }
-        return bars
     }
 }
 
@@ -78,8 +96,17 @@ struct ProviderBadge: View {
 
 struct StackedUsageBars: View {
     struct Bar {
-        let utilization: Double?
+        let value: UsageBarValue
         let color: Color
+
+        init(utilization: Double?, color: Color) {
+            self.value = UsageBarValue(utilization: utilization)
+            self.color = color
+        }
+
+        var utilization: Double? {
+            value.utilization
+        }
     }
 
     let bars: [Bar]
@@ -91,10 +118,11 @@ struct StackedUsageBars: View {
         VStack(spacing: barSpacing) {
             ForEach(Array(bars.enumerated()), id: \.offset) { _, bar in
                 UsageBarView(
-                    utilization: bar.utilization,
+                    value: bar.value,
                     fill: bar.color,
                     height: barHeight,
-                    minimumVisibleWidth: 1.2
+                    minimumVisibleWidth: max(2, barHeight / 2),
+                    appearance: .compact
                 )
             }
         }
