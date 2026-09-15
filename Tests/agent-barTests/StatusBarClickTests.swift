@@ -4,49 +4,42 @@ import Testing
 
 @MainActor
 struct StatusBarClickTests {
-    @Test("Screen clicks select the matching capsule at different window origins")
-    func screenClicksSelectMatchingProvider() {
-        _ = NSApplication.shared
-        let size = NSSize(width: 164, height: 22)
-        let render = CombinedStatusItemRender(
-            image: NSImage(size: size),
-            size: size,
-            segments: [
-                StatusItemSegment(provider: .codex, frame: NSRect(x: 0, y: 0, width: 80, height: 22)),
-                StatusItemSegment(provider: .claude, frame: NSRect(x: 84, y: 0, width: 80, height: 22)),
-            ]
-        )
-        for origin in [NSPoint(x: 900, y: 700), NSPoint(x: -1500, y: 200)] {
-            let window = NSWindow(
-                contentRect: NSRect(origin: origin, size: NSSize(width: 240, height: 40)),
-                styleMask: .borderless,
-                backing: .buffered,
-                defer: false
-            )
-            window.isReleasedWhenClosed = false
-            defer { window.close() }
-            let button = NSButton(frame: NSRect(x: 17, y: 5, width: 180, height: 26))
-            button.isBordered = false
-            button.image = render.image
-            button.imagePosition = .imageOnly
-            button.imageScaling = .scaleNone
-            window.contentView?.addSubview(button)
-            let imageRect = button.cell!.imageRect(forBounds: button.bounds)
+    @Test("Every physical item opens its own configured account group")
+    func itemsRouteToTheirOwnPopoverAndRestoreAfterHiding() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("item-routing-\(UUID())")
+        let suite = "item-routing-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: suite) }
+        let files = AccountFiles(root: root)
+        let a = UsageAccount(id: UUID(), provider: .claude, name: "A")
+        let b = UsageAccount(id: UUID(), provider: .codex, name: "B")
+        var registry = AccountRegistry(accounts: [a,b]); registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files, autoRefresh: false)
+        let coordinator = StatusBarCoordinator(store: store, providers: [.claude, .codex])
+        defer { coordinator.removeAll() }
+        let first = store.displayConfiguration.items[0].id
+        let second = store.displayConfiguration.items[1].id
+        #expect(coordinator.physicalStatusItemCount == 2)
+        #expect(coordinator.popoverItemID(for: first) == first)
+        #expect(coordinator.popoverItemID(for: second) == second)
+        store.updateDisplay { $0.assign(b.id, to: first, moving: true); $0.resize(1) }
+        try await waitFor { coordinator.physicalStatusItemCount == 1 }
+        #expect(store.displayConfiguration.items[0].accountIDs == [a.id,b.id])
+        #expect(coordinator.popoverItemID(for: first) == first)
+        #expect(coordinator.popoverItemID(for: second) == nil)
+        // An empty item remains a clickable recovery target after restoration.
+        store.updateDisplay { $0.resize(2) }
+        try await waitFor { coordinator.physicalStatusItemCount == 2 }
+        #expect(coordinator.popoverItemID(for: second) == second)
+        #expect((coordinator.statusItemLength(for: second) ?? 0) > 0)
+        #expect(store.displayConfiguration.items[1].accountIDs.isEmpty)
+    }
 
-            for segment in render.segments {
-                // Check the badge, middle and far end of each capsule.
-                for x in [segment.frame.minX + 5, segment.frame.midX, segment.frame.maxX - 5] {
-                    let local = NSPoint(
-                        x: imageRect.minX + x * imageRect.width / size.width,
-                        y: button.bounds.midY
-                    )
-                    let screen = window.convertPoint(toScreen: button.convert(local, to: nil))
-                    #expect(render.provider(atScreenPoint: screen, in: button) == segment.provider)
-                }
-            }
-
-            let outside = window.convertPoint(toScreen: button.convert(NSPoint(x: -10, y: 10), to: nil))
-            #expect(render.provider(atScreenPoint: outside, in: button) == nil)
+    private func waitFor(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(2)
+        while !condition() {
+            if Date() >= deadline { throw AccountError.timeout }
+            try await Task.sleep(for: .milliseconds(5))
         }
     }
 }

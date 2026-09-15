@@ -40,7 +40,7 @@ final class AppSettings: ObservableObject {
     let availableProviders: [ProviderKind]
     private let defaults: UserDefaults
 
-    init(availableProviders: [ProviderKind], defaults: UserDefaults = .standard) {
+    init(availableProviders: [ProviderKind] = ProviderKind.allCases, defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.availableProviders = availableProviders
 
@@ -184,6 +184,13 @@ final class AppSettings: ObservableObject {
 
     static func storageKeyForComponent(_ provider: ProviderKind, _ component: MenuBarComponent) -> String {
         "provider_\(provider.rawValue)_component_\(component.rawValue)"
+    }
+
+    func consumeDisplaySetupNotice() -> Bool {
+        let key = "multiAccountDisplaySetupShown-v1"
+        guard !defaults.bool(forKey: key) else { return false }
+        defaults.set(true, forKey: key)
+        return true
     }
 
     private enum Keys {

@@ -4,440 +4,161 @@ import Testing
 
 @MainActor
 struct UsageStoreProviderVisibilityTests {
-    @Test("Manual refresh loads only available enabled providers")
-    func manualRefreshLoadsOnlyAvailableEnabledProviders() async {
-        let settings = AppSettings(
-            availableProviders: [.claude, .codex],
-            defaults: createTestDefaults()
-        )
-        let claudeProvider = RecordingUsageProvider(provider: .claude)
-        let codexProvider = RecordingUsageProvider(provider: .codex)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: [.claude],
-            claudeProvider: claudeProvider,
-            codexProvider: codexProvider,
-            refreshOnInit: false
-        )
-
-        await store.refresh()
-
-        #expect(await claudeProvider.loadCount() == 1)
-        #expect(await codexProvider.loadCount() == 0)
+    @Test func hiddenAccountsAreSkippedByManualRefresh() async throws {
+        let fixture = try VisibilityFixture()
+        defer { fixture.close() }
+        fixture.store.updateDisplay { $0.resize(1) }
+        await fixture.store.refresh()
+        #expect(await fixture.loader.count(fixture.claude.id) == 1)
+        #expect(await fixture.loader.count(fixture.codex.id) == 0)
     }
 
-    @Test("Visual component changes do not load providers")
-    func visualComponentChangesDoNotLoadProviders() async {
-        let settings = AppSettings(
-            availableProviders: [.claude, .codex],
-            defaults: createTestDefaults()
-        )
-        let claudeProvider = RecordingUsageProvider(provider: .claude)
-        let codexProvider = RecordingUsageProvider(provider: .codex)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: [.claude, .codex],
-            claudeProvider: claudeProvider,
-            codexProvider: codexProvider,
-            refreshOnInit: false
-        )
-
-        await store.refresh()
-        let changed = settings.setComponentShown(.claude, component: .badge, shown: false)
-
-        #expect(changed == true)
-        #expect(await claudeProvider.loadCount() == 1)
-        #expect(await codexProvider.loadCount() == 1)
-    }
-
-    @Test("Disabling a provider prevents it from loading")
-    func disablingProviderPreventsItFromLoading() async {
-        let settings = AppSettings(
-            availableProviders: [.claude, .codex],
-            defaults: createTestDefaults()
-        )
-        let claudeProvider = RecordingUsageProvider(provider: .claude)
-        let codexProvider = RecordingUsageProvider(provider: .codex)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: [.claude, .codex],
-            claudeProvider: claudeProvider,
-            codexProvider: codexProvider,
-            refreshOnInit: false
-        )
-
-        let disabled = settings.setProviderEnabled(.claude, enabled: false)
-        await store.refresh()
-
-        #expect(disabled == true)
-        #expect(await claudeProvider.loadCount() == 0)
-        #expect(await codexProvider.loadCount() == 1)
-    }
-
-    @Test("Re-enabling during an in-flight refresh loads before the store becomes idle")
-    func reenablingProviderDuringRefreshLoadsBeforeStoreBecomesIdle() async throws {
-        let settings = AppSettings(
-            availableProviders: [.claude, .codex],
-            defaults: createTestDefaults()
-        )
-        let claudeProvider = RecordingUsageProvider(provider: .claude)
-        let codexProvider = RecordingUsageProvider(provider: .codex, suspendsLoads: true)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: [.claude, .codex],
-            claudeProvider: claudeProvider,
-            codexProvider: codexProvider,
-            refreshOnInit: false
-        )
-        let initiallyDisabled = settings.setProviderEnabled(.claude, enabled: false)
-        let idleSignal = RefreshIdleSignal()
-        let idleCancellable = store.$isRefreshing.sink { isRefreshing in
-            idleSignal.observe(isRefreshing)
+    @Test func hidingAllComponentsOrMetricsStopsRefreshButMissingDataDoesNot() async throws {
+        let fixture = try VisibilityFixture()
+        defer { fixture.close() }
+        fixture.store.updateDisplay {
+            $0.items[0].showService = false; $0.items[0].showBars = false; $0.items[0].showPercent = false
+            $0.metrics[fixture.codex.id.uuidString] = []
         }
-        let codexSuspended = Task { await codexProvider.waitUntilSuspended() }
-        let refreshTask = Task { @MainActor in
-            await store.refresh()
-        }
-
-        await codexSuspended.value
-        let reenabled = settings.setProviderEnabled(.claude, enabled: true)
-        await codexProvider.resumeLoad()
-        try await awaitIdle(idleSignal)
-        await refreshTask.value
-
-        #expect(initiallyDisabled == true)
-        #expect(reenabled == true)
-        #expect(await claudeProvider.loadCount() == 1)
-        idleCancellable.cancel()
+        await fixture.store.refresh()
+        #expect(await fixture.loader.total == 0)
+        fixture.store.updateDisplay { $0.metrics[fixture.codex.id.uuidString] = ["5h"] }
+        // There is no 5h data yet, but polling must discover its later arrival.
+        await fixture.store.refresh()
+        #expect(await fixture.loader.count(fixture.codex.id) == 1)
+        #expect(await fixture.loader.count(fixture.claude.id) == 0)
     }
 
-    @Test("Disabling a provider during an in-flight refresh prevents its queued load")
-    func disablingProviderDuringRefreshPreventsQueuedLoad() async {
-        let settings = AppSettings(
-            availableProviders: [.claude, .codex],
-            defaults: createTestDefaults()
-        )
-        let claudeProvider = RecordingUsageProvider(provider: .claude, suspendsLoads: true)
-        let codexProvider = RecordingUsageProvider(provider: .codex)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: [.claude, .codex],
-            claudeProvider: claudeProvider,
-            codexProvider: codexProvider,
-            refreshOnInit: false
-        )
-        let claudeSuspended = Task { await claudeProvider.waitUntilSuspended() }
-        let refreshTask = Task { @MainActor in
-            await store.refresh()
-        }
-
-        await claudeSuspended.value
-        let disabled = settings.setProviderEnabled(.codex, enabled: false)
-        await claudeProvider.resumeLoad()
-        await refreshTask.value
-
-        #expect(disabled == true)
-        #expect(await claudeProvider.loadCount() == 1)
-        #expect(await codexProvider.loadCount() == 0)
+    @Test func hidingAnInflightAccountCancelsAndDiscardsItsResult() async throws {
+        let fixture = try VisibilityFixture(suspend: true)
+        defer { fixture.close() }
+        let task = Task { await fixture.store.refresh() }
+        try await fixture.waitFor { await fixture.loader.count(fixture.claude.id) == 1 }
+        fixture.store.updateDisplay { $0.remove(fixture.claude.id, from: $0.items[0].id) }
+        #expect(await fixture.loader.wasCancelled(fixture.claude.id))
+        await fixture.loader.release()
+        await task.value
+        #expect(fixture.store.snapshots[fixture.claude.id] == nil)
+        #expect(fixture.store.snapshots[fixture.codex.id] != nil)
     }
 
-    @Test("Disabling a provider during its load preserves the previous snapshot")
-    func disablingProviderDuringItsLoadDiscardsResult() async {
-        let settings = AppSettings(
-            availableProviders: [.claude, .codex],
-            defaults: createTestDefaults()
-        )
-        let loadedSnapshot = ProviderSnapshot(
-            provider: .claude,
-            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            fiveHour: WindowSummary(
-                tokens: 88,
-                limitTokens: 100,
-                resetAt: nil,
-                displayStyle: .percentage
-            ),
-            weekly: WindowSummary(
-                tokens: 55,
-                limitTokens: 100,
-                resetAt: nil,
-                displayStyle: .percentage
-            ),
-            modelWeeklies: [],
-            planName: "Test",
-            sourceDescription: "Test provider",
-            note: nil,
-            isStale: false,
-            requiresLogin: false
-        )
-        let claudeProvider = RecordingUsageProvider(
-            provider: .claude,
-            suspendsLoads: true,
-            snapshot: loadedSnapshot
-        )
-        let codexProvider = RecordingUsageProvider(provider: .codex)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: [.claude, .codex],
-            claudeProvider: claudeProvider,
-            codexProvider: codexProvider,
-            refreshOnInit: false
-        )
-        let originalSnapshot = store.snapshot(for: .claude)
-        let claudeSuspended = Task { await claudeProvider.waitUntilSuspended() }
-        let refreshTask = Task { @MainActor in
-            await store.refresh()
-        }
-
-        await claudeSuspended.value
-        let disabled = settings.setProviderEnabled(.claude, enabled: false)
-        await claudeProvider.resumeLoad()
-        await refreshTask.value
-
-        #expect(disabled == true)
-        #expect(await claudeProvider.loadCount() == 1)
-        #expect(store.snapshot(for: .claude) == originalSnapshot)
+    @Test func hidingAQueuedAccountPreventsItsRequest() async throws {
+        let fixture = try VisibilityFixture(suspend: true, sameProvider: true)
+        defer { fixture.close() }
+        let task = Task { await fixture.store.refresh() }
+        try await fixture.waitFor { await fixture.loader.count(fixture.claude.id) == 1 }
+        fixture.store.updateDisplay { $0.remove(fixture.codex.id, from: $0.items[0].id) }
+        await fixture.loader.release()
+        await task.value
+        #expect(await fixture.loader.count(fixture.codex.id) == 0)
     }
 
-    @Test("Disabling a loaded provider before batch commit preserves its previous snapshot")
-    func disablingLoadedProviderBeforeBatchCommitDiscardsResult() async {
-        let settings = AppSettings(
-            availableProviders: [.claude, .codex],
-            defaults: createTestDefaults()
-        )
-        let loadedSnapshot = ProviderSnapshot(
-            provider: .claude,
-            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            fiveHour: WindowSummary(
-                tokens: 88,
-                limitTokens: 100,
-                resetAt: nil,
-                displayStyle: .percentage
-            ),
-            weekly: WindowSummary(
-                tokens: 55,
-                limitTokens: 100,
-                resetAt: nil,
-                displayStyle: .percentage
-            ),
-            modelWeeklies: [],
-            planName: "Test",
-            sourceDescription: "Test provider",
-            note: nil,
-            isStale: false,
-            requiresLogin: false
-        )
-        let claudeProvider = RecordingUsageProvider(provider: .claude, snapshot: loadedSnapshot)
-        let codexProvider = RecordingUsageProvider(provider: .codex, suspendsLoads: true)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: [.claude, .codex],
-            claudeProvider: claudeProvider,
-            codexProvider: codexProvider,
-            refreshOnInit: false
-        )
-        let originalSnapshot = store.snapshot(for: .claude)
-        let codexSuspended = Task { await codexProvider.waitUntilSuspended() }
-        let refreshTask = Task { @MainActor in
-            await store.refresh()
-        }
-
-        await codexSuspended.value
-        let disabled = settings.setProviderEnabled(.claude, enabled: false)
-        await codexProvider.resumeLoad()
-        await refreshTask.value
-
-        #expect(disabled == true)
-        #expect(await claudeProvider.loadCount() == 1)
-        #expect(store.snapshot(for: .claude) == originalSnapshot)
+    @Test func showingAnAccountDuringRefreshQueuesOnlyThatAccount() async throws {
+        let fixture = try VisibilityFixture(suspend: true, automatic: true)
+        defer { fixture.close() }
+        fixture.store.updateDisplay { $0.resize(1) }
+        try await fixture.waitFor { await fixture.loader.count(fixture.claude.id) == 1 }
+        fixture.store.updateDisplay { $0.resize(2) }
+        await fixture.loader.release()
+        try await fixture.waitFor { !fixture.store.isRefreshing }
+        #expect(await fixture.loader.count(fixture.claude.id) == 1)
+        #expect(await fixture.loader.count(fixture.codex.id) == 1)
     }
 
-    @Test("Re-enabling a provider immediately loads only that provider once")
-    func reenablingProviderImmediatelyLoadsOnlyThatProviderOnce() async {
-        let settings = AppSettings(
-            availableProviders: [.claude, .codex],
-            defaults: createTestDefaults()
-        )
-        let claudeProvider = RecordingUsageProvider(provider: .claude)
-        let codexProvider = RecordingUsageProvider(provider: .codex)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: [.claude, .codex],
-            claudeProvider: claudeProvider,
-            codexProvider: codexProvider,
-            refreshOnInit: false
-        )
-
-        let disabled = settings.setProviderEnabled(.claude, enabled: false)
-        let nextClaudeLoad = Task { await claudeProvider.waitForLoad(after: 0) }
-        let enabled = settings.setProviderEnabled(.claude, enabled: true)
-        let observedLoadCount = await nextClaudeLoad.value
-        withExtendedLifetime(store) {}
-
-        #expect(disabled == true)
-        #expect(enabled == true)
-        #expect(observedLoadCount == 1)
-        #expect(await claudeProvider.loadCount() == 1)
-        #expect(await codexProvider.loadCount() == 0)
+    @Test func visualChangesDoNotRefetchAndReenabledAccountRefreshes() async throws {
+        let fixture = try VisibilityFixture(automatic: true)
+        defer { fixture.close() }
+        try await fixture.waitFor { !fixture.store.isRefreshing }
+        fixture.store.updateDisplay { $0.items[0].showService = false; $0.items[0].maxRows = 3 }
+        #expect(!fixture.store.isRefreshing)
+        fixture.store.updateDisplay { $0.resize(1) }
+        fixture.store.updateDisplay { $0.resize(2) }
+        try await fixture.waitFor { !fixture.store.isRefreshing }
+        #expect(await fixture.loader.count(fixture.claude.id) == 1)
+        #expect(await fixture.loader.count(fixture.codex.id) == 2)
     }
 
-    private func createTestDefaults() -> UserDefaults {
-        let identifier = "UsageStoreProviderVisibilityTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: identifier)!
-        defaults.removePersistentDomain(forName: identifier)
-        return defaults
-    }
-}
-
-private actor RecordingUsageProvider: UsageProviding {
-    private let snapshot: ProviderSnapshot
-    private let suspendsLoads: Bool
-    private var loads = 0
-    private var isSuspended = false
-    private var releaseRequested = false
-    private var loadWaiters: [(after: Int, continuation: CheckedContinuation<Int, Never>)] = []
-    private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
-    private var releaseContinuation: CheckedContinuation<Void, Never>?
-
-    init(
-        provider: ProviderKind,
-        suspendsLoads: Bool = false,
-        snapshot: ProviderSnapshot? = nil
-    ) {
-        self.snapshot = snapshot ?? .placeholder(for: provider)
-        self.suspendsLoads = suspendsLoads
+    @Test func upstreamPreferencesMigrateOnceAndPreserveHiddenItem() throws {
+        let fixture = try VisibilityFixture()
+        defer { fixture.close() }
+        let defaults = fixture.defaults
+        defaults.set(false, forKey: AppSettings.storageKeyForProvider(.claude))
+        defaults.set(false, forKey: AppSettings.storageKeyForComponent(.codex, .badge))
+        defaults.set(false, forKey: AppSettings.storageKeyForComponent(.codex, .percentage))
+        try FileManager.default.removeItem(at: fixture.files.root.appendingPathComponent("display-v1.json"))
+        let settings = AppSettings(defaults: defaults)
+        let store = UsageStore(settings: settings, availableProviders: [], files: fixture.files, autoRefresh: false)
+        #expect(store.displayConfiguration.activeCount == 1)
+        #expect(store.displayConfiguration.items[0].accountIDs == [fixture.codex.id])
+        #expect(store.displayConfiguration.items[0].showBars)
+        #expect(!store.displayConfiguration.items[0].showService)
+        #expect(!store.displayConfiguration.items[0].showPercent)
+        #expect(store.displayConfiguration.items[1].accountIDs == [fixture.claude.id])
+        store.updateDisplay { $0.resize(2) }
+        let reloaded = UsageStore(settings: settings, availableProviders: [], files: fixture.files, autoRefresh: false)
+        #expect(reloaded.displayConfiguration == store.displayConfiguration)
     }
 
-    func load() async -> ProviderSnapshot {
-        loads += 1
-        let readyWaiters = loadWaiters.filter { loads > $0.after }
-        loadWaiters.removeAll { loads > $0.after }
-        for waiter in readyWaiters {
-            waiter.continuation.resume(returning: loads)
-        }
-
-        if suspendsLoads {
-            isSuspended = true
-            let waiters = suspensionWaiters
-            suspensionWaiters.removeAll()
-            for waiter in waiters {
-                waiter.resume()
-            }
-            await withCheckedContinuation { continuation in
-                if releaseRequested {
-                    continuation.resume()
-                } else {
-                    releaseContinuation = continuation
-                }
-            }
-        }
-
-        return snapshot
-    }
-
-    func loadCount() -> Int {
-        loads
-    }
-
-    func waitForLoad(after count: Int) async -> Int {
-        guard loads <= count else { return loads }
-        return await withCheckedContinuation { continuation in
-            loadWaiters.append((after: count, continuation: continuation))
-        }
-    }
-
-    func waitUntilSuspended() async {
-        guard isSuspended == false else { return }
-        await withCheckedContinuation { continuation in
-            suspensionWaiters.append(continuation)
-        }
-    }
-
-    func resumeLoad() {
-        if let releaseContinuation {
-            self.releaseContinuation = nil
-            releaseContinuation.resume()
-        } else {
-            releaseRequested = true
-        }
+    @Test func invalidAccountRegistryDoesNotEraseDisplayAssignments() throws {
+        let fixture = try VisibilityFixture()
+        defer { fixture.close() }
+        let displayURL = fixture.files.root.appendingPathComponent("display-v1.json")
+        let before = try Data(contentsOf: displayURL)
+        try Data("{bad".utf8).write(to: fixture.files.registryURL)
+        let store = UsageStore(settings: AppSettings(defaults: fixture.defaults), availableProviders: [], files: fixture.files, autoRefresh: false)
+        #expect(store.storageUnavailable)
+        #expect(try Data(contentsOf: displayURL) == before)
     }
 }
 
 @MainActor
-private final class RefreshIdleSignal {
-    private var hasRefreshed = false
-    private var isIdle = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+private final class VisibilityFixture {
+    let files = AccountFiles(root: FileManager.default.temporaryDirectory.appendingPathComponent("visibility-\(UUID())"))
+    let suite = "visibility-\(UUID())"
+    let defaults: UserDefaults
+    let claude = UsageAccount(id: UUID(), provider: .claude, name: "A")
+    let codex: UsageAccount
+    let loader: VisibilityLoader
+    let store: UsageStore
 
-    func observe(_ isRefreshing: Bool) {
-        if isRefreshing {
-            hasRefreshed = true
-        } else if hasRefreshed {
-            isIdle = true
-            let waiters = waiters
-            self.waiters.removeAll()
-            for waiter in waiters {
-                waiter.resume()
-            }
-        }
+    init(suspend: Bool = false, sameProvider: Bool = false, automatic: Bool = false) throws {
+        defaults = UserDefaults(suiteName: suite)!
+        codex = UsageAccount(id: UUID(), provider: sameProvider ? .claude : .codex, name: "B")
+        loader = VisibilityLoader(suspended: suspend)
+        var registry = AccountRegistry(accounts: [claude, codex]); registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        var display = DisplayConfiguration.initial(registry)
+        if sameProvider { display.assign(codex.id, to: display.items[0].id) }
+        try files.write(display, to: files.root.appendingPathComponent("display-v1.json"))
+        let loader = loader
+        store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files,
+                           autoRefresh: automatic, loadAccount: { await loader.load($0, control: $1) })
     }
-
-    func waitForIdle() async {
-        guard isIdle == false else { return }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
-        }
-    }
-}
-
-private enum RefreshTimeoutError: Error {
-    case elapsed
-}
-
-@MainActor
-private func awaitIdle(_ signal: RefreshIdleSignal) async throws {
-    try await withCheckedThrowingContinuation { continuation in
-        let completion = IdleWaitCompletion(continuation: continuation)
-        completion.startTimeout()
-        Task { @MainActor in
-            await signal.waitForIdle()
-            completion.succeed()
+    func close() { store.shutdown(); try? FileManager.default.removeItem(at: files.root); defaults.removePersistentDomain(forName: suite) }
+    func waitFor(_ condition: () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(3)
+        while !(await condition()) {
+            if Date() > deadline { throw AccountError.timeout }
+            try await Task.sleep(for: .milliseconds(5))
         }
     }
 }
 
-@MainActor
-private final class IdleWaitCompletion {
-    private let continuation: CheckedContinuation<Void, Error>
-    private var isCompleted = false
-    private var timeoutTask: Task<Void, Never>?
-
-    init(continuation: CheckedContinuation<Void, Error>) {
-        self.continuation = continuation
-    }
-
-    func startTimeout() {
-        timeoutTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(1))
-            } catch {
-                return
-            }
-            self?.fail()
-        }
-    }
-
-    func succeed() {
-        complete(with: .success(()))
-    }
-
-    private func fail() {
-        complete(with: .failure(RefreshTimeoutError.elapsed))
-    }
-
-    private func complete(with result: Result<Void, Error>) {
-        guard isCompleted == false else { return }
-        isCompleted = true
-        timeoutTask?.cancel()
-        continuation.resume(with: result)
+private actor VisibilityLoader {
+    private var counts: [UUID: Int] = [:]
+    private var controls: [UUID: OperationControl] = [:]
+    private var suspended: Bool
+    init(suspended: Bool) { self.suspended = suspended }
+    var total: Int { counts.values.reduce(0, +) }
+    func count(_ id: UUID) -> Int { counts[id, default: 0] }
+    func wasCancelled(_ id: UUID) -> Bool { controls[id]?.cancelled == true }
+    func release() { suspended = false }
+    func load(_ account: UsageAccount, control: OperationControl) async -> ProviderSnapshot {
+        counts[account.id, default: 0] += 1; controls[account.id] = control
+        let deadline = Date().addingTimeInterval(3)
+        while suspended && Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        return ProviderSnapshot(provider: account.provider, updatedAt: .now, fiveHour: nil,
+            weekly: WindowSummary(tokens: 42, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+            modelWeeklies: [], planName: nil, sourceDescription: "Fixture", note: nil, isStale: false, requiresLogin: false)
     }
 }

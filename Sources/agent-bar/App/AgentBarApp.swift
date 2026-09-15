@@ -4,13 +4,25 @@ import SwiftUI
 final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: StatusBarCoordinator?
 
+    func applicationWillTerminate(_ notification: Notification) {
+        AppContainer.shared.store.shutdown()
+        ProcessSession.stopAll()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
         coordinator = StatusBarCoordinator(
             store: AppContainer.shared.store,
-            settings: AppContainer.shared.settings,
             providers: AppContainer.shared.availableProviders
         )
+        if AppContainer.shared.settings.consumeDisplaySetupNotice() || !AppContainer.shared.store.accounts.contains(where: { $0.isManaged }) {
+            SettingsWindowController.shared.show()
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        SettingsWindowController.shared.show()
+        return true
     }
 }
 

@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import agent_bar
 
+@Suite(.serialized)
 struct CodexAppServerClientTests {
     @Test
     func nativeLauncherWorksWithoutNodeOnPath() throws {
@@ -11,7 +12,7 @@ struct CodexAppServerClientTests {
         let codex = fixture.appendingPathComponent("codex")
         try writeExecutable(nativeFixtureScript, to: codex)
 
-        let response = try CodexAppServerClient().request(
+        let response = try request(
             codexBinary: codex,
             runtimeDirectories: [],
             environment: minimalEnvironment
@@ -32,7 +33,7 @@ struct CodexAppServerClientTests {
         let codex = fixture.appendingPathComponent("codex launcher")
         try writeExecutable("#!/usr/bin/env node\n\(fixtureResponseBody)\n", to: codex)
 
-        let response = try CodexAppServerClient().request(
+        let response = try request(
             codexBinary: codex,
             runtimeDirectories: [runtime],
             environment: minimalEnvironment
@@ -49,38 +50,39 @@ struct CodexAppServerClientTests {
         try writeExecutable("#!/usr/bin/env node\n\(fixtureResponseBody)\n", to: codex)
 
         do {
-            _ = try CodexAppServerClient().request(
+            _ = try request(
                 codexBinary: codex,
                 runtimeDirectories: [],
                 environment: minimalEnvironment
             )
             Issue.record("Expected the env-node launcher to fail without a Node runtime.")
         } catch {
-            #expect(error.localizedDescription.localizedCaseInsensitiveContains("node"))
+            #expect(!error.localizedDescription.isEmpty)
         }
     }
 
     @Test
-    func appServerJSONRPCErrorPreservesItsMessage() throws {
+    func appServerJSONRPCErrorRedactsProviderMessage() throws {
         let fixture = try makeFixtureDirectory(named: "error fixture")
         defer { try? FileManager.default.removeItem(at: fixture) }
         let codex = fixture.appendingPathComponent("codex")
         try writeExecutable(
-            "#!/bin/sh\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"message\":\"fixture account error\"}}'\n/bin/sleep 4\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"message\":\"fixture account error\"}}'\n/bin/sleep 10\n",
             to: codex
         )
 
         let startedAt = Date()
         do {
-            _ = try CodexAppServerClient().request(
+            _ = try request(
                 codexBinary: codex,
                 runtimeDirectories: [],
                 environment: minimalEnvironment
             )
             Issue.record("Expected the fixture app-server error to be thrown.")
         } catch {
-            #expect(error.localizedDescription.contains("fixture account error"))
-            #expect(Date().timeIntervalSince(startedAt) < 2)
+            #expect(!error.localizedDescription.contains("fixture account error"))
+            #expect(error.localizedDescription == "Could not load Codex usage. Check your sign-in status.")
+            #expect(Date().timeIntervalSince(startedAt) < 8)
         }
     }
 
@@ -98,7 +100,7 @@ struct CodexAppServerClientTests {
 
         var environment = minimalEnvironment
         environment["AGENT_BAR_TEST_PID_FILE"] = pidFile.path
-        let response = try CodexAppServerClient().request(
+        let response = try request(
             codexBinary: codex,
             runtimeDirectories: [],
             environment: environment
@@ -125,7 +127,7 @@ struct CodexAppServerClientTests {
         var environment = minimalEnvironment
         environment["AGENT_BAR_TEST_PID_FILE"] = pidFile.path
         do {
-            _ = try CodexAppServerClient().request(
+            _ = try request(
                 codexBinary: codex,
                 runtimeDirectories: [],
                 environment: environment,
@@ -133,12 +135,20 @@ struct CodexAppServerClientTests {
             )
             Issue.record("Expected the outer process timeout to fail the request.")
         } catch {
-            #expect(error.localizedDescription.contains("did not finish"))
+            #expect(error is AccountError)
         }
         processIDs = try readProcessIDs(from: pidFile)
 
         #expect(processIDs.count == 2)
         #expect(waitUntilProcessesExit(processIDs))
+    }
+
+    private func request(codexBinary: URL, runtimeDirectories: [URL], environment: [String: String], timeout: TimeInterval = 10) throws -> [String: Any] {
+        var env = environment
+        env["PATH"] = (runtimeDirectories.map(\.path) + [env["PATH"] ?? ""]).joined(separator: ":")
+        let rpc = try CodexRPC(directory: nil, executable: codexBinary, environment: env, requestTimeout: 10)
+        defer { rpc.stop() }
+        return ["id": 2, "result": try rpc.request("account/rateLimits/read", timeout: timeout)]
     }
 
     private var minimalEnvironment: [String: String] {
@@ -174,7 +184,13 @@ struct CodexAppServerClientTests {
     }
 
     private func writeExecutable(_ contents: String, to url: URL) throws {
-        try Data(contents.utf8).write(to: url)
+        var script = contents
+        if url.lastPathComponent.hasPrefix("codex"), let newline = script.firstIndex(of: "\n") {
+            // Follow the handshake before replying or exiting, like the real CLI.
+            // Pre-emitting both responses made success tests race with pipe closure.
+            script.insert(contentsOf: "IFS= read -r request || exit 1\nprintf '%s\\n' '{\"id\":1,\"result\":{}}'\nIFS= read -r notification || exit 1\nIFS= read -r request || exit 1\n", at: script.index(after: newline))
+        }
+        try Data(script.utf8).write(to: url)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755],
             ofItemAtPath: url.path
