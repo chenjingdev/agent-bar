@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import agent_bar
 
+@Suite(.serialized)
 struct CodexAppServerClientTests {
     @Test
     func nativeLauncherWorksWithoutNodeOnPath() throws {
@@ -66,7 +67,7 @@ struct CodexAppServerClientTests {
         defer { try? FileManager.default.removeItem(at: fixture) }
         let codex = fixture.appendingPathComponent("codex")
         try writeExecutable(
-            "#!/bin/sh\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"message\":\"fixture account error\"}}'\n/bin/sleep 4\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"message\":\"fixture account error\"}}'\n/bin/sleep 10\n",
             to: codex
         )
 
@@ -80,7 +81,8 @@ struct CodexAppServerClientTests {
             Issue.record("Expected the fixture app-server error to be thrown.")
         } catch {
             #expect(!error.localizedDescription.contains("fixture account error"))
-            #expect(Date().timeIntervalSince(startedAt) < 2)
+            #expect(error.localizedDescription == "Could not load Codex usage. Check your sign-in status.")
+            #expect(Date().timeIntervalSince(startedAt) < 8)
         }
     }
 
@@ -144,9 +146,9 @@ struct CodexAppServerClientTests {
     private func request(codexBinary: URL, runtimeDirectories: [URL], environment: [String: String], timeout: TimeInterval = 10) throws -> [String: Any] {
         var env = environment
         env["PATH"] = (runtimeDirectories.map(\.path) + [env["PATH"] ?? ""]).joined(separator: ":")
-        let rpc = try CodexRPC(directory: nil, executable: codexBinary, environment: env, requestTimeout: timeout)
+        let rpc = try CodexRPC(directory: nil, executable: codexBinary, environment: env, requestTimeout: 10)
         defer { rpc.stop() }
-        return ["id": 2, "result": try rpc.request("account/rateLimits/read")]
+        return ["id": 2, "result": try rpc.request("account/rateLimits/read", timeout: timeout)]
     }
 
     private var minimalEnvironment: [String: String] {

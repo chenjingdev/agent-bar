@@ -21,10 +21,10 @@ struct AccountViewRenderingTests {
         try files.write(registry, to: files.registryURL)
         let store = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
         try render(SettingsView().environmentObject(settings).environmentObject(store), size: NSSize(width: 430, height: 320), name: "settings")
-        try render(AccountListView(provider: .codex).environmentObject(store), size: NSSize(width: 392, height: 568), name: "codex-list")
+        try render(DisplayPopoverView(itemID: store.displayConfiguration.items[0].id, showAccounts: true).environmentObject(store), size: NSSize(width: 392, height: 568), name: "codex-list")
         let emptyFiles = AccountFiles(root: root.appendingPathComponent("empty"))
         let empty = UsageStore(settings: settings, availableProviders: [], files: emptyFiles, autoRefresh: false)
-        try render(AccountListView(provider: .claude).environmentObject(empty), size: NSSize(width: 392, height: 568), name: "empty-list")
+        try render(DisplayPopoverView(itemID: empty.displayConfiguration.items[0].id, showAccounts: true).environmentObject(empty), size: NSSize(width: 392, height: 568), name: "empty-list")
     }
     @MainActor private func render<V: View>(_ view: V, size: NSSize, name: String) throws {
         let host = NSHostingView(rootView: view)

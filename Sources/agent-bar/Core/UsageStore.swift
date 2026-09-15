@@ -60,7 +60,7 @@ final class UsageStore: ObservableObject {
             // Only managed accounts have reusable, account-owned snapshots.
             for account in loaded.accounts where account.isManaged && !account.deletionPending {
                 if let cached = try? files.read(ProviderSnapshot.self, at: lastGoodURL(account)) {
-                    snapshots[account.id] = cached.failed("저장된 값입니다. 최신 사용량을 확인하고 있습니다.")
+                    snapshots[account.id] = cached.failed("Cached usage. Checking for an update.")
                 }
             }
         } catch { storageUnavailable = true; errorMessage = error.localizedDescription }
@@ -69,7 +69,7 @@ final class UsageStore: ObservableObject {
         updateRepresentatives()
         if autoRefresh {
             configureTimer()
-            settings.$refreshIntervalSeconds.dropFirst().sink { [weak self] _ in self?.configureTimer() }.store(in: &cancellables)
+            settings.$refreshIntervalSeconds.dropFirst().sink { [weak self] interval in self?.configureTimer(interval: interval) }.store(in: &cancellables)
             refreshNow()
             Task { await retryCleanup() }
         }
@@ -80,7 +80,7 @@ final class UsageStore: ObservableObject {
         do {
             if FileManager.default.fileExists(atPath: displayURL.path) {
                 let loaded = try files.read(DisplayConfiguration.self, at: displayURL)
-                guard loaded.valid else { throw AccountError.message("표시 설정 형식이 올바르지 않습니다.") }
+                guard loaded.valid else { throw AccountError.message("Invalid display settings format.") }
                 displayConfiguration = loaded
                 updateDisplay { $0.prune(Set(accounts.filter { !$0.deletionPending }.map(\.id))) }
             } else {
@@ -95,7 +95,7 @@ final class UsageStore: ObservableObject {
                     try FileManager.default.copyItem(at: displayURL, to: files.root.appendingPathComponent("display-preserved-\(UUID()).json"))
                 }
             } catch { displayWritable = false }
-            displayError = "표시 설정을 읽지 못해 기본 표시로 복구했습니다. 원본을 보존했습니다."
+            displayError = "Could not read display settings. Using defaults; the original was preserved."
         }
     }
     func updateDisplay(_ change: (inout DisplayConfiguration) -> Void) {
@@ -112,13 +112,19 @@ final class UsageStore: ObservableObject {
                 pendingRefreshIDs.remove(id)
                 if let snapshot = snapshots[id] {
                     if !snapshot.isStale && snapshot.retryAt == nil { nextEligibleRefresh[id] = nil }
-                    snapshots[id] = snapshot.failed("숨긴 계정입니다. 새로고침이 중단되었습니다.")
+                    snapshots[id] = snapshot.failed("Hidden account. Refresh is paused.", requiresLogin: snapshot.requiresLogin)
+                }
+            }
+            let newlyVisible = current.subtracting(previous)
+            for id in newlyVisible {
+                if let snapshot = snapshots[id], snapshot.note == "Hidden account. Refresh is paused." {
+                    snapshots[id] = snapshot.failed("Cached usage. Waiting for the next refresh.", requiresLogin: snapshot.requiresLogin)
                 }
             }
             updateRepresentatives()
-            if automaticRefresh { requestRefresh(current.subtracting(previous)) }
+            if automaticRefresh { requestRefresh(newlyVisible) }
         }
-        catch { displayError = "표시 설정 저장 실패: \(error.localizedDescription)" }
+        catch { displayError = "Could not save display settings: \(error.localizedDescription)" }
     }
     func displayAccounts(_ item: DisplayItem) -> [UsageAccount] {
         item.accountIDs.compactMap { id in accounts.first { $0.id == id && !$0.deletionPending } }
@@ -145,7 +151,7 @@ final class UsageStore: ObservableObject {
     private func commit(_ value: AccountRegistry) -> Bool {
         guard !storageUnavailable else { return false }
         do { try files.write(value, to: files.registryURL); registry = value; updateDisplay { $0.prune(Set(value.accounts.filter { !$0.deletionPending }.map(\.id))) }; updateRepresentatives(); return true }
-        catch { errorMessage = "계정 설정을 저장하지 못했습니다: \(error.localizedDescription)"; return false }
+        catch { errorMessage = "Could not save account settings: \(error.localizedDescription)"; return false }
     }
     func selectRepresentative(_ account: UsageAccount) {
         guard !account.deletionPending else { return }
@@ -207,14 +213,20 @@ final class UsageStore: ObservableObject {
             } else if provider == .codex {
                 result = await CodexUsageProvider(directory: directory, expectedIdentity: account.identity, control: control).load()
             } else {
-                result = await ClaudeUsageProvider(directory: directory, cacheURL: files.cache(account), expectedIdentity: account.identity).load()
+                result = await ClaudeUsageProvider(directory: directory, cacheURL: files.cache(account), expectedIdentity: account.identity, control: control).load()
             }
             controls[account.id] = nil; refreshingAccounts.remove(account.id)
-            guard !control.cancelled, refreshAccountIDs.contains(account.id), Self.acceptsResult(request: account, current: accounts.first(where: { $0.id == account.id })) else { continue }
+            // A hidden response must not update usage, but its provider retry
+            // deadline still applies to the same credential generation.
+            guard Self.acceptsResult(request: account, current: accounts.first(where: { $0.id == account.id })) else { continue }
+            if let retryAt = result.retryAt {
+                nextEligibleRefresh[account.id] = max(nextEligibleRefresh[account.id] ?? .distantPast, retryAt)
+            }
+            guard !control.cancelled, refreshAccountIDs.contains(account.id) else { continue }
             var display = result
             if result.isStale, account.isManaged, result.fiveHour?.utilization == nil, result.weekly?.utilization == nil,
                let previous = snapshots[account.id], previous.fiveHour?.utilization != nil || previous.weekly?.utilization != nil {
-                display = previous.failed(result.note ?? "사용량 조회 실패", requiresLogin: result.requiresLogin)
+                display = previous.failed(result.note ?? "Could not load usage", requiresLogin: result.requiresLogin)
             }
             // CLI accounts never carry a previous account's fallback across a refresh.
             snapshots[account.id] = display
@@ -223,9 +235,9 @@ final class UsageStore: ObservableObject {
             updateRepresentatives()
         }
     }
-    private func configureTimer() {
+    private func configureTimer(interval: Double? = nil) {
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: max(60, settings.refreshIntervalSeconds), repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: max(60, interval ?? settings.refreshIntervalSeconds), repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in if self?.isRefreshing == false { self?.refreshNow() } }
         }
     }
@@ -234,14 +246,14 @@ final class UsageStore: ObservableObject {
         guard !isLoggingIn, pendingLogin == nil, !storageUnavailable else { return }
         do { _ = try ProviderCLI.executable(provider) }
         catch { errorMessage = error.localizedDescription; return }
-        let candidate = UsageAccount(id: UUID(), provider: provider, name: "새 \(provider.displayName) 계정", credentialID: UUID())
+        let candidate = UsageAccount(id: UUID(), provider: provider, name: "New \(provider.displayName) account", credentialID: UUID())
         do { try files.createPrivateDirectory(files.credentials(candidate.credentialID!)) }
         catch { errorMessage = error.localizedDescription; return }
         var next = registry; next.cleanupPending.append(candidate)
         guard commit(next) else { try? files.removeCredentials(candidate); return }
         let control = OperationControl(); loginControl = control; loginCandidate = candidate
         isLoggingIn = true; errorMessage = nil
-        loginMessage = "분리된 새 로그인 창에서 \(provider.displayName) 계정을 선택하세요. 기존 브라우저 로그인은 공유하지 않습니다. (최대 5분)"
+        loginMessage = "Choose your \(provider.displayName) account in the isolated sign-in window. Existing browser sessions are not shared. (Up to 5 minutes)"
         let directory = files.credentials(candidate.credentialID!)
         let openURL: @Sendable (URL) -> Void = { [weak self] url in
             Task { @MainActor [weak self] in
@@ -268,9 +280,9 @@ final class UsageStore: ObservableObject {
             IsolatedLoginWindow.shared.finish()
             if !control.cancelled, case .success(let identity) = result {
                 var completed = candidate; completed.identity = identity
-                completed.name = identity.email ?? "\(provider.displayName) 계정"
+                completed.name = identity.email ?? "\(provider.displayName) account"
                 pendingLogin = PendingAccountLogin(account: completed, replacing: replacing?.id)
-                loginMessage = "로그인한 계정 정보를 확인한 뒤 등록하세요."
+                loginMessage = "Review the signed-in account, then register it."
             } else {
                 loginMessage = nil
                 if !control.cancelled, case .failure(let error) = result { errorMessage = error.localizedDescription }
@@ -291,10 +303,10 @@ final class UsageStore: ObservableObject {
         var incoming = pending.account
         if let duplicate = next.accounts.first(where: {
             $0.provider == incoming.provider && $0.id != pending.replacing && $0.identity.map { incoming.identity?.comparison(to: $0) == .same } == true
-        }) { errorMessage = "이미 등록된 계정입니다: \(duplicate.title)"; return }
+        }) { errorMessage = "This account is already registered: \(duplicate.title)"; return }
         if let id = pending.replacing, !addAsNew {
             guard let index = next.accounts.firstIndex(where: { $0.id == id }), !next.accounts[index].deletionPending else { return }
-            if reconnectionComparison == .different { errorMessage = "다른 계정입니다. 새 계정으로 추가하세요."; return }
+            if reconnectionComparison == .different { errorMessage = "This is a different account. Add it as a new account."; return }
             if reconnectionComparison != .same && !replaceUnverified { return }
             let old = next.accounts[index]
             incoming = UsageAccount(id: old.id, provider: old.provider, name: old.name, identity: incoming.identity, credentialID: incoming.credentialID)
@@ -318,7 +330,7 @@ final class UsageStore: ObservableObject {
         if let pending = pendingLogin {
             pendingLogin = nil; loginMessage = nil
             Task { await cleanCandidate(pending.account) }
-        } else if isLoggingIn { loginMessage = "로그인을 취소하고 있습니다…" }
+        } else if isLoggingIn { loginMessage = "Cancelling sign-in…" }
     }
     private func cleanCandidate(_ account: UsageAccount) async {
         guard let credentialID = account.credentialID, !cleaning.contains(credentialID) else { return }

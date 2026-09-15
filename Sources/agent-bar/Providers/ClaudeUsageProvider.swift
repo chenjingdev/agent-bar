@@ -12,20 +12,29 @@ struct ClaudeUsageProvider: UsageProviding {
     var directory: URL? = nil
     var cacheURL: URL? = nil
     var expectedIdentity: AccountIdentity? = nil
+    var control = OperationControl()
+    var statusReader: @Sendable (URL?, OperationControl) throws -> AccountIdentity = {
+        try ProviderCLI.claudeStatus(directory: $0, control: $1)
+    }
+    var transport: @Sendable (URLRequest) async throws -> (Data, URLResponse) = {
+        try await URLSession.shared.data(for: $0)
+    }
 
     func load() async -> ProviderSnapshot {
         await Task.detached(priority: .utility) {
             do {
+                try control.checkCancellation()
                 if let directory, let expectedIdentity {
-                    let current = try ProviderCLI.claudeStatus(directory: directory)
+                    let current = try statusReader(directory, control)
                     if current.comparison(to: expectedIdentity) == .different {
-                        throw AccountError.message("연결된 Claude 계정이 변경되었습니다. 재연결하여 확인하세요.")
+                        throw AccountError.message("The linked Claude account has changed. Reconnect to confirm it.")
                     }
                 }
+                try control.checkCancellation()
                 let initialCredentialKey = try? readCredentials().cacheKey
                 let remoteResult = try await resolveRemoteUsage()
                 guard initialCredentialKey == (try? readCredentials().cacheKey) else {
-                    throw AccountError.message("조회 중 CLI 계정이 변경되었습니다. 다시 새로고침하세요.")
+                    throw AccountError.message("The CLI account changed during the request. Refresh again.")
                 }
                 let modelWeeklies: [ModelWeeklySummary] = (remoteResult.data.modelWeeklies ?? []).map { cached in
                     ModelWeeklySummary(
@@ -78,6 +87,7 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 
     private func resolveRemoteUsage() async throws -> RemoteUsageResult {
+        try control.checkCancellation()
         let cache = ClaudeUsageCache(overrideURL: cacheURL, enabled: cacheURL != nil)
         let now = Date.now
         let previousCache = try? cache.readRaw()
@@ -100,6 +110,7 @@ struct ClaudeUsageProvider: UsageProviding {
         }
 
         let planName = resolvedPlanName ?? planName(from: credentials.subscriptionType)
+        try control.checkCancellation()
         let apiResult = await fetchUsageApi(accessToken: credentials.accessToken)
 
         if let payload = apiResult.data {
@@ -225,7 +236,8 @@ struct ClaudeUsageProvider: UsageProviding {
     private func fetchUsageApi(accessToken: String) async -> UsageApiResult {
         do {
             let request = try makeUsageRequest(accessToken: accessToken)
-            let (data, response) = try await URLSession.shared.data(for: request)
+            try control.checkCancellation()
+            let (data, response) = try await transport(request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 return UsageApiResult(data: nil, error: "invalid-response", retryAfterSeconds: nil)

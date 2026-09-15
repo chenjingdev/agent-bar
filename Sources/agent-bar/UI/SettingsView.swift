@@ -12,13 +12,13 @@ struct SettingsView: View {
                 }
                 Button("Refresh Now") { store.refreshNow() }.disabled(store.isRefreshing)
             }
-            Section("메뉴 막대") {
-                Stepper("표시 개수: \(store.displayConfiguration.activeCount)", value: Binding(
+            Section("Menu Bar") {
+                Stepper("Items: \(store.displayConfiguration.activeCount)", value: Binding(
                     get: { store.displayConfiguration.activeCount },
                     set: { count in store.updateDisplay { $0.resize(count) } }), in: 1...Int.max)
-                Text("개수를 줄여도 설정은 보존됩니다. 각 표시의 내용은 해당 표시 메뉴에서 선택하세요.")
+                Text("Reducing the count preserves settings. Configure each item from its display menu.")
                     .font(.caption).foregroundStyle(.secondary)
-                if store.displayWidthWarning { Text("항목이 많아 메뉴 막대 공간을 많이 사용합니다.").font(.caption).foregroundStyle(.orange) }
+                if store.displayWidthWarning { Text("These items use a large portion of the menu bar.").font(.caption).foregroundStyle(.orange) }
                 if let error = store.displayError { Text(error).font(.caption).foregroundStyle(.orange) }
             }
         }.formStyle(.grouped).padding(20).frame(width: 430, height: 320)

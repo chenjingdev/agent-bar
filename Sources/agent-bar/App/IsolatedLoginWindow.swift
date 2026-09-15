@@ -22,7 +22,7 @@ final class IsolatedLoginWindow: NSObject, ASWebAuthenticationPresentationContex
                 self.session = nil; self.activeID = nil
                 control.cancel()
                 if let error, (error as NSError).code != ASWebAuthenticationSessionError.canceledLogin.rawValue {
-                    failed("분리된 로그인 창을 열 수 없습니다. 일반 브라우저로 전환하지 않았습니다.")
+                    failed("Could not open the isolated login window. No shared-browser fallback was used.")
                 }
             })
         session.prefersEphemeralWebBrowserSession = true
@@ -30,7 +30,7 @@ final class IsolatedLoginWindow: NSObject, ASWebAuthenticationPresentationContex
         self.session = session
         guard session.canStart && session.start() else {
             self.session = nil; activeID = nil; control.cancel()
-            failed("macOS에서 분리된 인증 세션을 시작할 수 없습니다. 기존 브라우저 세션은 사용하지 않았습니다.")
+            failed("macOS could not start an isolated authentication session. The existing browser session was not used.")
             return
         }
     }

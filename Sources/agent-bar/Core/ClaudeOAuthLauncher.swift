@@ -23,7 +23,7 @@ enum ClaudeOAuthLauncher {
               let callback = URL(string: redirect), callback.scheme == "http",
               ["localhost", "127.0.0.1", "[::1]"].contains(callback.host ?? ""),
               callback.port != nil else {
-            throw AccountError.message("Claude CLI에서 유효한 로컬 콜백 로그인 주소를 받지 못했습니다. 기존 브라우저로 전환하지 않았습니다.")
+            throw AccountError.message("Claude did not return a valid sign-in URL with a local callback. No shared-browser fallback was used.")
         }
         return url
     }
@@ -37,8 +37,8 @@ enum ClaudeOAuthLauncher {
         let deadline = Date().addingTimeInterval(20)
         while !FileManager.default.fileExists(atPath: urlFile.path) {
             if control.cancelled { throw AccountError.cancelled }
-            if Date() >= deadline { throw AccountError.message("Claude 로그인 주소를 받지 못했습니다. 기존 브라우저로 전환하지 않았습니다.") }
-            if session.exitStatus != -1 { throw AccountError.message("Claude 로그인 준비에 실패했습니다.") }
+            if Date() >= deadline { throw AccountError.message("Could not obtain the Claude sign-in URL. No shared-browser fallback was used.") }
+            if session.exitStatus != -1 { throw AccountError.message("Could not prepare Claude sign-in.") }
             Thread.sleep(forTimeInterval: 0.05)
         }
         // The opener creates the file before its write finishes. Wait for a valid
@@ -49,12 +49,12 @@ enum ClaudeOAuthLauncher {
             authorizationURL = (try? Data(contentsOf: urlFile)).flatMap { try? validate($0) }
             if authorizationURL == nil { Thread.sleep(forTimeInterval: 0.05) }
         }
-        guard let authorizationURL else { throw AccountError.message("Claude 로그인 주소 형식이 지원되지 않습니다.") }
+        guard let authorizationURL else { throw AccountError.message("Unsupported Claude sign-in URL format.") }
         try FileManager.default.removeItem(at: urlFile)
         openURL(authorizationURL)
         _ = try session.collect(until: Date().addingTimeInterval(300), control: control)
         guard !control.cancelled else { throw AccountError.cancelled }
-        guard session.exitStatus == 0 else { throw AccountError.message("Claude 로그인이 완료되지 않았습니다.") }
+        guard session.exitStatus == 0 else { throw AccountError.message("Claude sign-in did not complete.") }
         return try ProviderCLI.claudeStatus(directory: directory, control: control)
     }
 }

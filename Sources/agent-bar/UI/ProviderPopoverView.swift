@@ -94,11 +94,11 @@ struct ProviderPopoverView: View {
                     Text("Login required")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(AppTheme.muted)
-                    Text("계정 관리에서 재연결하거나 현재 CLI에 로그인하세요.")
+                    Text("Reconnect in Accounts or sign in to the current CLI.")
                         .font(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundStyle(AppTheme.muted.opacity(0.8))
                 } else {
-                    Text(snapshot.isStale ? "최신 값 확인 필요 · \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))" : "Last updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))")
+                    Text(snapshot.isStale ? "Refresh needed · \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))" : "Last updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(AppTheme.muted)
                     Text(TokenFormatters.dateTimeString(snapshot.updatedAt))

@@ -12,7 +12,7 @@ struct CodexUsageProvider: UsageProviding {
                 defer { rpc.stop() }
                 let identity = try rpc.identity()
                 if let expectedIdentity, identity.comparison(to: expectedIdentity) == .different {
-                    throw AccountError.message("연결된 계정이 변경되었습니다. 재연결하여 계정을 확인하세요.")
+                    throw AccountError.message("The linked account has changed. Reconnect to confirm the account.")
                 }
                 let response: [String: Any]
                 do { response = try rpc.request("account/rateLimits/read") }
@@ -29,7 +29,7 @@ struct CodexUsageProvider: UsageProviding {
                     weekly: result.weeklyUsedPercent.map { WindowSummary(tokens: $0, limitTokens: 100, resetAt: result.weeklyResetAt, displayStyle: .percentage) },
                     modelWeeklies: [], planName: result.planName,
                     sourceDescription: "Codex app-server account/rateLimits/read",
-                    note: "계정 전체의 Codex 사용 한도입니다.", isStale: false, requiresLogin: false)
+                    note: "Account-wide Codex usage limits.", isStale: false, requiresLogin: false)
             } catch {
                 var failed = ProviderSnapshot.placeholder(for: .codex).failed(error.localizedDescription,
                     requiresLogin: (error as? AccountError).map { if case .loginRequired = $0 { return true }; return false } ?? false)

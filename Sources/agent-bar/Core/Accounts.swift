@@ -39,7 +39,7 @@ struct UsageAccount: Codable, Equatable, Identifiable, Sendable {
         Self(id: UUID(uuidString: provider == .claude
             ? "00000000-0000-0000-0000-000000000001"
             : "00000000-0000-0000-0000-000000000002")!,
-             provider: provider, name: "현재 CLI 계정")
+             provider: provider, name: "Current CLI account")
     }
 }
 
@@ -86,13 +86,13 @@ struct AccountFiles: Sendable {
     func load() throws -> AccountRegistry {
         guard FileManager.default.fileExists(atPath: registryURL.path) else { return AccountRegistry() }
         let registry = try read(AccountRegistry.self, at: registryURL)
-        guard registry.version == 1 else { throw AccountError.message("지원하지 않는 계정 설정 버전입니다. 설정 파일을 보존했습니다.") }
+        guard registry.version == 1 else { throw AccountError.message("Unsupported account settings version. The settings file was preserved.") }
         guard Set(registry.accounts.map(\.id)).count == registry.accounts.count else {
-            throw AccountError.message("계정 설정에 중복 ID가 있습니다. 설정 파일을 보존했습니다.")
+            throw AccountError.message("Duplicate account IDs in settings. The settings file was preserved.")
         }
         let credentialIDs = registry.accounts.compactMap(\.credentialID)
         guard Set(credentialIDs).count == credentialIDs.count else {
-            throw AccountError.message("여러 계정이 같은 인증 폴더를 가리킵니다. 설정 파일을 보존했습니다.")
+            throw AccountError.message("Multiple accounts reference the same credential directory. The settings file was preserved.")
         }
         return registry
     }
@@ -123,7 +123,7 @@ struct AccountFiles: Sendable {
                 status = remaining == errSecItemNotFound ? errSecItemNotFound : (remaining == errSecSuccess ? errSecInvalidOwnerEdit : remaining)
             }
             guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw AccountError.message("이 계정의 Keychain 정리가 필요합니다 (\(status)). 삭제를 재시도하세요.")
+                throw AccountError.message("Keychain cleanup is required for this account (\(status)). Retry deletion.")
             }
         }
         if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
@@ -148,10 +148,10 @@ enum AccountError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .message(let message): return message
-        case .loginRequired: return "로그인이 필요합니다. 계정을 재연결하세요."
-        case .cancelled: return "로그인을 취소했습니다."
-        case .rateLimited: return "요청 제한으로 잠시 후 다시 확인합니다."
-        case .timeout: return "응답 시간이 초과되었습니다. 다시 시도하세요."
+        case .loginRequired: return "Sign-in required. Reconnect the account."
+        case .cancelled: return "Operation cancelled."
+        case .rateLimited: return "Rate limited. Retrying after the required delay."
+        case .timeout: return "The request timed out. Please try again."
         }
     }
 }

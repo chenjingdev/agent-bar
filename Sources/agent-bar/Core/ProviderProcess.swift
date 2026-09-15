@@ -64,14 +64,14 @@ final class ProcessSession: @unchecked Sendable {
         defer { condition.unlock() }
         while true {
             if control.cancelled { throw AccountError.cancelled }
-            if overflow { throw AccountError.message("CLI 응답 크기가 허용 범위를 초과했습니다.") }
+            if overflow { throw AccountError.message("The CLI response exceeded the size limit.") }
             if let end = buffer.firstIndex(of: 0x0a) {
                 let result = Data(buffer[..<end]); buffer.removeSubrange(...end)
                 return result
             }
             if ended {
                 if !buffer.isEmpty { let result = buffer; buffer.removeAll(); return result }
-                throw AccountError.message("CLI 연결이 종료되었습니다. 로그인 상태와 CLI 설치를 확인하세요.")
+                throw AccountError.message("The CLI connection closed. Check the installation and sign-in status.")
             }
             if Date() >= deadline { throw AccountError.timeout }
             _ = condition.wait(until: min(deadline, Date().addingTimeInterval(0.1)))
@@ -85,7 +85,7 @@ final class ProcessSession: @unchecked Sendable {
         while true {
             if control.cancelled { throw AccountError.cancelled }
             if overflow || result.count + buffer.count > 2_000_000 {
-                throw AccountError.message("CLI 응답이 너무 큽니다.")
+                throw AccountError.message("The CLI response is too large.")
             }
             result.append(buffer); buffer.removeAll()
             if ended && !process.isRunning { return result }
@@ -122,6 +122,9 @@ final class OperationControl: @unchecked Sendable {
     private var isCancelled = false
     var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return isCancelled }
     func cancel() { lock.lock(); isCancelled = true; lock.unlock() }
+    func checkCancellation() throws {
+        if cancelled { throw AccountError.cancelled }
+    }
 }
 
 enum ProviderCLI {
@@ -132,7 +135,7 @@ enum ProviderCLI {
         if provider == .claude { paths += [home.appendingPathComponent(".local/bin/claude").path] }
         paths += [home.appendingPathComponent(".bun/bin/\(provider == .codex ? "codex" : "claude")").path]
         guard let path = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            throw AccountError.message("\(provider.displayName) CLI를 찾을 수 없습니다. 공식 CLI를 설치한 뒤 다시 시도하세요.")
+            throw AccountError.message("Could not find the \(provider.displayName) CLI. Install the official CLI and try again.")
         }
         return URL(fileURLWithPath: path).resolvingSymlinksInPath()
     }
@@ -187,10 +190,10 @@ final class CodexRPC {
             try session.send(["method": "initialized"])
         } catch { session.stop(); throw error }
     }
-    func request(_ method: String, params: Any = NSNull()) throws -> [String: Any] {
+    func request(_ method: String, params: Any = NSNull(), timeout: TimeInterval? = nil) throws -> [String: Any] {
         let id = nextID; nextID += 1
         try session.send(["id": id, "method": method, "params": params])
-        let deadline = Date().addingTimeInterval(requestTimeout)
+        let deadline = Date().addingTimeInterval(timeout ?? requestTimeout)
         while true {
             let data = try session.line(until: deadline, control: control)
             guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
@@ -205,8 +208,8 @@ final class CodexRPC {
                         throw AccountError.rateLimited(max(60, detail?["retryAfterSeconds"] as? Double ?? 60))
                     }
                     // Avoid surfacing raw provider payloads/credentials.
-                    if method == "account/rateLimits/read" { throw AccountError.message("Codex 사용량 조회에 실패했습니다. 로그인 상태를 확인하세요.") }
-                    throw AccountError.message("Codex \(method) 요청에 실패했습니다.")
+                    if method == "account/rateLimits/read" { throw AccountError.message("Could not load Codex usage. Check your sign-in status.") }
+                    throw AccountError.message("Codex request failed: \(method).")
                 }
                 return value["result"] as? [String: Any] ?? [:]
             }
@@ -227,7 +230,7 @@ final class CodexRPC {
               let raw = result["authUrl"] as? String, let url = URL(string: raw),
               url.scheme == "https", let host = url.host,
               host == "auth.openai.com" || host.hasSuffix(".openai.com") else {
-            throw AccountError.message("Codex가 유효한 공식 로그인 주소를 반환하지 않았습니다.")
+            throw AccountError.message("Codex did not return a valid official sign-in URL.")
         }
         openURL(url)
         do {
@@ -242,7 +245,7 @@ final class CodexRPC {
                 }
                 guard value["method"] as? String == "account/login/completed",
                       let params = value["params"] as? [String: Any], params["loginId"] as? String == loginID else { continue }
-                guard params["success"] as? Bool == true else { throw AccountError.message("Codex 로그인이 완료되지 않았습니다.") }
+                guard params["success"] as? Bool == true else { throw AccountError.message("Codex sign-in did not complete.") }
                 return try identity()
             }
         } catch {

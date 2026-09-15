@@ -33,7 +33,7 @@ struct DisplayPopoverView: View {
                         if showingAccounts {
                             AccountManagementView { account in selectedAccount = account.id; showingAccounts = false }
                         } else if selectedAccount == nil && (details.isEmpty || store.displayRows(item).isEmpty || (!item.showService && !item.showBars && !item.showPercent)) {
-                            Text(details.isEmpty ? "표시 \(number)에 계정을 선택하세요." : "선택한 데이터가 없거나 표시 요소가 꺼져 있습니다. 로그인 상태는 Accounts에서 확인하세요.").foregroundStyle(AppTheme.muted)
+                            Text(details.isEmpty ? "Choose accounts for item \(number)." : "No selected data is available, or display components are off. Check sign-in status in Accounts.").foregroundStyle(AppTheme.muted)
                             DisplayOptionsContent(itemID: itemID, rename: { renaming = $0 })
                         } else {
                             if let error = store.displayError { Text(error).font(.caption).foregroundStyle(.orange) }
@@ -67,7 +67,7 @@ struct DisplayPopoverView: View {
                     .font(.system(size: 16, weight: .bold, design: .rounded)).textSelection(.enabled)
             }
             if snapshot.isStale || snapshot.requiresLogin {
-                Text(snapshot.requiresLogin ? "Login required · Accounts에서 재연결하세요." : "최신 값 확인 필요 · 저장된 사용량")
+                Text(snapshot.requiresLogin ? "Sign-in required · Reconnect in Accounts." : "Refresh needed · cached usage")
                     .font(.caption).foregroundStyle(.orange)
             }
             ForEach(DisplayMetric.all(snapshot).filter { $0.id != "5h" || $0.window != nil }) { metric in
@@ -85,7 +85,7 @@ struct DisplayOptionsMenu: View {
     var rename: (UsageAccount) -> Void
     var body: some View {
         Menu { DisplayOptionsContent(itemID: itemID, rename: rename) } label: { Image(systemName: "slider.horizontal.3") }
-            .menuStyle(.borderlessButton).fixedSize().help("메뉴 막대 표시 설정")
+            .menuStyle(.borderlessButton).fixedSize().help("Menu Bar Display Settings")
     }
 }
 struct DisplayOptionsContent: View {
@@ -100,37 +100,37 @@ struct DisplayOptionsContent: View {
         } })
     }
     var body: some View {
-        Toggle("서비스 표시", isOn: binding(\.showService))
-        Toggle("사용량 바", isOn: binding(\.showBars))
-        Toggle("퍼센트", isOn: binding(\.showPercent))
-        Picker("세로 줄 수", selection: binding(\.maxRows)) {
-            ForEach(1...6, id: \.self) { Text("\($0)줄").tag($0) }
+        Toggle("Service Badge", isOn: binding(\.showService))
+        Toggle("Usage Bars", isOn: binding(\.showBars))
+        Toggle("Percentage", isOn: binding(\.showPercent))
+        Picker("Rows per Column", selection: binding(\.maxRows)) {
+            ForEach(1...6, id: \.self) { Text("\($0) rows").tag($0) }
         }
-        if item.maxRows >= 4 { Text("퍼센트가 작게 표시됩니다.") }
-        if store.displayWidthWarning { Text("메뉴 막대 공간을 많이 사용합니다.") }
+        if item.maxRows >= 4 { Text("Percentages will be small at this density.") }
+        if store.displayWidthWarning { Text("These items use a large portion of the menu bar.") }
         if let error = store.displayError { Text(error) }
         Divider()
-        Text("메뉴 막대에 표시할 사용량")
+        Text("Limits Shown in Menu Bar")
         ForEach(store.accounts.filter { !$0.deletionPending && config.available($0.id, for: itemID) }) { account in
             Menu(account.title + " · " + account.provider.shortName) {
-                Toggle("이 표시에서 보기", isOn: Binding(get: { item.accountIDs.contains(account.id) }, set: { selected in
+                Toggle("Show in This Item", isOn: Binding(get: { item.accountIDs.contains(account.id) }, set: { selected in
                     store.updateDisplay { value in
                         if selected { value.assign(account.id, to: itemID) } else { value.remove(account.id, from: itemID) }
                     }
                 }))
-                Button("이름 변경") { rename(account) }
+                Button("Rename") { rename(account) }
                 Divider()
                 AccountMetricOptions(account: account)
                 if item.accountIDs.contains(account.id) {
                     Divider()
-                    Menu("다른 표시로 이동") {
+                    Menu("Move to Another Item") {
                         ForEach(Array(config.activeItems.enumerated()), id: \.element.id) { index, other in
-                            if other.id != itemID { Button("표시 \(index + 1)") { store.updateDisplay { $0.assign(account.id, to: other.id, moving: true) } } }
+                            if other.id != itemID { Button("Item \(index + 1)") { store.updateDisplay { $0.assign(account.id, to: other.id, moving: true) } } }
                         }
                     }
-                    Button("위로") { store.updateDisplay { $0.reorder(account.id, in: itemID, offset: -1) } }
+                    Button("Move Up") { store.updateDisplay { $0.reorder(account.id, in: itemID, offset: -1) } }
                         .disabled(item.accountIDs.first == account.id)
-                    Button("아래로") { store.updateDisplay { $0.reorder(account.id, in: itemID, offset: 1) } }
+                    Button("Move Down") { store.updateDisplay { $0.reorder(account.id, in: itemID, offset: 1) } }
                         .disabled(item.accountIDs.last == account.id)
                 }
             }

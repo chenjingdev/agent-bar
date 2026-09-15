@@ -61,9 +61,9 @@ final class StatusBarController {
             height: max(18, NSStatusBar.system.thickness - 2), scale: statusItem.button?.window?.backingScaleFactor ?? 2)
         statusItem.length = image.size.width
         statusItem.button?.image = image
-        let description = rows.map { "\($0.account.title) · \($0.metric.title): \(TokenFormatters.percentageString(for: $0.metric.window?.utilization))\($0.stale ? " (저장된 값)" : "")" }.joined(separator: "\n")
-        statusItem.button?.toolTip = description.isEmpty ? "표시 \(number) · 계정과 사용량 선택" : description
-        statusItem.button?.setAccessibilityLabel("표시 \(number) · " + description)
+        let description = rows.map { "\($0.account.title) · \($0.metric.title): \(TokenFormatters.percentageString(for: $0.metric.window?.utilization))\($0.stale ? " (cached)" : "")" }.joined(separator: "\n")
+        statusItem.button?.toolTip = description.isEmpty ? "Item \(number) · Choose accounts and limits" : description
+        statusItem.button?.setAccessibilityLabel("Item \(number) · " + description)
     }
     func remove() { popover.close(); NSStatusBar.system.removeStatusItem(statusItem) }
     @objc private func toggle(_ sender: AnyObject?) {
