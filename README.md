@@ -8,12 +8,12 @@ Click a menu bar item to see the original usage cards for every assigned account
 
 - **Settings** controls the refresh interval and number of menu bar items. Reducing the count hides trailing items without losing their settings; increasing it restores them.
 - The **sliders menu** on each usage popover controls service badges, bars, individual percentages, and **1–6 vertical rows** (default 2). Extra rows flow into columns within the same menu bar item.
-- Assign any combination of Claude and Codex accounts. An account belongs to only one item; other active assignments are excluded from the picker. Use **다른 표시로 이동** to move it atomically, or **위로/아래로** to reorder it.
+- Assign any combination of Claude and Codex accounts. An account belongs to only one item; other active assignments are excluded from the picker. Use **Move to Another Item** to move it atomically, or **Move Up / Move Down** to reorder it.
 - Select **5h, Weekly, and model-specific limits per account**. A selected but unavailable limit occupies no bar; it appears automatically when data becomes available. This includes Codex 5h. Each visible limit has its own percentage.
 - Same-provider accounts in a combined item have numbered badges, matching their detail headings. Tooltip/accessibility text identifies every account and limit.
 - An empty/hidden item remains reachable as **AB · number**. A non-blocking notice appears when AgentBar's combined width exceeds 40% of its display width; this is a heuristic, not a measurement of space available beside other apps.
 - **Accounts** adds accounts and provides rename, menu-bar metric selection, reconnect, and delete through each row's ellipsis menu. The display-options account submenu also offers Rename. Each add/reconnect uses a fresh isolated macOS OAuth window; no shared-browser fallback is used.
-- **현재 CLI 계정** follows the external CLI login and never changes its credentials. A managed account's delete operation removes only its AgentBar credentials/cache.
+- **Current CLI account** follows the external CLI login and never changes its credentials. A managed account's delete operation removes only its AgentBar credentials/cache.
 
 The first display migration preserves existing provider visibility and badge/bar/percentage preferences. Hidden providers retain an inactive item; existing multi-account display settings are not migrated again. Other accounts remain available in Accounts. Reopening AgentBar opens the existing Settings window.
 
@@ -47,7 +47,7 @@ Account data lives under `~/.agentbar/multi-account-v1/`:
 
 Directories use mode `0700`; app-written files use `0600`. OAuth tokens stay in the CLI-managed credential store and are never written to usage caches or app logs. Treat credential directories and local backups as private.
 
-The existing refresh interval is preserved (60, 120, 300, or 600 seconds). Accounts hidden from active menu bar items are excluded from both automatic and manual refresh. Turning off every display component or deselecting every metric also pauses the account. Selected but unavailable metrics continue polling so they can appear later. Showing an account again schedules its refresh while respecting retry cooldowns. Requests are serialized per provider. Provider retry delays are respected where exposed; manual refresh does not bypass a cooldown. Failures are isolated to the affected account.
+The existing refresh interval is preserved (60, 120, 300, or 600 seconds). Accounts hidden from active menu bar items are excluded from both automatic and manual refresh. Turning off every display component or deselecting every metric also pauses the account. Selected but unavailable metrics continue polling so they can appear later. Showing an account again schedules its refresh while respecting retry cooldowns. Requests are serialized per provider. Changing the refresh interval applies immediately. Provider retry deadlines are preserved even if a response arrives after an account is hidden; manual refresh does not bypass a cooldown. Failures are isolated to the affected account.
 
 Unknown usage is `--`, not `0%`. Old values retain their original timestamp and are marked stale. Existing global cache files are not imported into managed accounts. Current-CLI caches require a matching credential before reuse; Codex's current-CLI slot does not reuse a persisted snapshot.
 
