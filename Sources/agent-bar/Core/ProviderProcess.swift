@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 // All blocking process work runs on a utility task. stdout is continuously drained;
@@ -21,6 +22,11 @@ final class ProcessSession: @unchecked Sendable {
     private var stopped = false
 
     init(executable: URL, arguments: [String], environment: [String: String], directory: URL) throws {
+        // A CLI may exit between receiving a response and our next write.
+        // Report EPIPE through FileHandle instead of terminating the whole app.
+        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
         // Keep the upstream process-group cleanup guarantee. The helper execs
         // the CLI without a shell, so arguments and paths remain literal.
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")

@@ -186,7 +186,9 @@ struct CodexAppServerClientTests {
     private func writeExecutable(_ contents: String, to url: URL) throws {
         var script = contents
         if url.lastPathComponent.hasPrefix("codex"), let newline = script.firstIndex(of: "\n") {
-            script.insert(contentsOf: "printf '%s\\n' '{\"id\":1,\"result\":{}}'\n", at: script.index(after: newline))
+            // Follow the handshake before replying or exiting, like the real CLI.
+            // Pre-emitting both responses made success tests race with pipe closure.
+            script.insert(contentsOf: "IFS= read -r request || exit 1\nprintf '%s\\n' '{\"id\":1,\"result\":{}}'\nIFS= read -r notification || exit 1\nIFS= read -r request || exit 1\n", at: script.index(after: newline))
         }
         try Data(script.utf8).write(to: url)
         try FileManager.default.setAttributes(

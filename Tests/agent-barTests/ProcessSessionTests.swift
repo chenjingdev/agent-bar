@@ -3,6 +3,15 @@ import Testing
 @testable import agent_bar
 
 struct ProcessSessionTests {
+    @Test func sendingToExitedProcessThrowsInsteadOfTerminatingApp() throws {
+        let session = try ProcessSession(executable: URL(fileURLWithPath: "/usr/bin/true"),
+            arguments: [], environment: [:], directory: FileManager.default.temporaryDirectory)
+        defer { session.stop() }
+        _ = try session.collect(until: Date().addingTimeInterval(5), control: OperationControl())
+        #expect(session.exitStatus == 0)
+        #expect(throws: (any Error).self) { try session.send(["method": "initialized"]) }
+    }
+
     @Test func splitLinesAndImmediateExitAreCollected() throws {
         let session = try ProcessSession(executable: URL(fileURLWithPath: "/usr/bin/python3"),
             arguments: ["-c", "import sys,time;sys.stdout.write('hel');sys.stdout.flush();time.sleep(.02);print('lo');print('world')"],

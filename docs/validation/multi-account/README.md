@@ -16,6 +16,24 @@ and cancellation without signing in. Ordinary tests do not establish live authen
 Rendering artifacts can be generated with `AGENTBAR_QA_ARTIFACT_DIR=<directory> swift test`.
 Fixture accounts and usage values are synthetic.
 
+## Maintainer review
+
+The review reproduced a SIGPIPE termination when writing to a CLI that had already
+exited. The process transport now disables SIGPIPE on its input descriptor so the
+write throws instead of terminating AgentBar. A regression test writes to an exited
+process, and the RPC fixtures now wait for the actual initialization/request handshake.
+
+All 96 tests across 18 suites passed with installed Claude/Codex startup-and-cancel
+probes enabled. On the review Mac, the Swift 6.4 Command Line Tools default build
+could not find the macOS 27 SDK's SwiftUIMacros plugin. Validation used the installed
+macOS 26.5 SDK and native build system:
+
+```sh
+AGENTBAR_LIVE_AUTH_PROBE=1 swift test --build-system native --sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+```
+
+Full account sign-in and reconnect were not repeated during this review.
+
 ## Manual acceptance already performed
 
 - One managed Claude account and two managed Codex accounts completed authentication.
