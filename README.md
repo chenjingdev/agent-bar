@@ -1,136 +1,90 @@
 # agent-bar
 
-`agent-bar` is a small macOS menu bar app for monitoring Claude Code and Codex usage limits without switching to either client.
+A local macOS menu bar app for monitoring **Codex and Claude Code subscription limits across multiple accounts**.
 
-Detected providers share one compact menu bar group, with an independently clickable capsule for each provider. Each capsule shows the current 5-hour usage percentage beside compact stacked limit bars; click it to see used and remaining percentages, reset times, data freshness, and model-specific Claude limits.
+## Accounts and menu bar
 
-## Screenshots
+Click a menu bar item to see the original usage cards for every assigned account, in order. The fixed footer offers **Accounts · Settings · Quit**.
 
-<table>
-  <tr>
-    <td width="50%"><img src="docs/images/claude-usage-popover.png" alt="Claude usage popover with 5-hour, weekly, and Fable limits" width="392" /></td>
-    <td width="50%"><img src="docs/images/codex-usage-popover.png" alt="Codex usage popover with 5-hour and weekly limits" width="392" /></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Claude</strong></td>
-    <td align="center"><strong>Codex</strong></td>
-  </tr>
-</table>
+- **Settings** controls the refresh interval and number of menu bar items. Reducing the count hides trailing items without losing their settings; increasing it restores them.
+- The **sliders menu** on each usage popover controls service badges, bars, individual percentages, and **1–6 vertical rows** (default 2). Extra rows flow into columns within the same menu bar item.
+- Assign any combination of Claude and Codex accounts. An account belongs to only one item; other active assignments are excluded from the picker. Use **다른 표시로 이동** to move it atomically, or **위로/아래로** to reorder it.
+- Select **5h, Weekly, and model-specific limits per account**. A selected but unavailable limit occupies no bar; it appears automatically when data becomes available. This includes Codex 5h. Each visible limit has its own percentage.
+- Same-provider accounts in a combined item have numbered badges, matching their detail headings. Tooltip/accessibility text identifies every account and limit.
+- An empty/hidden item remains reachable as **AB · number**. A non-blocking notice appears when AgentBar's combined width exceeds 40% of its display width; this is a heuristic, not a measurement of space available beside other apps.
+- **Accounts** adds accounts and provides rename, menu-bar metric selection, reconnect, and delete through each row's ellipsis menu. The display-options account submenu also offers Rename. Each add/reconnect uses a fresh isolated macOS OAuth window; no shared-browser fallback is used.
+- **현재 CLI 계정** follows the external CLI login and never changes its credentials. A managed account's delete operation removes only its AgentBar credentials/cache.
 
-<p align="center"><sub>Representative values rendered with the current interface. Your limits depend on your provider and account.</sub></p>
-
-## What It Shows
-
-- Independently clickable Claude and Codex capsules in one compact menu bar group
-- Provider-reported 5-hour and weekly usage limits
-- Used percentage, remaining percentage, and reset time for each available window
-- Claude model-specific weekly limits returned by Anthropic, with Fable pinned first
-- A persistent Fable weekly card; unavailable data is shown as `--`, never as a misleading `0%`
-- Manual refresh and configurable 60, 120, 300, or 600 second refresh intervals
-- Login-required, unavailable, stale, and last-known-good states
-- No backend service, telemetry, browser-cookie access, or local session-log scanning
-
-The compact Claude item uses three stacked bars for the 5-hour, overall weekly, and Fable weekly limits. The Codex item uses up to two bars for its 5-hour and weekly limits; when only one window is reported, that bar stays vertically centered. A dashed track means no usage window was reported; it is distinct from a reported `0%`, which keeps a solid empty track.
+The first display migration preserves existing provider visibility and badge/bar/percentage preferences. Hidden providers retain an inactive item; existing multi-account display settings are not migrated again. Other accounts remain available in Accounts. Reopening AgentBar opens the existing Settings window.
 
 ## Requirements
 
-- macOS 14 or later
-- A Swift 6.2-capable toolchain for running or building from source (`swift --version`)
-- Claude: Claude Code installed or Claude OAuth credentials detectable; sign in to Claude Code for direct OAuth API usage
-- Codex: a signed-in Codex CLI, Node.js, and `/usr/bin/python3`
+- macOS 14 or later; Swift 6.2 or later to build.
+- `/usr/bin/python3` for isolated CLI process-group startup and cleanup.
+- Official Codex and/or Claude Code CLI installed. Homebrew installations are preferred over user launch wrappers.
+- A supported subscription login for every account to monitor. API keys and API billing usage are outside this app's scope.
 
-AgentBar recognizes these executable locations:
+The implementation was developed against Codex CLI 0.154.0 and Claude Code 2.1.263. Provider interfaces can change with CLI releases.
 
-- Claude: `~/.local/bin/claude`, `~/.bun/bin/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`
-- Codex: `~/.bun/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`
-- Node.js: `~/.bun/bin/node`, `/opt/homebrew/bin/node`, `/usr/local/bin/node`, `/usr/bin/node`
+## How authentication and usage work
 
-Claude credential discovery checks the macOS Keychain and `<Claude config directory>/.credentials.json`. It also honors `CLAUDE_CONFIG_DIR`; otherwise the config directory is `~/.claude`.
+**Codex:** AgentBar launches the official `codex app-server` in a separate `CODEX_HOME` for each managed account. It uses managed ChatGPT OAuth login, `account/read`, and `account/rateLimits/read`. Managed accounts use the CLI's file credential storage in a private directory. Existing CLI launch wrappers and routing configuration are not modified.
 
-Providers are detected when AgentBar launches. If a provider item was absent because its executable or credentials were not detected, install or sign in to the provider and restart AgentBar. If the item is already visible, signing in and choosing **Refresh Now** is enough.
+**Claude:** A private per-login browser-opener helper captures the CLI's automatic OAuth URL for the macOS authentication session. The URL is validated and immediately removed from disk. The CLI keeps ownership of its PKCE state, local callback, and token exchange. AgentBar launches `claude auth login --claudeai` with a separate `CLAUDE_CONFIG_DIR`. It verifies the JSON login status and uses that directory's OAuth credential to query Anthropic's usage endpoint. The directory-specific Keychain entry is preferred, with the CLI's credential file as fallback. It never falls back to another account's default Keychain entry.
 
-## Run From Source
+Claude credentials can expire. This version provides a reconnect button and does not promise unattended renewal. It never sends model prompts to keep authentication alive.
+
+The old shared Claude status-line bridge is not used by the multi-account reader because its samples do not identify their owning account. The optional legacy script remains in the repository but is not installed or reconfigured by this app.
+
+## Data, refresh, and privacy
+
+Account data lives under `~/.agentbar/multi-account-v1/`:
+
+- `accounts.json`: versioned account metadata, representative selections, and pending cleanup records. No passwords or tokens.
+- `display-v1.json`: ordered display items, preserved inactive items, account metric selections, and rendering preferences. No credentials.
+- `credentials/<UUID>/`: per-login CLI authentication/configuration directory. Its path remains fixed after login because Keychain storage may depend on it.
+- `usage/<account UUID>/<credential UUID>/`: isolated usage cache and last-known-good snapshot.
+
+Directories use mode `0700`; app-written files use `0600`. OAuth tokens stay in the CLI-managed credential store and are never written to usage caches or app logs. Treat credential directories and local backups as private.
+
+The existing refresh interval is preserved (60, 120, 300, or 600 seconds). Accounts hidden from active menu bar items are excluded from both automatic and manual refresh. Turning off every display component or deselecting every metric also pauses the account. Selected but unavailable metrics continue polling so they can appear later. Showing an account again schedules its refresh while respecting retry cooldowns. Requests are serialized per provider. Provider retry delays are respected where exposed; manual refresh does not bypass a cooldown. Failures are isolated to the affected account.
+
+Unknown usage is `--`, not `0%`. Old values retain their original timestamp and are marked stale. Existing global cache files are not imported into managed accounts. Current-CLI caches require a matching credential before reuse; Codex's current-CLI slot does not reuse a persisted snapshot.
+
+No backend, telemetry, browser-cookie extraction, or session-log scanning is added. Authentication and usage requests go to the relevant provider through its CLI or usage endpoint.
+
+## Build and install
 
 ```bash
-git clone https://github.com/chenjingdev/agent-bar.git
-cd agent-bar
-swift run agent-bar
-```
-
-AgentBar is an accessory app: it appears in the macOS menu bar, not the Dock. The first refresh starts automatically, so placeholder values may appear briefly at launch.
-
-## Build a Local App Bundle
-
-Build an ad-hoc signed local app bundle:
-
-```bash
-cd agent-bar
+swift test
 ./scripts/build-app.sh
-open AgentBar.app
 ```
 
-Or build it and copy it to `~/Applications`:
+To install, first quit the existing AgentBar, then run:
 
 ```bash
-cd agent-bar
 ./scripts/build-app.sh --install
 open ~/Applications/AgentBar.app
 ```
 
-An Apple Developer account is not required for local use. The bundle is not notarized for distribution, so Gatekeeper may warn if it is moved to another Mac.
+The installer copies the previous app, its preferences, and existing multi-account data to:
 
-## How Usage Is Read
+`~/Library/Application Support/AgentBar/Backups/<timestamp>/`
 
-### Claude
+It verifies the staged app's signature before replacement and refuses to replace a running app. The bundle is ad-hoc signed for local use, not notarized for public distribution.
 
-AgentBar prefers a fresh Claude Code status-line sample when the optional bridge below is configured. Otherwise it uses a short-lived cache or requests `https://api.anthropic.com/api/oauth/usage` with the locally stored Claude OAuth credential.
+To roll back, quit AgentBar, restore `AgentBar.app` from the selected backup, and restore the corresponding AgentBar preferences if needed. Preserve the newer multi-account data separately before restoring its backup. Never restore over external `~/.codex`, `~/.claude`, or unrelated Keychain entries.
 
-The primary weekly card prefers Anthropic's overall weekly window. If Anthropic does not return one, AgentBar follows an available provider-reported scoped weekly window and explains that fallback in the popover.
+## Validation
 
-Model-specific weekly rows, including Fable, come from the OAuth usage response or its cache. A fresh status-line sample provides the 5-hour and overall weekly windows but does not create model-specific data. When Fable is not returned for the current account or plan, its card remains visible with `--` and an empty bar.
+`swift test` covers hidden-account refresh suspension/resumption, upstream preference migration, CLI process-tree cleanup, account storage and permissions, representative persistence, cache isolation, unknown-versus-zero values, credential mismatches, delayed-result rejection, process cancellation/timeouts, and SwiftUI rendering.
 
-### Codex
+An explicit installed-CLI probe can exercise Codex OAuth startup and cancellation **without opening a browser or signing in**:
 
-AgentBar starts the local `codex app-server` and reads `account/rateLimits/read`. The returned primary and secondary windows are displayed as the 5-hour and weekly limits.
-
-## Optional Claude Status-Line Bridge
-
-The repository includes `scripts/claude-statusline-bridge.sh`, but it is not installed or configured automatically. The bridge copies Claude Code's status-line JSON input to `~/.agentbar/claude-statusline.json`; when it finds Claude HUD, it also forwards the same input to Claude HUD.
-
-To enable it, preserve your other Claude settings and set `statusLine.command` in `<Claude config directory>/settings.json` to the script's absolute path. The config directory is `CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`.
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "/absolute/path/to/agent-bar/scripts/claude-statusline-bridge.sh"
-  }
-}
+```bash
+AGENTBAR_LIVE_AUTH_PROBE=1 swift test --filter isolatedCodexLoginCancellation
 ```
 
-Changing `statusLine.command` replaces the current status-line command. Review any existing configuration first; the included bridge knows how to forward to Claude HUD, but it does not automatically preserve other custom status-line commands. Restart Claude Code after changing the setting.
+Real OAuth completion, multiple-account usage, and native UI interaction are separate manual acceptance checks. Passing unit tests or receiving an OAuth URL does not establish those results.
 
-AgentBar accepts status-line samples that are less than two minutes old. Without the bridge, Claude usage still works through the OAuth usage API when valid credentials are available.
-
-## Refresh, Cache, and Privacy
-
-The default refresh interval is 120 seconds. It can be changed to 60, 120, 300, or 600 seconds in Settings, and **Refresh Now** triggers an immediate refresh. Very short polling is usually not useful because Anthropic may rate-limit its usage endpoint.
-
-AgentBar uses these local cache files:
-
-- `~/.agentbar/claude-usage-cache.json`
-- `~/.agentbar/claude-statusline.json`
-- `~/.agentbar/codex-rate-limits-cache.json`
-
-Short caches reduce provider requests. When supported by the available cache state, the popover keeps a last-known-good value and marks it stale if a provider request fails or is rate-limited.
-
-Credentials and cache data stay on the Mac except for requests sent directly to the corresponding provider service. AgentBar has no backend, telemetry, browser-cookie setup, or local Claude/Codex session-log scanner.
-
-## Troubleshooting
-
-- **Provider item is missing:** confirm that its executable is in a recognized location or that Claude credentials are detectable, then restart AgentBar so provider detection runs again.
-- **Claude says login is required:** sign in with Claude Code, then choose **Refresh Now**. If the Claude item was not present before signing in, restart AgentBar.
-- **Fable shows `--`:** the current Anthropic response and cache do not contain a usable Fable weekly limit. This can be expected when Fable is not included in the current account or plan; the 5-hour and overall weekly values may still be available independently.
-- **Codex usage cannot load:** confirm that the Codex CLI is signed in and that a recognized Node.js executable plus `/usr/bin/python3` are available.
-- **A value looks stale:** open the popover and check its timestamp and message, then choose **Refresh Now**. The provider may be temporarily unavailable or rate-limited.
-- **Claude live values are not updating:** if the optional bridge is configured, confirm that `~/.agentbar/claude-statusline.json` is being updated while Claude Code is active. Restart Claude Code after changing `statusLine.command`.
+See [validation coverage and manual acceptance limits](docs/validation/multi-account/README.md).

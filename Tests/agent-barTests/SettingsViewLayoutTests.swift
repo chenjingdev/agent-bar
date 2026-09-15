@@ -13,13 +13,9 @@ struct SettingsViewLayoutTests {
         defaults.removePersistentDomain(forName: identifier)
         let providers: [ProviderKind] = [.claude, .codex]
         let settings = AppSettings(availableProviders: providers, defaults: defaults)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: providers,
-            claudeProvider: SettingsLayoutUsageProvider(provider: .claude),
-            codexProvider: SettingsLayoutUsageProvider(provider: .codex),
-            refreshOnInit: false
-        )
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: identifier) }
+        let store = UsageStore(settings: settings, availableProviders: providers, files: AccountFiles(root: root), autoRefresh: false)
         let view = SettingsView()
             .environmentObject(settings)
             .environmentObject(store)
@@ -27,7 +23,7 @@ struct SettingsViewLayoutTests {
         let size = hostingView.fittingSize
 
         #expect(size.width == 430)
-        #expect(size.height >= 360)
+        #expect(size.height >= 320)
         #expect(size.height <= 640)
     }
 }

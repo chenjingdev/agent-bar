@@ -4,498 +4,175 @@ import SwiftUI
 
 @MainActor
 final class StatusBarCoordinator {
-    private let controller: StatusBarController
-
-    init(store: UsageStore, settings: AppSettings, providers: [ProviderKind]) {
-        self.controller = StatusBarController(
-            providers: providers,
-            store: store,
-            settings: settings
-        )
+    private var controllers: [UUID: StatusBarController] = [:]
+    private let store: UsageStore
+    private var subscriptions = Set<AnyCancellable>()
+    init(store: UsageStore, providers: [ProviderKind]) {
+        self.store = store
+        Publishers.CombineLatest3(store.$displayConfiguration, store.$snapshots, store.$registry)
+            .receive(on: RunLoop.main).sink { [weak self] _, _, _ in self?.update() }.store(in: &subscriptions)
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main).sink { [weak self] _ in self?.update() }.store(in: &subscriptions)
+        update()
     }
-
-    func isStatusItemVisible(for provider: ProviderKind) -> Bool {
-        controller.isStatusItemVisible(for: provider)
-    }
-
-    func statusItemLength(for provider: ProviderKind) -> CGFloat {
-        controller.statusItemLength(for: provider)
-    }
-
-    func statusItemAccessibilityLabel(for provider: ProviderKind) -> String? {
-        controller.statusItemAccessibilityLabel(for: provider)
-    }
-
-    func statusItemAccessibilityValue(for provider: ProviderKind) -> String? {
-        controller.statusItemAccessibilityValue(for: provider)
-    }
-
-    var physicalStatusItemCount: Int {
-        controller.physicalStatusItemCount
-    }
-
-    var combinedStatusItemLength: CGFloat {
-        controller.combinedStatusItemLength
-    }
-
-    var visibleProviderOrder: [ProviderKind] {
-        controller.visibleProviderOrder
-    }
-
-    func statusItemFrame(for provider: ProviderKind) -> NSRect? {
-        controller.statusItemFrame(for: provider)
-    }
-
-    func provider(atStatusItemImageX x: CGFloat) -> ProviderKind? {
-        controller.provider(atStatusItemImageX: x)
+    var physicalStatusItemCount: Int { controllers.count }
+    func statusItemLength(for id: UUID) -> CGFloat? { controllers[id]?.width }
+    func popoverItemID(for id: UUID) -> UUID? { controllers[id]?.popoverItemID }
+    func removeAll() { controllers.values.forEach { $0.remove() }; controllers.removeAll() }
+    private func update() {
+        let items = store.displayConfiguration.activeItems
+        let ids = Set(items.map(\.id))
+        for id in Array(controllers.keys) where !ids.contains(id) { controllers.removeValue(forKey: id)?.remove() }
+        for (index, item) in items.enumerated() {
+            if controllers[item.id] == nil { controllers[item.id] = StatusBarController(itemID: item.id, store: store) }
+            controllers[item.id]?.apply(item, number: index + 1)
+        }
+        let width = controllers.values.reduce(CGFloat(0)) { $0 + $1.width }
+        let screenWidth = controllers.values.compactMap(\.screenWidth).first ?? NSScreen.main?.frame.width ?? 1440
+        let warning = width > screenWidth * 0.4
+        if store.displayWidthWarning != warning { store.displayWidthWarning = warning }
     }
 }
 
 @MainActor
 final class StatusBarController {
-    static let interProviderSpacing: CGFloat = 4
-
-    private struct ProviderPresentation {
-        let isVisible: Bool
-        let length: CGFloat
-        let accessibilityLabel: String
-        let accessibilityValue: String
-        let toolTip: String
-    }
-
-    private let providers: [ProviderKind]
     private let store: UsageStore
-    private let settings: AppSettings
-    private let statusItem: NSStatusItem
-    private var popovers: [ProviderKind: NSPopover] = [:]
-    private var presentations: [ProviderKind: ProviderPresentation] = [:]
-    private var currentRender: CombinedStatusItemRender?
-    private var cancellables = Set<AnyCancellable>()
-
-    init(providers: [ProviderKind], store: UsageStore, settings: AppSettings) {
-        self.providers = providers
-        self.store = store
-        self.settings = settings
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        configureStatusItem()
-        configurePopovers()
-        subscribe()
-        apply()
+    private let itemID: UUID
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let popover = NSPopover()
+    var width: CGFloat { statusItem.length }
+    var accessibilityLabel: String? { statusItem.button?.accessibilityLabel() }
+    var popoverItemID: UUID? { (popover.contentViewController as? NSHostingController<DisplayPopoverRoot>)?.rootView.itemID }
+    var screenWidth: CGFloat? { statusItem.button?.window?.screen?.frame.width }
+    init(itemID: UUID, store: UsageStore) {
+        self.store = store; self.itemID = itemID
+        statusItem.autosaveName = "display-" + itemID.uuidString
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(toggle(_:))
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusItem.button?.imagePosition = .imageOnly
+        statusItem.button?.imageScaling = .scaleNone
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: DisplayPopoverRoot(itemID: itemID, store: store))
     }
-
-    private func configureStatusItem() {
+    func apply(_ item: DisplayItem, number: Int) {
+        let rows = store.displayRows(item)
+        let image = DisplayStatusRenderer.render(item: item, rows: rows, number: number,
+            height: max(18, NSStatusBar.system.thickness - 2), scale: statusItem.button?.window?.backingScaleFactor ?? 2)
+        statusItem.length = image.size.width
+        statusItem.button?.image = image
+        let description = rows.map { "\($0.account.title) · \($0.metric.title): \(TokenFormatters.percentageString(for: $0.metric.window?.utilization))\($0.stale ? " (저장된 값)" : "")" }.joined(separator: "\n")
+        statusItem.button?.toolTip = description.isEmpty ? "표시 \(number) · 계정과 사용량 선택" : description
+        statusItem.button?.setAccessibilityLabel("표시 \(number) · " + description)
+    }
+    func remove() { popover.close(); NSStatusBar.system.removeStatusItem(statusItem) }
+    @objc private func toggle(_ sender: AnyObject?) {
         guard let button = statusItem.button else { return }
-        button.target = self
-        button.action = #selector(togglePopover(_:))
-        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        button.imagePosition = .imageOnly
-        button.imageScaling = .scaleNone
-    }
-
-    private func configurePopovers() {
-        for provider in providers {
-            let popover = NSPopover()
-            popover.behavior = .transient
-            popover.animates = true
-            popover.contentViewController = NSHostingController(
-                rootView: AnyView(
-                    ProviderPopoverContainerView(provider: provider)
-                        .environmentObject(store)
-                )
-            )
-            popover.contentSize = NSSize(width: 392, height: 380)
-            popovers[provider] = popover
-        }
-    }
-
-    private func subscribe() {
-        store.$claudeSnapshot
-            .sink { [weak self] snapshot in
-                self?.apply(snapshotOverrides: [.claude: snapshot])
-            }
-            .store(in: &cancellables)
-
-        store.$codexSnapshot
-            .sink { [weak self] snapshot in
-                self?.apply(snapshotOverrides: [.codex: snapshot])
-            }
-            .store(in: &cancellables)
-
-        settings.$providerSettings
-            .sink { [weak self] providerSettings in
-                self?.apply(providerSettingsOverride: providerSettings)
-            }
-            .store(in: &cancellables)
-    }
-
-    private func apply(
-        snapshotOverrides: [ProviderKind: ProviderSnapshot] = [:],
-        providerSettingsOverride: [ProviderKind: ProviderDisplaySettings]? = nil
-    ) {
-        var nextPresentations: [ProviderKind: ProviderPresentation] = [:]
-        var visibleSegments: [ProviderStatusItemRender] = []
-
-        for provider in providers.reversed() {
-            let snapshot = snapshotOverrides[provider] ?? store.snapshot(for: provider)
-            let displaySettings = providerSettingsOverride?[provider]
-                ?? settings.getProviderDisplaySettings(provider)
-            let rendered = StatusItemRenderer.render(
-                snapshot: snapshot,
-                displaySettings: displaySettings
-            )
-            let length = max(rendered.size.width, 28)
-            let accessibility = accessibilityDescription(for: snapshot)
-
-            nextPresentations[provider] = ProviderPresentation(
-                isVisible: displaySettings.isEnabled,
-                length: length,
-                accessibilityLabel: accessibility.label,
-                accessibilityValue: accessibility.value,
-                toolTip: "\(accessibility.label) \(accessibility.value)"
-            )
-
-            if displaySettings.isEnabled {
-                visibleSegments.append(
-                    ProviderStatusItemRender(
-                        provider: provider,
-                        image: rendered.image,
-                        imageSize: rendered.size,
-                        length: length
-                    )
-                )
-            }
-        }
-
-        presentations = nextPresentations
-        guard visibleSegments.isEmpty == false else {
-            currentRender = nil
-            statusItem.isVisible = false
-            statusItem.button?.image = nil
-            return
-        }
-
-        let combined = StatusItemRenderer.combine(
-            visibleSegments,
-            spacing: Self.interProviderSpacing
-        )
-        currentRender = combined
-        statusItem.isVisible = true
-        statusItem.length = max(combined.size.width, 28)
-
-        guard let button = statusItem.button else { return }
-        button.image = combined.image
-        button.imagePosition = .imageOnly
-        button.imageScaling = .scaleNone
-        let visiblePresentations = combined.segments.compactMap { presentations[$0.provider] }
-        button.toolTip = visiblePresentations.map(\.toolTip).joined(separator: "  •  ")
-        button.setAccessibilityLabel("AgentBar usage")
-        button.setAccessibilityValue(
-            combined.segments.compactMap { segment in
-                guard let presentation = presentations[segment.provider] else { return nil }
-                return "\(segment.provider.displayName) \(presentation.accessibilityValue)"
-            }.joined(separator: ", ")
-        )
-        updateOpenPopoverAnchor(button: button)
-    }
-
-    private func accessibilityDescription(
-        for snapshot: ProviderSnapshot
-    ) -> (label: String, value: String) {
-        let label: String
-        if snapshot.fiveHour != nil {
-            label = "\(snapshot.provider.displayName) 5-hour usage"
-        } else if snapshot.weekly != nil {
-            label = "\(snapshot.provider.displayName) weekly usage"
-        } else {
-            label = "\(snapshot.provider.displayName) usage"
-        }
-        return (
-            label,
-            TokenFormatters.percentageString(for: snapshot.primaryWindow?.utilization)
-        )
-    }
-
-    func isStatusItemVisible(for provider: ProviderKind) -> Bool {
-        presentations[provider]?.isVisible ?? false
-    }
-
-    func statusItemLength(for provider: ProviderKind) -> CGFloat {
-        presentations[provider]?.length ?? 0
-    }
-
-    func statusItemAccessibilityLabel(for provider: ProviderKind) -> String? {
-        presentations[provider]?.accessibilityLabel
-    }
-
-    func statusItemAccessibilityValue(for provider: ProviderKind) -> String? {
-        presentations[provider]?.accessibilityValue
-    }
-
-    var physicalStatusItemCount: Int {
-        providers.isEmpty ? 0 : 1
-    }
-
-    var combinedStatusItemLength: CGFloat {
-        statusItem.length
-    }
-
-    var visibleProviderOrder: [ProviderKind] {
-        currentRender?.segments.map(\.provider) ?? []
-    }
-
-    func statusItemFrame(for provider: ProviderKind) -> NSRect? {
-        currentRender?.segments.first { $0.provider == provider }?.frame
-    }
-
-    func provider(atStatusItemImageX x: CGFloat) -> ProviderKind? {
-        currentRender?.provider(atImageX: x)
-    }
-
-    @objc
-    private func togglePopover(_ sender: AnyObject?) {
-        guard let button = statusItem.button,
-              let provider = currentRender?.provider(atScreenPoint: NSEvent.mouseLocation, in: button) else {
-            return
-        }
-        togglePopover(for: provider, sender: sender)
-    }
-
-    private func togglePopover(for provider: ProviderKind, sender: AnyObject?) {
-        guard let button = statusItem.button,
-              let popover = popovers[provider],
-              let anchor = segmentRectInButton(for: provider, button: button) else {
-            return
-        }
-
-        if popover.isShown {
-            popover.performClose(sender)
-        } else {
-            for (otherProvider, otherPopover) in popovers where otherProvider != provider && otherPopover.isShown {
-                otherPopover.performClose(sender)
-            }
-            popover.show(relativeTo: anchor, of: button, preferredEdge: .minY)
+        if popover.isShown { popover.performClose(sender) }
+        else {
+            let height = min(CGFloat(568), max(240, (button.window?.screen?.visibleFrame.height ?? 768) - 40))
+            popover.contentSize = NSSize(width: 392, height: height)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
-
-    private func segmentRectInButton(
-        for provider: ProviderKind,
-        button: NSStatusBarButton
-    ) -> NSRect? {
-        guard let render = currentRender,
-              let segment = render.segments.first(where: { $0.provider == provider }) else {
-            return nil
-        }
-        let imageRect = button.cell?.imageRect(forBounds: button.bounds) ?? button.bounds
-        guard render.size.width > 0, render.size.height > 0 else { return nil }
-        return NSRect(
-            x: imageRect.minX + segment.frame.minX * imageRect.width / render.size.width,
-            y: imageRect.minY + segment.frame.minY * imageRect.height / render.size.height,
-            width: segment.frame.width * imageRect.width / render.size.width,
-            height: segment.frame.height * imageRect.height / render.size.height
-        )
-    }
-
-    private func updateOpenPopoverAnchor(button: NSStatusBarButton) {
-        for (provider, popover) in popovers where popover.isShown {
-            guard presentations[provider]?.isVisible == true,
-                  let anchor = segmentRectInButton(for: provider, button: button) else {
-                popover.performClose(nil)
-                continue
-            }
-            popover.positioningRect = anchor
-        }
-    }
 }
 
-private struct ProviderPopoverContainerView: View {
-    let provider: ProviderKind
-
-    @EnvironmentObject private var store: UsageStore
-
-    var body: some View {
-        ProviderPopoverView(snapshot: store.snapshot(for: provider))
-            .frame(width: 392, height: 568, alignment: .topLeading)
-    }
-}
-
-struct ProviderStatusItemRender {
-    let provider: ProviderKind
-    let image: NSImage
-    let imageSize: NSSize
-    let length: CGFloat
-}
-
-struct StatusItemSegment {
-    let provider: ProviderKind
-    let frame: NSRect
-}
-
-struct CombinedStatusItemRender {
-    let image: NSImage
-    let size: NSSize
-    let segments: [StatusItemSegment]
-
-    @MainActor
-    func provider(atScreenPoint screenPoint: NSPoint, in button: NSButton) -> ProviderKind? {
-        guard let window = button.window else { return nil }
-        // Status-bar actions may arrive with a current event from another window
-        // (or no mouse event). Resolve the pointer through the button's own window.
-        let point = button.convert(window.convertPoint(fromScreen: screenPoint), from: nil)
-        guard button.bounds.contains(point) else { return nil }
-        let imageRect = button.cell?.imageRect(forBounds: button.bounds) ?? button.bounds
-        guard imageRect.width > 0 else { return nil }
-        let clampedX = min(max(point.x, imageRect.minX), imageRect.maxX)
-        let imageX = (clampedX - imageRect.minX) * size.width / imageRect.width
-        return provider(atImageX: imageX)
-    }
-
-    func provider(atImageX x: CGFloat) -> ProviderKind? {
-        guard segments.isEmpty == false, x >= 0, x <= size.width else {
-            return nil
-        }
-
-        for (index, segment) in segments.enumerated() {
-            let leftBoundary: CGFloat
-            if index == segments.startIndex {
-                leftBoundary = 0
-            } else {
-                leftBoundary = (segments[index - 1].frame.maxX + segment.frame.minX) / 2
-            }
-
-            let rightBoundary: CGFloat
-            if index == segments.index(before: segments.endIndex) {
-                rightBoundary = size.width
-            } else {
-                rightBoundary = (segment.frame.maxX + segments[index + 1].frame.minX) / 2
-            }
-
-            if x >= leftBoundary && x <= rightBoundary {
-                return segment.provider
-            }
-        }
-        return nil
-    }
+private struct DisplayPopoverRoot: View {
+    let itemID: UUID
+    let store: UsageStore
+    var body: some View { DisplayPopoverView(itemID: itemID).environmentObject(store) }
 }
 
 @MainActor
-enum StatusItemRenderer {
-    static let renderScale: CGFloat = 2
-
-    static func render(
-        snapshot: ProviderSnapshot,
-        displaySettings: ProviderDisplaySettings
-    ) -> (image: NSImage, size: NSSize) {
-        let rootView = MenuBarLabelView(
-            snapshot: snapshot,
-            displaySettings: displaySettings
-        )
-            .background(Color.clear)
-        let hostingView = NSHostingView(rootView: rootView)
-        let size = hostingView.fittingSize
-        hostingView.frame = NSRect(origin: .zero, size: size)
-        hostingView.layoutSubtreeIfNeeded()
-        let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: max(Int(ceil(size.width * renderScale)), 1),
-            pixelsHigh: max(Int(ceil(size.height * renderScale)), 1),
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        )!
-        rep.size = size
-        hostingView.cacheDisplay(in: hostingView.bounds, to: rep)
-        let image = NSImage(size: size)
-        image.addRepresentation(rep)
-        image.isTemplate = false
-        return (image, size)
+enum DisplayStatusRenderer {
+    static func badgeStarts(_ columns: [[DisplayRow]]) -> [[Int]] {
+        var seen = Set<UUID>()
+        return columns.map { values in
+            values.indices.filter { seen.insert(values[$0].account.id).inserted }
+        }
     }
-
-    static func combine(
-        _ providerRenders: [ProviderStatusItemRender],
-        spacing: CGFloat
-    ) -> CombinedStatusItemRender {
-        guard providerRenders.isEmpty == false else {
-            return CombinedStatusItemRender(
-                image: NSImage(size: .zero),
-                size: .zero,
-                segments: []
-            )
+    static func render(item: DisplayItem, rows: [DisplayRow], number: Int, height: CGFloat = 22, scale: CGFloat = 2) -> NSImage {
+        let originalColumns = DisplayRow.columns(rows, maximum: item.maxRows)
+        let originalStarts = badgeStarts(originalColumns)
+        // Badge-only display must not reserve columns containing only an account continuation.
+        let visibleColumns = originalColumns.indices.filter {
+            item.showBars || item.showPercent || !originalStarts[$0].isEmpty
         }
-
-        let height = providerRenders.map(\.imageSize.height).max() ?? 0
-        let width = providerRenders.reduce(0) { $0 + $1.length }
-            + spacing * CGFloat(max(providerRenders.count - 1, 0))
-        let size = NSSize(width: width, height: height)
-        var segments: [StatusItemSegment] = []
-        var x: CGFloat = 0
-
-        for providerRender in providerRenders {
-            segments.append(
-                StatusItemSegment(
-                    provider: providerRender.provider,
-                    frame: NSRect(
-                        x: x,
-                        y: 0,
-                        width: providerRender.length,
-                        height: height
-                    )
-                )
-            )
-            x += providerRender.length + spacing
+        let columns = visibleColumns.map { originalColumns[$0] }
+        let starts = visibleColumns.map { originalStarts[$0] }
+        let empty = rows.isEmpty || (!item.showService && !item.showBars && !item.showPercent)
+        let rowCount = max(1, min(item.maxRows, rows.count))
+        let pitch = (height - 2) / CGFloat(rowCount)
+        let font = min(CGFloat(11), pitch * 0.78)
+        let badgeFont = min(CGFloat(8), font)
+        let badgeWidths: [CGFloat] = columns.enumerated().map { column, values in
+            guard item.showService, !starts[column].isEmpty else { return 0 }
+            return ceil(starts[column].map { index in
+                (values[index].badge as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: badgeFont, weight: .bold)]).width
+            }.max() ?? 0) + 4
         }
-
-        let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: max(Int(ceil(size.width * renderScale)), 1),
-            pixelsHigh: max(Int(ceil(size.height * renderScale)), 1),
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        )!
-        rep.size = size
-
-        if let context = NSGraphicsContext(bitmapImageRep: rep) {
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = context
-            context.imageInterpolation = .high
-
-            for (providerRender, segment) in zip(providerRenders, segments) {
-                let drawRect = NSRect(
-                    x: segment.frame.midX - providerRender.imageSize.width / 2,
-                    y: segment.frame.midY - providerRender.imageSize.height / 2,
-                    width: providerRender.imageSize.width,
-                    height: providerRender.imageSize.height
-                )
-                providerRender.image.draw(
-                    in: drawRect,
-                    from: NSRect(origin: .zero, size: providerRender.imageSize),
-                    operation: .sourceOver,
-                    fraction: 1,
-                    respectFlipped: false,
-                    hints: [.interpolation: NSImageInterpolation.high]
-                )
+        let percentageWidths: [CGFloat] = columns.map { values in
+            guard item.showPercent else { return 0 }
+            return ceil(values.map {
+                (TokenFormatters.percentageString(for: $0.metric.window?.utilization) as NSString)
+                    .size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: font, weight: .bold)]).width
+            }.max() ?? 0)
+        }
+        let columnWidths: [CGFloat] = columns.indices.map { index in
+            let widths: [CGFloat] = [badgeWidths[index], item.showBars ? 28 : 0, percentageWidths[index]].filter { $0 > 0 }
+            return widths.reduce(0, +) + CGFloat(max(0, widths.count - 1)) * 3
+        }
+        let placeholder = "AB · \(number)"
+        let placeholderWidth = (placeholder as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold)]).width
+        let width: CGFloat = ceil(6 + (empty ? placeholderWidth : columnWidths.reduce(0, +) + CGFloat(max(0, columns.count - 1)) * 7))
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(ceil(width * scale)), pixelsHigh: Int(ceil(height * scale)), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        bitmap.size = NSSize(width: width, height: height)
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        NSColor(calibratedWhite: 0.14, alpha: 0.65).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: width, height: height), xRadius: height / 2, yRadius: height / 2).fill()
+        func draw(_ text: String, x: CGFloat, center: CGFloat, font: CGFloat, color: NSColor) {
+            let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: font, weight: .bold), .foregroundColor: color]
+            let size = (text as NSString).size(withAttributes: attributes)
+            (text as NSString).draw(at: NSPoint(x: x, y: center - size.height / 2), withAttributes: attributes)
+        }
+        if empty { draw(placeholder, x: 3, center: height / 2, font: 10, color: .white) }
+        else {
+            for (column, values) in columns.enumerated() {
+                for (index, row) in values.enumerated() {
+                    var x = CGFloat(3) + columnWidths.prefix(column).reduce(0, +) + CGFloat(column) * 7
+                    let center = height - 1 - (CGFloat(index) + 0.5) * pitch
+                    let color: NSColor = row.account.provider == .claude ? .systemGreen : .systemOrange
+                    if item.showService && badgeWidths[column] > 0 {
+                        if starts[column].contains(index) {
+                            let count = values[index...].prefix { $0.account.id == row.account.id }.count
+                            let badgeCenter = center - CGFloat(count - 1) * pitch / 2
+                            let badgeHeight = min(CGFloat(13), pitch * 0.88)
+                            NSColor(AppTheme.accent(for: row.account.provider)).setFill()
+                            NSBezierPath(roundedRect: NSRect(x: x, y: badgeCenter - badgeHeight / 2, width: badgeWidths[column], height: badgeHeight), xRadius: min(4, badgeHeight / 3), yRadius: min(4, badgeHeight / 3)).fill()
+                            let textWidth = (row.badge as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: badgeFont, weight: .bold)]).width
+                            draw(row.badge, x: x + (badgeWidths[column] - textWidth) / 2, center: badgeCenter, font: badgeFont, color: .white)
+                        }
+                        x += badgeWidths[column] + ((item.showBars || item.showPercent) ? 3 : 0)
+                    }
+                    if item.showBars {
+                        // All rows share geometry; snap to device pixels so fractional
+                        // row positions cannot make equal bars look differently thick.
+                        let barHeight = max(1, (min(CGFloat(5), pitch * 0.45) * scale).rounded()) / scale
+                        let barY = ((center - barHeight / 2) * scale).rounded() / scale
+                        let rect = NSRect(x: x, y: barY, width: 28, height: barHeight)
+                        NSColor.white.withAlphaComponent(0.22).setFill(); NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
+                        let value = min(1, max(0, row.metric.window?.utilization ?? 0))
+                        color.withAlphaComponent(row.stale ? 0.5 : 1).setFill()
+                        NSBezierPath(roundedRect: NSRect(x: x, y: rect.minY, width: 28 * value, height: barHeight), xRadius: 2, yRadius: 2).fill()
+                        x += 28 + (item.showPercent ? 3 : 0)
+                    }
+                    if item.showPercent { draw(TokenFormatters.percentageString(for: row.metric.window?.utilization), x: x, center: center, font: font, color: color.withAlphaComponent(row.stale ? 0.6 : 1)) }
+                }
             }
-
-            context.flushGraphics()
-            NSGraphicsContext.restoreGraphicsState()
         }
-
-        let image = NSImage(size: size)
-        image.addRepresentation(rep)
-        image.isTemplate = false
-        return CombinedStatusItemRender(
-            image: image,
-            size: size,
-            segments: segments
-        )
+        NSGraphicsContext.restoreGraphicsState()
+        let image = NSImage(size: NSSize(width: width, height: height)); image.addRepresentation(bitmap)
+        return image
     }
 }

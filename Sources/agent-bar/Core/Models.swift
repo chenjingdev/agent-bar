@@ -1,6 +1,6 @@
 import Foundation
 
-enum ProviderKind: String, CaseIterable, Hashable, Identifiable {
+enum ProviderKind: String, CaseIterable, Hashable, Identifiable, Codable, Sendable {
     case claude
     case codex
 
@@ -34,12 +34,12 @@ enum ProviderKind: String, CaseIterable, Hashable, Identifiable {
     }
 }
 
-enum WindowDisplayStyle: Equatable {
+enum WindowDisplayStyle: String, Equatable, Codable, Sendable {
     case tokens
     case percentage
 }
 
-struct WindowSummary: Equatable {
+struct WindowSummary: Equatable, Codable, Sendable {
     let tokens: Int
     let limitTokens: Int
     let resetAt: Date?
@@ -51,7 +51,7 @@ struct WindowSummary: Equatable {
     }
 }
 
-struct ModelWeeklySummary: Equatable {
+struct ModelWeeklySummary: Equatable, Codable, Sendable {
     let label: String
     let window: WindowSummary
 
@@ -65,7 +65,7 @@ struct ModelWeeklySummary: Equatable {
     )
 }
 
-struct ProviderSnapshot: Equatable {
+struct ProviderSnapshot: Equatable, Codable, Sendable {
     let provider: ProviderKind
     let updatedAt: Date
     let fiveHour: WindowSummary?
@@ -76,6 +76,7 @@ struct ProviderSnapshot: Equatable {
     let note: String?
     let isStale: Bool
     let requiresLogin: Bool
+    var retryAt: Date? = nil
 
     var displayedModelWeeklies: [ModelWeeklySummary] {
         guard provider == .claude else { return modelWeeklies }
@@ -102,8 +103,8 @@ struct ProviderSnapshot: Equatable {
         ProviderSnapshot(
             provider: provider,
             updatedAt: .now,
-            fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
-            weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+            fiveHour: WindowSummary(tokens: 0, limitTokens: 0, resetAt: nil, displayStyle: .percentage),
+            weekly: WindowSummary(tokens: 0, limitTokens: 0, resetAt: nil, displayStyle: .percentage),
             modelWeeklies: [],
             planName: nil,
             sourceDescription: provider.sourceDescription,
@@ -111,5 +112,14 @@ struct ProviderSnapshot: Equatable {
             isStale: true,
             requiresLogin: false
         )
+    }
+}
+
+
+extension ProviderSnapshot {
+    func failed(_ message: String, requiresLogin: Bool = false) -> Self {
+        Self(provider: provider, updatedAt: updatedAt, fiveHour: fiveHour, weekly: weekly,
+             modelWeeklies: modelWeeklies, planName: planName, sourceDescription: sourceDescription,
+             note: message, isStale: true, requiresLogin: requiresLogin)
     }
 }

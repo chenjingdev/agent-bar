@@ -4,7 +4,6 @@ import SwiftUI
 struct ProviderPopoverView: View {
     let snapshot: ProviderSnapshot
 
-    @Environment(\.openSettings) private var openSettings
     @EnvironmentObject private var store: UsageStore
 
     var body: some View {
@@ -23,11 +22,7 @@ struct ProviderPopoverView: View {
                             )
                         }
                         if let weekly = snapshot.weekly {
-                            WindowCard(
-                                title: "Weekly Limit",
-                                window: weekly,
-                                provider: snapshot.provider
-                            )
+                            WindowCard(title: "Weekly Limit", window: weekly, provider: snapshot.provider)
                         }
                         ForEach(Array(snapshot.displayedModelWeeklies.enumerated()), id: \.offset) { _, modelWeekly in
                             WindowCard(
@@ -87,7 +82,6 @@ struct ProviderPopoverView: View {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 14, weight: .semibold))
             }
-            .accessibilityLabel("Refresh")
             .buttonStyle(.plain)
             .foregroundStyle(.white.opacity(0.9))
         }
@@ -100,11 +94,11 @@ struct ProviderPopoverView: View {
                     Text("Login required")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(AppTheme.muted)
-                    Text("Sign in to Claude Code, then refresh.")
+                    Text("계정 관리에서 재연결하거나 현재 CLI에 로그인하세요.")
                         .font(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundStyle(AppTheme.muted.opacity(0.8))
                 } else {
-                    Text(snapshot.isStale ? "Last good value \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))" : "Last updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))")
+                    Text(snapshot.isStale ? "최신 값 확인 필요 · \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))" : "Last updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(AppTheme.muted)
                     Text(TokenFormatters.dateTimeString(snapshot.updatedAt))
@@ -115,18 +109,11 @@ struct ProviderPopoverView: View {
 
             Spacer()
 
-            Button("Settings") {
-                SettingsWindowPresenter(
-                    activateApplication: {
-                        NSApplication.shared.activate(ignoringOtherApps: true)
-                    },
-                    openSettings: {
-                        openSettings()
-                    }
-                ).present()
+            Button { SettingsWindowController.shared.show() } label: {
+                Text("Settings")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
             }
             .buttonStyle(.plain)
-            .font(.system(size: 12, weight: .bold, design: .rounded))
             .foregroundStyle(.white)
 
             Button("Quit") {
@@ -140,18 +127,7 @@ struct ProviderPopoverView: View {
 
 }
 
-@MainActor
-struct SettingsWindowPresenter {
-    let activateApplication: () -> Void
-    let openSettings: () -> Void
-
-    func present() {
-        activateApplication()
-        openSettings()
-    }
-}
-
-private struct WindowCard: View {
+struct WindowCard: View {
     let title: String
     let window: WindowSummary
     let provider: ProviderKind
@@ -209,7 +185,7 @@ private struct WindowCard: View {
     }
 }
 
-private struct GlassPanelBackground: View {
+struct GlassPanelBackground: View {
     let cornerRadius: CGFloat
 
     var body: some View {
@@ -256,7 +232,7 @@ private struct GlassPanelBackground: View {
     }
 }
 
-private struct GlassCardBackground: View {
+struct GlassCardBackground: View {
     let cornerRadius: CGFloat
 
     var body: some View {

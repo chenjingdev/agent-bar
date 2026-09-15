@@ -95,23 +95,17 @@ struct ProviderSnapshotWindowTests {
         let defaults = UserDefaults(suiteName: identifier)!
         defaults.removePersistentDomain(forName: identifier)
         let settings = AppSettings(availableProviders: [.codex], defaults: defaults)
-        let store = UsageStore(
-            settings: settings,
-            availableProviders: [.codex],
-            claudeProvider: SnapshotUsageProvider(snapshot: .placeholder(for: .claude)),
-            codexProvider: SnapshotUsageProvider(snapshot: snapshot),
-            refreshOnInit: false
-        )
-
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: identifier) }
+        let store = UsageStore(settings: settings, availableProviders: [.codex], files: AccountFiles(root: root), autoRefresh: false,
+                               loadAccount: { _, _ in snapshot })
         await store.refresh()
-        let coordinator = StatusBarCoordinator(
-            store: store,
-            settings: settings,
-            providers: [.codex]
-        )
-
-        #expect(coordinator.statusItemAccessibilityLabel(for: .codex) == "Codex weekly usage")
-        #expect(coordinator.statusItemAccessibilityValue(for: .codex) == "11%")
+        let item = store.displayConfiguration.activeItems.first { !$0.accountIDs.isEmpty }!
+        let controller = StatusBarController(itemID: item.id, store: store)
+        defer { controller.remove() }
+        controller.apply(item, number: 1)
+        #expect(controller.accessibilityLabel?.contains("Weekly Limit: 11%") == true)
+        #expect(controller.accessibilityLabel?.contains("5-Hour") == false)
     }
 
 }

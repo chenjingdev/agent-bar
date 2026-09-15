@@ -6,14 +6,27 @@ private enum ClaudeUsagePolicy {
     static let failureCacheTTL: TimeInterval = 15
     static let rateLimitedBaseTTL: TimeInterval = 60
     static let rateLimitedMaxTTL: TimeInterval = 5 * 60
-    static let statusLineCacheTTL: TimeInterval = 2 * 60
 }
 
 struct ClaudeUsageProvider: UsageProviding {
+    var directory: URL? = nil
+    var cacheURL: URL? = nil
+    var expectedIdentity: AccountIdentity? = nil
+
     func load() async -> ProviderSnapshot {
         await Task.detached(priority: .utility) {
             do {
+                if let directory, let expectedIdentity {
+                    let current = try ProviderCLI.claudeStatus(directory: directory)
+                    if current.comparison(to: expectedIdentity) == .different {
+                        throw AccountError.message("연결된 Claude 계정이 변경되었습니다. 재연결하여 확인하세요.")
+                    }
+                }
+                let initialCredentialKey = try? readCredentials().cacheKey
                 let remoteResult = try await resolveRemoteUsage()
+                guard initialCredentialKey == (try? readCredentials().cacheKey) else {
+                    throw AccountError.message("조회 중 CLI 계정이 변경되었습니다. 다시 새로고침하세요.")
+                }
                 let modelWeeklies: [ModelWeeklySummary] = (remoteResult.data.modelWeeklies ?? []).map { cached in
                     ModelWeeklySummary(
                         label: cached.label,
@@ -26,14 +39,14 @@ struct ClaudeUsageProvider: UsageProviding {
                     provider: .claude,
                     updatedAt: remoteResult.updatedAt,
                     fiveHour: WindowSummary(
-                        tokens: remoteResult.data.fiveHourUsedPercent,
-                        limitTokens: 100,
+                        tokens: remoteResult.data.fiveHourUsedPercent ?? 0,
+                        limitTokens: remoteResult.data.fiveHourUsedPercent == nil ? 0 : 100,
                         resetAt: remoteResult.data.fiveHourResetAt,
                         displayStyle: .percentage
                     ),
                     weekly: WindowSummary(
-                        tokens: remoteResult.data.weeklyUsedPercent,
-                        limitTokens: 100,
+                        tokens: remoteResult.data.weeklyUsedPercent ?? 0,
+                        limitTokens: remoteResult.data.weeklyUsedPercent == nil ? 0 : 100,
                         resetAt: remoteResult.data.weeklyResetAt,
                         displayStyle: .percentage
                     ),
@@ -49,8 +62,8 @@ struct ClaudeUsageProvider: UsageProviding {
                 return ProviderSnapshot(
                     provider: .claude,
                     updatedAt: .now,
-                    fiveHour: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
-                    weekly: WindowSummary(tokens: 0, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+                    fiveHour: WindowSummary(tokens: 0, limitTokens: 0, resetAt: nil, displayStyle: .percentage),
+                    weekly: WindowSummary(tokens: 0, limitTokens: 0, resetAt: nil, displayStyle: .percentage),
                     modelWeeklies: [],
                     planName: nil,
                     sourceDescription: "Anthropic OAuth usage API + cache",
@@ -65,45 +78,14 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 
     private func resolveRemoteUsage() async throws -> RemoteUsageResult {
-        let cache = ClaudeUsageCache()
+        let cache = ClaudeUsageCache(overrideURL: cacheURL, enabled: cacheURL != nil)
         let now = Date.now
         let previousCache = try? cache.readRaw()
 
         let credentials = try? readCredentials()
         let resolvedPlanName = credentials.flatMap { self.planName(from: $0.subscriptionType) }
 
-        if let statusLineUsage = try? readStatusLineUsage(now: now) {
-            let carriedModelWeeklies = previousCache?.lastGoodData?.modelWeeklies ?? previousCache?.data.modelWeeklies
-            let statusLineData = RemoteUsageData(
-                planName: resolvedPlanName,
-                fiveHourUsedPercent: statusLineUsage.fiveHourUsedPercent,
-                weeklyUsedPercent: statusLineUsage.weeklyUsedPercent,
-                fiveHourResetAt: statusLineUsage.fiveHourResetAt,
-                weeklyResetAt: statusLineUsage.weeklyResetAt,
-                modelWeeklies: carriedModelWeeklies,
-                apiUnavailable: false,
-                apiError: nil,
-                usageSource: .statusLine,
-                weeklyWindowLabel: nil
-            )
-
-            try? cache.write(
-                data: statusLineData,
-                timestamp: statusLineUsage.updatedAt,
-                lastGoodData: statusLineData,
-                lastGoodTimestamp: statusLineUsage.updatedAt
-            )
-
-            return RemoteUsageResult(
-                data: statusLineData,
-                updatedAt: statusLineUsage.updatedAt,
-                note: note(for: statusLineData),
-                isStale: false,
-                sourceDescription: sourceDescription(for: statusLineData)
-            )
-        }
-
-        if let cacheState = try? cache.readState(now: now, credentialCacheKey: credentials?.cacheKey), cacheState.isFresh {
+        if let credentials, let cacheState = try? cache.readState(now: now, credentialCacheKey: credentials.cacheKey), cacheState.isFresh {
             return RemoteUsageResult(
                 data: cacheState.data,
                 updatedAt: cacheState.updatedAt,
@@ -124,8 +106,8 @@ struct ClaudeUsageProvider: UsageProviding {
             let selectedWeeklyWindow = Self.selectWeeklyWindow(from: payload)
             let successData = RemoteUsageData(
                 planName: planName,
-                fiveHourUsedPercent: Self.parseUtilization(payload.fiveHour?.utilization),
-                weeklyUsedPercent: Self.parseUtilization(selectedWeeklyWindow?.window.utilization),
+                fiveHourUsedPercent: payload.fiveHour?.utilization.map { Self.parseUtilization($0) },
+                weeklyUsedPercent: selectedWeeklyWindow?.window.utilization.map { Self.parseUtilization($0) },
                 fiveHourResetAt: payload.fiveHour?.parsedResetAt,
                 weeklyResetAt: selectedWeeklyWindow?.window.parsedResetAt,
                 modelWeeklies: Self.modelWeeklies(from: payload),
@@ -154,8 +136,8 @@ struct ClaudeUsageProvider: UsageProviding {
 
         let failureData = RemoteUsageData(
             planName: planName,
-            fiveHourUsedPercent: 0,
-            weeklyUsedPercent: 0,
+            fiveHourUsedPercent: nil,
+            weeklyUsedPercent: nil,
             fiveHourResetAt: nil,
             weeklyResetAt: nil,
             modelWeeklies: nil,
@@ -194,7 +176,9 @@ struct ClaudeUsageProvider: UsageProviding {
             }
         }
 
-        try? cache.write(data: failureData, timestamp: now, credentialCacheKey: credentials.cacheKey)
+        if !isRateLimited {
+            try? cache.write(data: failureData, timestamp: now, credentialCacheKey: credentials.cacheKey)
+        }
         return RemoteUsageResult(
             data: failureData,
             updatedAt: now,
@@ -391,6 +375,7 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 
     private func claudeConfigDirectory(homeDirectory: URL) -> URL {
+        if let directory { return directory }
         if let override = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"], override.isEmpty == false {
             return URL(fileURLWithPath: override).standardizedFileURL
         }
@@ -408,7 +393,7 @@ struct ClaudeUsageProvider: UsageProviding {
 
         let hash = SHA256.hash(data: Data(normalizedConfig.utf8))
         let suffix = hash.compactMap { String(format: "%02x", $0) }.joined().prefix(8)
-        return ["\(legacyService)-\(suffix)", legacyService]
+        return ["\(legacyService)-\(suffix)"]
     }
 
     private func currentAccountName() -> String? {
@@ -423,36 +408,6 @@ struct ClaudeUsageProvider: UsageProviding {
         if normalized.contains("team") { return "Team" }
         if normalized.contains("enterprise") { return "Enterprise" }
         return subscriptionType.capitalized
-    }
-
-    private func readStatusLineUsage(now: Date) throws -> ClaudeStatusLineUsage? {
-        let url = statusLineCacheURL()
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard let updatedAt = attributes[.modificationDate] as? Date else { return nil }
-        guard now.timeIntervalSince(updatedAt) <= ClaudeUsagePolicy.statusLineCacheTTL else { return nil }
-
-        let data = try Data(contentsOf: url)
-        let payload = try JSONDecoder().decode(ClaudeStatusLinePayload.self, from: data)
-        guard let rateLimits = payload.rateLimits else { return nil }
-        guard rateLimits.fiveHour?.usedPercentage != nil || rateLimits.sevenDay?.usedPercentage != nil else {
-            return nil
-        }
-
-        return ClaudeStatusLineUsage(
-            updatedAt: updatedAt,
-            fiveHourUsedPercent: Self.parseUtilization(rateLimits.fiveHour?.usedPercentage),
-            weeklyUsedPercent: Self.parseUtilization(rateLimits.sevenDay?.usedPercentage),
-            fiveHourResetAt: rateLimits.fiveHour?.parsedResetAt,
-            weeklyResetAt: rateLimits.sevenDay?.parsedResetAt
-        )
-    }
-
-    private func statusLineCacheURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".agentbar", isDirectory: true)
-            .appendingPathComponent("claude-statusline.json")
     }
 
     private static func parseUtilization(_ value: Double?) -> Int {
@@ -576,11 +531,10 @@ struct ClaudeUsageProvider: UsageProviding {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        try process.run()
-
         let group = DispatchGroup()
         group.enter()
         process.terminationHandler = { _ in group.leave() }
+        try process.run()
 
         if group.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
@@ -595,10 +549,10 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 }
 
-private struct RemoteUsageData: Codable {
+struct RemoteUsageData: Codable {
     let planName: String?
-    let fiveHourUsedPercent: Int
-    let weeklyUsedPercent: Int
+    let fiveHourUsedPercent: Int?
+    let weeklyUsedPercent: Int?
     let fiveHourResetAt: Date?
     let weeklyResetAt: Date?
     let modelWeeklies: [CachedModelWeekly]?
@@ -623,7 +577,7 @@ private struct RemoteUsageData: Codable {
     }
 }
 
-private struct CachedModelWeekly: Codable, Equatable {
+struct CachedModelWeekly: Codable, Equatable {
     let label: String
     let usedPercent: Int?
     let resetAt: Date?
@@ -637,7 +591,7 @@ private struct RemoteUsageResult {
     let sourceDescription: String
 }
 
-private enum ClaudeUsageSource: String, Codable {
+enum ClaudeUsageSource: String, Codable {
     case oauthApi = "oauth_api"
     case statusLine = "status_line"
 }
@@ -751,47 +705,6 @@ private struct SelectedUsageWindow {
     let label: String?
 }
 
-private struct ClaudeStatusLineUsage {
-    let updatedAt: Date
-    let fiveHourUsedPercent: Int
-    let weeklyUsedPercent: Int
-    let fiveHourResetAt: Date?
-    let weeklyResetAt: Date?
-}
-
-private struct ClaudeStatusLinePayload: Decodable {
-    let rateLimits: ClaudeStatusLineRateLimits?
-
-    enum CodingKeys: String, CodingKey {
-        case rateLimits = "rate_limits"
-    }
-}
-
-private struct ClaudeStatusLineRateLimits: Decodable {
-    let fiveHour: ClaudeStatusLineWindow?
-    let sevenDay: ClaudeStatusLineWindow?
-
-    enum CodingKeys: String, CodingKey {
-        case fiveHour = "five_hour"
-        case sevenDay = "seven_day"
-    }
-}
-
-private struct ClaudeStatusLineWindow: Decodable {
-    let usedPercentage: Double?
-    let resetsAt: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case usedPercentage = "used_percentage"
-        case resetsAt = "resets_at"
-    }
-
-    var parsedResetAt: Date? {
-        guard let resetsAt, resetsAt > 0 else { return nil }
-        return Date(timeIntervalSince1970: resetsAt)
-    }
-}
-
 private enum ClaudeUsageError: LocalizedError {
     case invalidURL
     case missingCredentials
@@ -809,7 +722,7 @@ private enum ClaudeUsageError: LocalizedError {
     }
 }
 
-private struct ClaudeUsageCacheRecord: Codable {
+struct ClaudeUsageCacheRecord: Codable {
     let data: RemoteUsageData
     let timestamp: Date
     let credentialCacheKey: String?
@@ -823,8 +736,8 @@ private struct LegacyClaudeUsageCacheRecord: Decodable {
     let timestamp: Date
     let cooldownUntil: Date?
     let planName: String?
-    let fiveHourUsedPercent: Int
-    let weeklyUsedPercent: Int
+    let fiveHourUsedPercent: Int?
+    let weeklyUsedPercent: Int?
     let fiveHourResetAt: Date?
     let weeklyResetAt: Date?
 
@@ -854,22 +767,27 @@ private struct LegacyClaudeUsageCacheRecord: Decodable {
     }
 }
 
-private struct ClaudeUsageCacheState {
+struct ClaudeUsageCacheState {
     let data: RemoteUsageData
     let updatedAt: Date
     let isFresh: Bool
 }
 
-private struct ClaudeUsageCache {
+struct ClaudeUsageCache {
+    var overrideURL: URL?
+    var enabled: Bool
+
     private let fileManager = FileManager.default
 
     private var cacheURL: URL {
+        if let overrideURL { return overrideURL }
         let base = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent(".agentbar", isDirectory: true)
         return base.appendingPathComponent("claude-usage-cache.json")
     }
 
     func readRaw() throws -> ClaudeUsageCacheRecord {
+        guard enabled else { throw ClaudeUsageError.missingCredentials }
         let data = try Data(contentsOf: cacheURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -881,9 +799,7 @@ private struct ClaudeUsageCache {
 
     func readState(now: Date, credentialCacheKey: String?) throws -> ClaudeUsageCacheState {
         let cache = try readRaw()
-        if let credentialCacheKey,
-           let cachedCredentialKey = cache.credentialCacheKey,
-           cachedCredentialKey != credentialCacheKey {
+        if credentialCacheKey == nil || cache.credentialCacheKey == nil || cache.credentialCacheKey != credentialCacheKey {
             return ClaudeUsageCacheState(data: cache.data, updatedAt: cache.timestamp, isFresh: false)
         }
 
@@ -907,9 +823,7 @@ private struct ClaudeUsageCache {
 
     func makeLastGoodState(from cache: ClaudeUsageCacheRecord?, credentialCacheKey: String?) -> ClaudeUsageCacheState? {
         guard let cache else { return nil }
-        if let credentialCacheKey,
-           let cachedCredentialKey = cache.credentialCacheKey,
-           cachedCredentialKey != credentialCacheKey {
+        if credentialCacheKey == nil || cache.credentialCacheKey == nil || cache.credentialCacheKey != credentialCacheKey {
             return nil
         }
 
@@ -933,6 +847,7 @@ private struct ClaudeUsageCache {
         lastGoodData: RemoteUsageData? = nil,
         lastGoodTimestamp: Date? = nil
     ) throws {
+        guard enabled else { return }
         let record = ClaudeUsageCacheRecord(
             data: data,
             timestamp: timestamp,
@@ -944,12 +859,13 @@ private struct ClaudeUsageCache {
         )
         let directory = cacheURL.deletingLastPathComponent()
         if fileManager.fileExists(atPath: directory.path) == false {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(record)
         try data.write(to: cacheURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
     }
 
     private func displayState(from cache: ClaudeUsageCacheRecord) -> ClaudeUsageCacheState {
