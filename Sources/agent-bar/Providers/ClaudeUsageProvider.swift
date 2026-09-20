@@ -12,9 +12,24 @@ struct ClaudeUsageProvider: UsageProviding {
     var directory: URL? = nil
     var cacheURL: URL? = nil
     var expectedIdentity: AccountIdentity? = nil
+    var homeDirectory = FileManager.default.homeDirectoryForCurrentUser
     var control = OperationControl()
     var statusReader: @Sendable (URL?, OperationControl) throws -> AccountIdentity = {
-        try ProviderCLI.claudeStatus(directory: $0, control: $1)
+        try $1.checkCancellation()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let override = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+        let root = $0 ?? override ?? home.appendingPathComponent(".claude")
+        let legacy = root.appendingPathComponent(".config.json")
+        let path = FileManager.default.fileExists(atPath: legacy.path) ? legacy
+            : ($0 != nil || override != nil ? root : home).appendingPathComponent(".claude.json")
+        guard let object = try JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any],
+              let account = object["oauthAccount"] as? [String: Any] else { throw AccountError.loginRequired }
+        return AccountIdentity(email: account["emailAddress"] as? String,
+            organization: account["organizationName"] as? String, organizationID: account["organizationUuid"] as? String,
+            stableID: account["accountUuid"] as? String)
+    }
+    var keychainReader: @Sendable (String, String?) throws -> Data? = {
+        try BackgroundKeychain.read(service: $0, account: $1)
     }
     var transport: @Sendable (URLRequest) async throws -> (Data, URLResponse) = {
         try await URLSession.shared.data(for: $0)
@@ -24,16 +39,16 @@ struct ClaudeUsageProvider: UsageProviding {
         await Task.detached(priority: .utility) {
             do {
                 try control.checkCancellation()
-                if let directory, let expectedIdentity {
+                if let expectedIdentity {
                     let current = try statusReader(directory, control)
                     if current.comparison(to: expectedIdentity) == .different {
                         throw AccountError.message("The linked Claude account has changed. Reconnect to confirm it.")
                     }
                 }
                 try control.checkCancellation()
-                let initialCredentialKey = try? readCredentials().cacheKey
-                let remoteResult = try await resolveRemoteUsage()
-                guard initialCredentialKey == (try? readCredentials().cacheKey) else {
+                let credentials = try readCredentials()
+                let remoteResult = try await resolveRemoteUsage(credentials: credentials)
+                guard credentials.cacheKey == (try readCredentials().cacheKey) else {
                     throw AccountError.message("The CLI account changed during the request. Refresh again.")
                 }
                 let modelWeeklies: [ModelWeeklySummary] = (remoteResult.data.modelWeeklies ?? []).map { cached in
@@ -77,7 +92,7 @@ struct ClaudeUsageProvider: UsageProviding {
                     planName: nil,
                     sourceDescription: "Anthropic OAuth usage API + cache",
                     note: requiresLogin
-                        ? "Claude login required. Sign in to Claude Code, then refresh."
+                        ? "Sign-in required. Reconnect this account in Settings › Accounts."
                         : "Couldn't read Anthropic account usage: \(error.localizedDescription)",
                     isStale: true,
                     requiresLogin: requiresLogin
@@ -86,16 +101,13 @@ struct ClaudeUsageProvider: UsageProviding {
         }.value
     }
 
-    private func resolveRemoteUsage() async throws -> RemoteUsageResult {
+    private func resolveRemoteUsage(credentials: ClaudeCredentials) async throws -> RemoteUsageResult {
         try control.checkCancellation()
         let cache = ClaudeUsageCache(overrideURL: cacheURL, enabled: cacheURL != nil)
         let now = Date.now
         let previousCache = try? cache.readRaw()
 
-        let credentials = try? readCredentials()
-        let resolvedPlanName = credentials.flatMap { self.planName(from: $0.subscriptionType) }
-
-        if let credentials, let cacheState = try? cache.readState(now: now, credentialCacheKey: credentials.cacheKey), cacheState.isFresh {
+        if let cacheState = try? cache.readState(now: now, credentialCacheKey: credentials.cacheKey), cacheState.isFresh {
             return RemoteUsageResult(
                 data: cacheState.data,
                 updatedAt: cacheState.updatedAt,
@@ -105,11 +117,7 @@ struct ClaudeUsageProvider: UsageProviding {
             )
         }
 
-        guard let credentials else {
-            throw ClaudeUsageError.missingCredentials
-        }
-
-        let planName = resolvedPlanName ?? planName(from: credentials.subscriptionType)
+        let planName = planName(from: credentials.subscriptionType)
         try control.checkCancellation()
         let apiResult = await fetchUsageApi(accessToken: credentials.accessToken)
 
@@ -282,12 +290,32 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 
     private func readCredentials() throws -> ClaudeCredentials {
-        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
         let configDirectory = claudeConfigDirectory(homeDirectory: homeDirectory)
         let serviceNames = keychainServiceNames(configDirectory: configDirectory, homeDirectory: homeDirectory)
         let accountName = currentAccountName()
 
-        if let credentials = try readKeychainCredentials(serviceNames: serviceNames, accountName: accountName) {
+        // Managed account directories are private and isolated. Once a credential
+        // has been mirrored there, prefer it so periodic usage refreshes never
+        // invoke /usr/bin/security and repeatedly prompt for the same Keychain item.
+        if directory != nil, let fileCredentials = try? readFileCredentials(configDirectory: configDirectory) {
+            return fileCredentials
+        }
+
+        let loaded: (credentials: ClaudeCredentials, data: Data)?
+        do { loaded = try readKeychainCredentials(serviceNames: serviceNames, accountName: accountName) }
+        catch {
+            // A usable credential file can still be read without prompting when
+            // the Keychain entry is unavailable.
+            if let fileCredentials = try? readFileCredentials(configDirectory: configDirectory) { return fileCredentials }
+            throw error
+        }
+        if let loaded {
+            let credentials = loaded.credentials
+            if directory != nil {
+                let url = configDirectory.appendingPathComponent(".credentials.json")
+                try? loaded.data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
             if credentials.subscriptionType.isEmpty == false {
                 return credentials
             }
@@ -313,7 +341,7 @@ struct ClaudeUsageProvider: UsageProviding {
     private func readKeychainCredentials(
         serviceNames: [String],
         accountName: String?
-    ) throws -> ClaudeCredentials? {
+    ) throws -> (credentials: ClaudeCredentials, data: Data)? {
         for serviceName in serviceNames {
             if let accountName,
                let credentials = try loadKeychainCredentials(serviceName: serviceName, accountName: accountName) {
@@ -331,17 +359,9 @@ struct ClaudeUsageProvider: UsageProviding {
     private func loadKeychainCredentials(
         serviceName: String,
         accountName: String?
-    ) throws -> ClaudeCredentials? {
-        var arguments = ["find-generic-password", "-s", serviceName]
-        if let accountName {
-            arguments += ["-a", accountName]
-        }
-        arguments.append("-w")
-
-        let data = try runSecurityCommand(arguments: arguments, timeout: 3)
-        guard data.isEmpty == false else {
-            return nil
-        }
+    ) throws -> (credentials: ClaudeCredentials, data: Data)? {
+        try control.checkCancellation()
+        guard let data = try keychainReader(serviceName, accountName), !data.isEmpty else { return nil }
 
         let credentialsFile = try JSONDecoder().decode(CredentialsFile.self, from: data)
         guard let accessToken = credentialsFile.claudeAiOauth?.accessToken, accessToken.isEmpty == false else {
@@ -352,11 +372,11 @@ struct ClaudeUsageProvider: UsageProviding {
             return nil
         }
 
-        return ClaudeCredentials(
+        return (ClaudeCredentials(
             accessToken: accessToken,
             subscriptionType: credentialsFile.claudeAiOauth?.subscriptionType ?? "",
             cacheKey: Self.cacheKey(for: data)
-        )
+        ), data)
     }
 
     private func readFileCredentials(configDirectory: URL) throws -> ClaudeCredentials {
@@ -436,6 +456,8 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 
     private static func requiresLogin(for error: Error) -> Bool {
+        if case BackgroundKeychain.ReadError.authorizationRequired = error { return true }
+        if case AccountError.loginRequired = error { return true }
         guard let usageError = error as? ClaudeUsageError else {
             return false
         }
@@ -443,7 +465,7 @@ struct ClaudeUsageProvider: UsageProviding {
         switch usageError {
         case .missingCredentials:
             return true
-        case .invalidURL, .keychainTimeout:
+        case .invalidURL:
             return false
         }
     }
@@ -533,32 +555,6 @@ struct ClaudeUsageProvider: UsageProviding {
         return nil
     }
 
-    private func runSecurityCommand(arguments: [String], timeout: TimeInterval) throws -> Data {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = arguments
-
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        let group = DispatchGroup()
-        group.enter()
-        process.terminationHandler = { _ in group.leave() }
-        try process.run()
-
-        if group.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            throw ClaudeUsageError.keychainTimeout
-        }
-
-        guard process.terminationStatus == 0 else {
-            return Data()
-        }
-
-        return outputPipe.fileHandleForReading.readDataToEndOfFile()
-    }
 }
 
 struct RemoteUsageData: Codable {
@@ -720,7 +716,6 @@ private struct SelectedUsageWindow {
 private enum ClaudeUsageError: LocalizedError {
     case invalidURL
     case missingCredentials
-    case keychainTimeout
 
     var errorDescription: String? {
         switch self {
@@ -728,8 +723,6 @@ private enum ClaudeUsageError: LocalizedError {
             return "Invalid usage URL"
         case .missingCredentials:
             return "Couldn't find a Claude OAuth token."
-        case .keychainTimeout:
-            return "macOS Keychain response timed out."
         }
     }
 }

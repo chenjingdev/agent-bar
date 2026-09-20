@@ -34,6 +34,7 @@ struct UsageAccount: Codable, Equatable, Identifiable, Sendable {
     var deletionPending = false
 
     var isManaged: Bool { credentialID != nil }
+    var isBuiltIn: Bool { id == Self.currentCLI(provider).id }
     var title: String { name }
     static func currentCLI(_ provider: ProviderKind) -> Self {
         Self(id: UUID(uuidString: provider == .claude
@@ -96,16 +97,17 @@ struct AccountFiles: Sendable {
         }
         return registry
     }
-    func removeCredentials(_ account: UsageAccount) throws {
+    func removeCredentials(_ account: UsageAccount, allowUserInteraction: Bool = true) throws {
         guard let id = account.credentialID else { return }
         let directory = credentials(id)
         if account.provider == .claude {
             let service = Self.claudeService(directory)
-            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                         kSecAttrService as String: service,
                                         kSecAttrAccount as String: NSUserName()]
-            var status = SecItemDelete(query as CFDictionary)
-            if status == errSecInvalidOwnerEdit {
+            if !allowUserInteraction { query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
+            var status = try BackgroundKeychain.withInteraction(allowUserInteraction) { SecItemDelete(query as CFDictionary) }
+            if status == errSecInvalidOwnerEdit && allowUserInteraction {
                 // CLI-created legacy Keychain items can reject deletion by this
                 // ad-hoc-signed app. Use the system Keychain client with the exact
                 // managed namespace; never widen the query or change its ACL.
@@ -119,7 +121,7 @@ struct AccountFiles: Sendable {
                 var verification = query
                 verification[kSecReturnAttributes as String] = true
                 verification[kSecMatchLimit as String] = kSecMatchLimitOne
-                let remaining = SecItemCopyMatching(verification as CFDictionary, nil)
+                let remaining = try BackgroundKeychain.withInteraction(allowUserInteraction) { SecItemCopyMatching(verification as CFDictionary, nil) }
                 status = remaining == errSecItemNotFound ? errSecItemNotFound : (remaining == errSecSuccess ? errSecInvalidOwnerEdit : remaining)
             }
             guard status == errSecSuccess || status == errSecItemNotFound else {

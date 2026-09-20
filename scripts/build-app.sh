@@ -11,6 +11,7 @@ install_dir="$HOME/Applications"
 install_path="$install_dir/$bundle_name"
 build_configuration="release"
 should_install=0
+signing_identity="${AGENTBAR_CODE_SIGN_IDENTITY:-}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -78,7 +79,17 @@ PLIST
 
 printf 'APPL????' > "$bundle_path/Contents/PkgInfo"
 
-codesign --force --deep -s - "$bundle_path" >/dev/null
+if [[ -z "$signing_identity" ]]; then
+  for candidate in "FreshRestart Local Code Signing" "Screen Translate Local Code Signing"; do
+    if security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$candidate\""; then
+      signing_identity="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$signing_identity" ]]; then signing_identity="-"; fi
+echo "Signing with: $signing_identity"
+codesign --force --deep -s "$signing_identity" "$bundle_path" >/dev/null
 
 if [[ "$should_install" -eq 1 ]]; then
   umask 077

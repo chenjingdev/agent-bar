@@ -2,20 +2,28 @@
 
 A local macOS menu bar app for monitoring **Codex and Claude Code subscription limits across multiple accounts**.
 
+Download the app from [GitHub Releases](https://github.com/chenjingdev/agent-bar/releases/latest). The prebuilt app supports Apple Silicon Macs running macOS 14 or later. It is ad-hoc signed and is not notarized by Apple. Extract the ZIP and place `AgentBar.app` in Applications. The official provider CLIs are still required.
+
 ## Accounts and menu bar
 
-Click a menu bar item to see the original usage cards for every assigned account, in order. The fixed footer offers **Accounts · Settings · Quit**.
+**Settings › Menu Bar** is the editor for every menu bar group. Groups use clickable tabs, styles use illustrated buttons, and limits use direct selection buttons; the selected option is highlighted. A group is one clickable menu bar item; its ordered usage lines can mix Claude and Codex accounts and limits freely.
 
-- **Settings** controls the refresh interval and number of menu bar items. Reducing the count hides trailing items without losing their settings; increasing it restores them.
-- The **sliders menu** on each usage popover controls service badges, bars, individual percentages, and **1–6 vertical rows** (default 2). Extra rows flow into columns within the same menu bar item.
-- Assign any combination of Claude and Codex accounts. An account belongs to only one item; other active assignments are excluded from the picker. Use **Move to Another Item** to move it atomically, or **Move Up / Move Down** to reorder it.
-- Select **5h, Weekly, and model-specific limits per account**. A selected but unavailable limit occupies no bar; it appears automatically when data becomes available. This includes Codex 5h. Each visible limit has its own percentage.
-- Same-provider accounts in a combined item have numbered badges, matching their detail headings. Tooltip/accessibility text identifies every account and limit.
-- An empty/hidden item remains reachable as **AB · number**. A non-blocking notice appears when AgentBar's combined width exceeds 40% of its display width; this is a heuristic, not a measurement of space available beside other apps.
-- **Accounts** adds accounts and provides rename, menu-bar metric selection, reconnect, and delete through each row's ellipsis menu. The display-options account submenu also offers Rename. Each add/reconnect uses a fresh isolated macOS OAuth window; no shared-browser fallback is used.
-- **Current CLI account** follows the external CLI login and never changes its credentials. A managed account's delete operation removes only its AgentBar credentials/cache.
+Opening Settings from a menu bar group's popover selects that exact group, including when several groups use the same account. The selected group remains selected while switching settings tabs or reopening the window within the running app. Empty menu bar items open their own group's editor directly.
 
-The first display migration preserves existing provider visibility and badge/bar/percentage preferences. Hidden providers retain an inactive item; existing multi-account display settings are not migrated again. Other accounts remain available in Accounts. Reopening AgentBar opens the existing Settings window.
+- **Add Group** creates another independent group, without a fixed group-count limit. **Show** hides a group without deleting its configuration. Delete removes only that display group, never its accounts. Drag an AgentBar badge onto another badge, or drag the group buttons in Settings, to reorder without a modifier key. The app reuses its existing menu bar positions and saves the new group-to-position mapping. Native ⌘-drag remains available for positioning items among other apps.
+- **Three fixed slots** show existing lines or a centered **+** in each empty slot. Clicking **+** adds an editable line in that slot, initially using the last account in the group (or the first available account) and its weekly limit. Each compact line keeps its drag handle, account, direct limit buttons, and remove button on one row. Dropping onto an occupied slot swaps the two lines. To put a line in another group, add it there and remove the old line. A common badge can appear once at the left of the group with its own text and color. Bar and gauge colors follow each account. The group name labels the group only. The same account can appear in several lines or groups. Missing data remains `--` for the selected limit, never a substitute limit or a false zero.
+- Each group independently chooses its style, common badge visibility, percentage visibility and **up to three usage lines in one column**. Full groups cannot receive another line once all three slots are occupied; there are no overflow columns. Multi Bar always shows its equal-thickness bars and optionally shows one large percentage for the line selected with its `%` button; dragging that line keeps the selection, and deleting it falls back to the first line.
+- Four styles are available: **Multi Bar** (stacked bars with one full-size representative percentage), **Ring Gauge** (a high-contrast progress ring with a full-size percentage beside it), **Capsule Fill** (up to three capsules matching the Multi Bar width, stacked in one column), and **Text Only**. Text Only has no line limit and lays every percentage out horizontally in configured order, without labels. Remove values until three remain before switching an unlimited Text Only group to another style. Ring Gauge always edits, refreshes, and displays only the first configured usage line. Legacy Individual mode becomes None; legacy Both mode becomes Common. The old Name Badge style maps to Multi Bar. Changes appear immediately in the actual menu bar. Usage at 90% or more turns the gauge red.
+- **Settings › Accounts** manages login, reconnect, deletion, and account names. Drag the handle beside an account to reorder the list; every usage-line account picker immediately uses that saved order without changing its selected account. Built-in and added accounts can both be moved. New accounts append to the list, and the order survives restart. Use a group’s Show switch or remove a usage line to control what is displayed and refreshed. **Add Account** opens an agent picker populated from the supported providers. Click any account name to rename it. Saved accounts offer identity details and Reconnect; added accounts also offer Delete. Automatic email names appear as provider names with an account number and can be replaced by a custom name. New accounts receive a distinct palette color when possible and are initially added to their own group.
+- **Settings › General** controls the refresh interval. Clicking a group opens a popover with one tab per account, even if that account has several lines. An empty group's `+` opens the Menu Bar editor. Reopening AgentBar opens Settings, including when every group is hidden.
+- A non-blocking notice appears when AgentBar's combined width exceeds 40% of its display width; this is a heuristic, not a measurement of remaining menu bar space.
+- **Each saved account is monitored independently** using its own credential directory. An unsaved current-login row reads the external CLI login. AgentBar only monitors usage; it does not select or replace the login used by Claude, Codex, or another app.
+
+Dragging accounts, groups, and usage lines lifts a translucent copy with a shadow. The destination is previewed before dropping; dropping outside the list returns the item to its original position. Account and group moves insert at the destination, while usage lines swap occupied slots or move into empty slots.
+
+Existing account-based `display-v2.json` preferences remain readable. The first group edit saves explicit ordered layouts and first backs up the previous file as `display-before-layouts-<UUID>.json`. Account visibility, names and colors are retained.
+
+For an original item-based `display-v1.json`, migration preserves every group (including hidden and empty groups), account order, exact selected limits, and each group's component toggles. Groups with more than three lines keep their first three visible; extra selections are preserved in hidden “saved lines” groups. The original file stays untouched. If v2 settings already exist, **Settings › General › Recovery › Restore Original Groups…** restores the original v1 layout while retaining current names and colors, and saves a `display-before-restore-<UUID>.json` backup first.
 
 ## Requirements
 
@@ -30,24 +38,28 @@ The implementation was developed against Codex CLI 0.154.0 and Claude Code 2.1.2
 
 **Codex:** AgentBar launches the official `codex app-server` in a separate `CODEX_HOME` for each managed account. It uses managed ChatGPT OAuth login, `account/read`, and `account/rateLimits/read`. Managed accounts use the CLI's file credential storage in a private directory. Existing CLI launch wrappers and routing configuration are not modified.
 
-**Claude:** A private per-login browser-opener helper captures the CLI's automatic OAuth URL for the macOS authentication session. The URL is validated and immediately removed from disk. The CLI keeps ownership of its PKCE state, local callback, and token exchange. AgentBar launches `claude auth login --claudeai` with a separate `CLAUDE_CONFIG_DIR`. It verifies the JSON login status and uses that directory's OAuth credential to query Anthropic's usage endpoint. The directory-specific Keychain entry is preferred, with the CLI's credential file as fallback. It never falls back to another account's default Keychain entry.
+**Claude:** A private per-login browser-opener helper captures the CLI's automatic OAuth URL before opening it in the default browser. The URL is validated and immediately removed from disk. The CLI keeps ownership of its PKCE state, local callback, and token exchange. AgentBar launches `claude auth login --claudeai` with a separate `CLAUDE_CONFIG_DIR`. It verifies the JSON login status during login and uses that directory's OAuth credential to query Anthropic's usage endpoint. Managed usage reads prefer the private credential file; default CLI reads query Keychain without authorization dialogs and fall back to the CLI credential file when access is unavailable. Managed accounts never fall back to another account's default Keychain entry.
 
-Claude credentials can expire. This version provides a reconnect button and does not promise unattended renewal. It never sends model prompts to keep authentication alive.
+Claude credentials can expire. Reconnect remains available for expired or revoked logins. No model prompts are sent to refresh or verify authentication.
 
 The old shared Claude status-line bridge is not used by the multi-account reader because its samples do not identify their owning account. The optional legacy script remains in the repository but is not installed or reconfigured by this app.
+
+Sign-in opens in the default browser, using its existing Google/Claude/ChatGPT session when available. AgentBar does not force a private browser session. Providers may still require reauthentication. Review the returned account identity before adding it; select another account in the browser when needed. CLI credential directories remain isolated per managed account. Cancelling or timing out stops the CLI operation; the browser tab can be closed manually.
 
 ## Data, refresh, and privacy
 
 Account data lives under `~/.agentbar/multi-account-v1/`:
 
 - `accounts.json`: versioned account metadata, representative selections, and pending cleanup records. No passwords or tokens.
-- `display-v1.json`: ordered display items, preserved inactive items, account metric selections, and rendering preferences. No credentials.
+- `display-v2.json`: account metadata and explicit groups with ordered account/limit lines, per-group styles, component toggles, visibility and row counts. Legacy v2 fields are retained for migration. No credentials. An original `display-v1.json` and layout backups may remain alongside it.
 - `credentials/<UUID>/`: per-login CLI authentication/configuration directory. Its path remains fixed after login because Keychain storage may depend on it.
 - `usage/<account UUID>/<credential UUID>/`: isolated usage cache and last-known-good snapshot.
 
-Directories use mode `0700`; app-written files use `0600`. OAuth tokens stay in the CLI-managed credential store and are never written to usage caches or app logs. Treat credential directories and local backups as private.
+Directories use mode `0700`; app-written files use `0600`. For managed Claude accounts, an accessible Keychain credential can be mirrored to that account’s private `.credentials.json`; routine usage refreshes prefer this isolated file. OAuth tokens stay in these private credential stores; they are never written to usage caches or app logs. Treat credential directories and local backups as private.
 
-The existing refresh interval is preserved (60, 120, 300, or 600 seconds). Accounts hidden from active menu bar items are excluded from both automatic and manual refresh. Turning off every display component or deselecting every metric also pauses the account. Selected but unavailable metrics continue polling so they can appear later. Showing an account again schedules its refresh while respecting retry cooldowns. Requests are serialized per provider. Changing the refresh interval applies immediately. Provider retry deadlines are preserved even if a response arrives after an account is hidden; manual refresh does not bypass a cooldown. Failures are isolated to the affected account.
+Background usage reads, provider detection, and startup cleanup suppress Keychain authorization UI. If no accessible credential exists, the account shows a sign-in-required state and retains available cached usage as stale. Routine identity checks read local account metadata without spawning Claude, and credentials are rechecked after each usage request to discard results from a changed login.
+
+The existing refresh interval is preserved (60, 120, 300, or 600 seconds). Accounts unused by any visible group are excluded from both automatic and manual refresh. Legacy paused accounts stay paused until reenabled from a usage line. An account used by several groups is polled once per refresh. Selected limits keep polling even when they have no data so they can appear later. Showing an account again schedules its refresh while respecting retry cooldowns. Requests are serialized per provider. Changing the refresh interval applies immediately. Provider retry deadlines are preserved even if a response arrives after an account is hidden; manual refresh does not bypass a cooldown. Failures are isolated to the affected account.
 
 Unknown usage is `--`, not `0%`. Old values retain their original timestamp and are marked stale. Existing global cache files are not imported into managed accounts. Current-CLI caches require a matching credential before reuse; Codex's current-CLI slot does not reuse a persisted snapshot.
 
@@ -71,13 +83,13 @@ The installer copies the previous app, its preferences, and existing multi-accou
 
 `~/Library/Application Support/AgentBar/Backups/<timestamp>/`
 
-It verifies the staged app's signature before replacement and refuses to replace a running app. The bundle is ad-hoc signed for local use, not notarized for public distribution.
+It verifies the staged app's signature before replacement and refuses to replace a running app. For stable macOS Keychain authorization across local rebuilds, the script uses `AGENTBAR_CODE_SIGN_IDENTITY` when set, otherwise a recognized local code-signing identity already installed on this Mac, with ad-hoc signing only as a fallback. The local bundle is not notarized for public distribution.
 
 To roll back, quit AgentBar, restore `AgentBar.app` from the selected backup, and restore the corresponding AgentBar preferences if needed. Preserve the newer multi-account data separately before restoring its backup. Never restore over external `~/.codex`, `~/.claude`, or unrelated Keychain entries.
 
 ## Validation
 
-`swift test` covers hidden-account refresh suspension/resumption, upstream preference migration, CLI process-tree cleanup, account storage and permissions, representative persistence, cache isolation, unknown-versus-zero values, credential mismatches, delayed-result rejection, process cancellation/timeouts, and SwiftUI rendering.
+`swift test` covers original-group migration and restoration backups, mixed-provider line order and missing data, per-group display options, duplicate-account popover routing, more than four groups, hidden-account refresh suspension/resumption, upstream preference migration, CLI process-tree cleanup, account storage and permissions, representative persistence, cache isolation, unknown-versus-zero values, credential mismatches, delayed-result rejection, process cancellation/timeouts, and SwiftUI rendering.
 
 An explicit installed-CLI probe can exercise Codex OAuth startup and cancellation **without opening a browser or signing in**:
 

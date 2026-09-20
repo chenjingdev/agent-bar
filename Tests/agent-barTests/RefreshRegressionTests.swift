@@ -27,9 +27,9 @@ import Testing
                                loadAccount: { _, _ in ProviderSnapshot.placeholder(for: .codex).failed("Sign-in required", requiresLogin: true) })
         defer { store.shutdown() }
         await store.refresh()
-        store.updateDisplay { $0.resize(1) }
+        store.updateDisplay { $0.setVisible(account.id, false) }
         #expect(store.snapshot(for: account).requiresLogin)
-        store.updateDisplay { $0.resize(2) }
+        store.updateDisplay { $0.setVisible(account.id, true) }
         #expect(store.snapshot(for: account).requiresLogin)
         #expect(store.snapshot(for: account).note == "Cached usage. Waiting for the next refresh.")
     }
@@ -51,10 +51,10 @@ import Testing
             if Date() > deadline { throw AccountError.timeout }
             try await Task.sleep(for: .milliseconds(5))
         }
-        store.updateDisplay { $0.resize(1) }
+        store.updateDisplay { $0.setVisible(account.id, false) }
         await loader.release()
         await task.value
-        store.updateDisplay { $0.resize(2) }
+        store.updateDisplay { $0.setVisible(account.id, true) }
         await store.refresh()
         #expect(await loader.calls == 1)
     }

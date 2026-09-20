@@ -56,20 +56,14 @@ struct ProviderSnapshotWindowTests {
 
         #expect(snapshot.fiveHour == nil)
         #expect(snapshot.primaryWindow?.tokens == 11)
-        let hostingView = NSHostingView(
-            rootView: MenuBarLabelView(
-                snapshot: snapshot,
-                displaySettings: ProviderDisplaySettings(
-                    isEnabled: true,
-                    showsBadge: true,
-                    showsUsageBars: true,
-                    showsPercentage: true
-                )
-            )
-        )
-
-        #expect(hostingView.fittingSize.width > 28)
-        #expect(hostingView.fittingSize.height > 0)
+        let account = UsageAccount(id: UUID(), provider: .codex, name: "Codex")
+        var config = DisplayConfiguration(); config.sync([account])
+        let entry = MenuBarEntry(account: account, display: config.display(account),
+                                 metric: .menuBar(snapshot, preferred: "weekly"), stale: false, requiresLogin: false)
+        let image = DisplayStatusRenderer.render(entry: entry, config: config)
+        #expect(entry.metric.id == "weekly")
+        #expect(image.size.width > 28)
+        #expect(image.size.height > 0)
     }
 
     @Test @MainActor
@@ -100,10 +94,11 @@ struct ProviderSnapshotWindowTests {
         let store = UsageStore(settings: settings, availableProviders: [.codex], files: AccountFiles(root: root), autoRefresh: false,
                                loadAccount: { _, _ in snapshot })
         await store.refresh()
-        let item = store.displayConfiguration.activeItems.first { !$0.accountIDs.isEmpty }!
-        let controller = StatusBarController(itemID: item.id, store: store)
+        let account = store.visibleAccounts.first!
+        let controller = StatusBarController(key: account.id, store: store)
         defer { controller.remove() }
-        controller.apply(item, number: 1)
+        // The preferred metric is weekly, so a Codex account without 5h data still reads as weekly.
+        controller.apply([store.menuBarEntry(for: account)], config: store.displayConfiguration)
         #expect(controller.accessibilityLabel?.contains("Weekly Limit: 11%") == true)
         #expect(controller.accessibilityLabel?.contains("5-Hour") == false)
     }

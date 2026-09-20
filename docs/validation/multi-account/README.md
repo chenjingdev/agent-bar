@@ -1,5 +1,35 @@
 # Multi-account validation
 
+## Release 0.1.0 — 2026-09-21
+
+The full suite passed **126 tests across 21 suites** using the macOS 26.5 SDK:
+
+```sh
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift test
+```
+
+Current coverage includes saved account-order persistence, account insertion/deletion synchronization,
+unchanged account identities and usage-line selections after reordering, drag destination geometry,
+empty-slot moves, out-of-bounds cancellation, group-position persistence, Text Only slot repair,
+and noninteractive background Keychain access. Existing provider, cancellation, refresh, isolation,
+migration, and rendering checks also pass.
+
+Manual checks on the installed Apple Silicon app verified:
+
+- Account, group, and usage-line dragging in Settings, including cancellation and empty-slot moves.
+- Changed account order immediately appears in the usage-line account picker while preserving its selection.
+- Account order survives app restart. Test moves were returned to the user's original configuration.
+- The currently installed app uses the default browser for sign-in; account swapping is absent.
+
+The public app is an Apple Silicon release build, ad-hoc signed and not notarized by Apple.
+Intel binaries and a clean-machine installation are not validated in this release. Direct menu-bar
+drag routing and saved position mapping are covered by tests; the physical menu-bar drag gesture
+was not separately verified during release acceptance. Full OAuth completion was not repeated
+as part of the release checks.
+
+The remaining sections are historical validation from the earlier multi-account integration;
+references to the isolated login window and the older display controls describe that earlier build.
+
 ## Automated checks
 
 On macOS, `AGENTBAR_QA_ARTIFACT_DIR=/tmp/agentbar-pr-final-ui AGENTBAR_LIVE_AUTH_PROBE=1 swift test` passed 95 tests across 18 suites on 2026-09-15.

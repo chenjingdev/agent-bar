@@ -20,11 +20,13 @@ struct AccountViewRenderingTests {
         var registry = AccountRegistry(accounts: examples); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
         let store = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
-        try render(SettingsView().environmentObject(settings).environmentObject(store), size: NSSize(width: 430, height: 320), name: "settings")
-        try render(DisplayPopoverView(itemID: store.displayConfiguration.items[0].id, showAccounts: true).environmentObject(store), size: NSSize(width: 392, height: 568), name: "codex-list")
+        try render(SettingsView(tab: .general).environmentObject(settings).environmentObject(store), size: NSSize(width: 430, height: 620), name: "settings-general")
+        try render(SettingsView(tab: .accounts).environmentObject(settings).environmentObject(store), size: NSSize(width: 430, height: 620), name: "settings-accounts")
+        try render(AccountPopoverView(accountID: examples[1].id).environmentObject(store), size: NSSize(width: 392, height: 520), name: "popover")
         let emptyFiles = AccountFiles(root: root.appendingPathComponent("empty"))
         let empty = UsageStore(settings: settings, availableProviders: [], files: emptyFiles, autoRefresh: false)
-        try render(DisplayPopoverView(itemID: empty.displayConfiguration.items[0].id, showAccounts: true).environmentObject(empty), size: NSSize(width: 392, height: 568), name: "empty-list")
+        try render(SettingsView(tab: .accounts).environmentObject(settings).environmentObject(empty), size: NSSize(width: 430, height: 620), name: "settings-empty")
+        try render(AccountPopoverView(accountID: examples[0].id).environmentObject(empty), size: NSSize(width: 392, height: 520), name: "popover-removed")
     }
     @MainActor private func render<V: View>(_ view: V, size: NSSize, name: String) throws {
         let host = NSHostingView(rootView: view)

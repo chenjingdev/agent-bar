@@ -7,26 +7,21 @@ struct UsageStoreProviderVisibilityTests {
     @Test func hiddenAccountsAreSkippedByManualRefresh() async throws {
         let fixture = try VisibilityFixture()
         defer { fixture.close() }
-        fixture.store.updateDisplay { $0.resize(1) }
+        fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, false) }
         await fixture.store.refresh()
         #expect(await fixture.loader.count(fixture.claude.id) == 1)
         #expect(await fixture.loader.count(fixture.codex.id) == 0)
     }
 
-    @Test func hidingAllComponentsOrMetricsStopsRefreshButMissingDataDoesNot() async throws {
+    @Test func missingMetricDataDoesNotStopRefresh() async throws {
         let fixture = try VisibilityFixture()
         defer { fixture.close() }
-        fixture.store.updateDisplay {
-            $0.items[0].showService = false; $0.items[0].showBars = false; $0.items[0].showPercent = false
-            $0.metrics[fixture.codex.id.uuidString] = []
-        }
-        await fixture.store.refresh()
-        #expect(await fixture.loader.total == 0)
-        fixture.store.updateDisplay { $0.metrics[fixture.codex.id.uuidString] = ["5h"] }
-        // There is no 5h data yet, but polling must discover its later arrival.
+        fixture.store.updateDisplay { $0.setVisible(fixture.claude.id, false); $0.update(fixture.codex.id) { $0.primary = "5h" } }
+        // The loader reports weekly only, but polling must discover 5h data arriving later.
         await fixture.store.refresh()
         #expect(await fixture.loader.count(fixture.codex.id) == 1)
         #expect(await fixture.loader.count(fixture.claude.id) == 0)
+        #expect(fixture.store.menuBarEntry(for: fixture.codex).metric.id == "weekly")
     }
 
     @Test func hidingAnInflightAccountCancelsAndDiscardsItsResult() async throws {
@@ -34,7 +29,7 @@ struct UsageStoreProviderVisibilityTests {
         defer { fixture.close() }
         let task = Task { await fixture.store.refresh() }
         try await fixture.waitFor { await fixture.loader.count(fixture.claude.id) == 1 }
-        fixture.store.updateDisplay { $0.remove(fixture.claude.id, from: $0.items[0].id) }
+        fixture.store.updateDisplay { $0.setVisible(fixture.claude.id, false) }
         #expect(await fixture.loader.wasCancelled(fixture.claude.id))
         await fixture.loader.release()
         await task.value
@@ -47,7 +42,7 @@ struct UsageStoreProviderVisibilityTests {
         defer { fixture.close() }
         let task = Task { await fixture.store.refresh() }
         try await fixture.waitFor { await fixture.loader.count(fixture.claude.id) == 1 }
-        fixture.store.updateDisplay { $0.remove(fixture.codex.id, from: $0.items[0].id) }
+        fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, false) }
         await fixture.loader.release()
         await task.value
         #expect(await fixture.loader.count(fixture.codex.id) == 0)
@@ -56,9 +51,9 @@ struct UsageStoreProviderVisibilityTests {
     @Test func showingAnAccountDuringRefreshQueuesOnlyThatAccount() async throws {
         let fixture = try VisibilityFixture(suspend: true, automatic: true)
         defer { fixture.close() }
-        fixture.store.updateDisplay { $0.resize(1) }
+        fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, false) }
         try await fixture.waitFor { await fixture.loader.count(fixture.claude.id) == 1 }
-        fixture.store.updateDisplay { $0.resize(2) }
+        fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, true) }
         await fixture.loader.release()
         try await fixture.waitFor { !fixture.store.isRefreshing }
         #expect(await fixture.loader.count(fixture.claude.id) == 1)
@@ -69,32 +64,31 @@ struct UsageStoreProviderVisibilityTests {
         let fixture = try VisibilityFixture(automatic: true)
         defer { fixture.close() }
         try await fixture.waitFor { !fixture.store.isRefreshing }
-        fixture.store.updateDisplay { $0.items[0].showService = false; $0.items[0].maxRows = 3 }
+        fixture.store.updateDisplay { $0.showBadge = false; $0.update(fixture.codex.id) { $0.color = .teal }; $0.move(fixture.codex.id, offset: -1) }
         #expect(!fixture.store.isRefreshing)
-        fixture.store.updateDisplay { $0.resize(1) }
-        fixture.store.updateDisplay { $0.resize(2) }
+        fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, false) }
+        fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, true) }
         try await fixture.waitFor { !fixture.store.isRefreshing }
         #expect(await fixture.loader.count(fixture.claude.id) == 1)
         #expect(await fixture.loader.count(fixture.codex.id) == 2)
     }
 
-    @Test func upstreamPreferencesMigrateOnceAndPreserveHiddenItem() throws {
+    @Test func upstreamPreferencesMigrateOnceAndPreserveHiddenAccount() throws {
         let fixture = try VisibilityFixture()
         defer { fixture.close() }
         let defaults = fixture.defaults
         defaults.set(false, forKey: AppSettings.storageKeyForProvider(.claude))
         defaults.set(false, forKey: AppSettings.storageKeyForComponent(.codex, .badge))
         defaults.set(false, forKey: AppSettings.storageKeyForComponent(.codex, .percentage))
-        try FileManager.default.removeItem(at: fixture.files.root.appendingPathComponent("display-v1.json"))
+        try FileManager.default.removeItem(at: fixture.files.root.appendingPathComponent("display-v2.json"))
         let settings = AppSettings(defaults: defaults)
         let store = UsageStore(settings: settings, availableProviders: [], files: fixture.files, autoRefresh: false)
-        #expect(store.displayConfiguration.activeCount == 1)
-        #expect(store.displayConfiguration.items[0].accountIDs == [fixture.codex.id])
-        #expect(store.displayConfiguration.items[0].showBars)
-        #expect(!store.displayConfiguration.items[0].showService)
-        #expect(!store.displayConfiguration.items[0].showPercent)
-        #expect(store.displayConfiguration.items[1].accountIDs == [fixture.claude.id])
-        store.updateDisplay { $0.resize(2) }
+        #expect(store.displayConfiguration.visibleAccountIDs == [fixture.codex.id])
+        #expect(store.displayConfiguration.order == [fixture.claude.id, fixture.codex.id])
+        #expect(store.displayConfiguration.showBar)
+        #expect(!store.displayConfiguration.showBadge)
+        #expect(!store.displayConfiguration.showPercent)
+        store.updateDisplay { $0.setVisible(fixture.claude.id, true) }
         let reloaded = UsageStore(settings: settings, availableProviders: [], files: fixture.files, autoRefresh: false)
         #expect(reloaded.displayConfiguration == store.displayConfiguration)
     }
@@ -102,7 +96,7 @@ struct UsageStoreProviderVisibilityTests {
     @Test func invalidAccountRegistryDoesNotEraseDisplayAssignments() throws {
         let fixture = try VisibilityFixture()
         defer { fixture.close() }
-        let displayURL = fixture.files.root.appendingPathComponent("display-v1.json")
+        let displayURL = fixture.files.root.appendingPathComponent("display-v2.json")
         let before = try Data(contentsOf: displayURL)
         try Data("{bad".utf8).write(to: fixture.files.registryURL)
         let store = UsageStore(settings: AppSettings(defaults: fixture.defaults), availableProviders: [], files: fixture.files, autoRefresh: false)
@@ -127,9 +121,7 @@ private final class VisibilityFixture {
         loader = VisibilityLoader(suspended: suspend)
         var registry = AccountRegistry(accounts: [claude, codex]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
-        var display = DisplayConfiguration.initial(registry)
-        if sameProvider { display.assign(codex.id, to: display.items[0].id) }
-        try files.write(display, to: files.root.appendingPathComponent("display-v1.json"))
+        try files.write(DisplayConfiguration.initial(registry), to: files.root.appendingPathComponent("display-v2.json"))
         let loader = loader
         store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files,
                            autoRefresh: automatic, loadAccount: { await loader.load($0, control: $1) })

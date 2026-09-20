@@ -25,18 +25,15 @@ enum ProviderAvailability {
             return true
         }
 
-        if keychainServiceNames(configDirectory: configDirectory, homeDirectory: homeDirectory)
-            .contains(where: { hasKeychainCredentials(serviceName: $0) }) {
-            return true
-        }
-
         let executableCandidates = [
             homeDirectory.appendingPathComponent(".local/bin/claude"),
             homeDirectory.appendingPathComponent(".bun/bin/claude"),
             URL(fileURLWithPath: "/opt/homebrew/bin/claude"),
             URL(fileURLWithPath: "/usr/local/bin/claude"),
         ]
-        return executableCandidates.contains { fileManager.isExecutableFile(atPath: $0.path) }
+        if executableCandidates.contains(where: { fileManager.isExecutableFile(atPath: $0.path) }) { return true }
+        return keychainServiceNames(configDirectory: configDirectory, homeDirectory: homeDirectory)
+            .contains(where: { BackgroundKeychain.contains(service: $0) })
     }
 
     private static func isCodexAvailable() -> Bool {
@@ -72,35 +69,4 @@ enum ProviderAvailability {
         return ["\(legacyService)-\(suffix)", legacyService]
     }
 
-    private static func hasKeychainCredentials(serviceName: String) -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", serviceName, "-w"]
-
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-        } catch {
-            return false
-        }
-
-        let group = DispatchGroup()
-        group.enter()
-        process.terminationHandler = { _ in group.leave() }
-
-        if group.wait(timeout: .now() + 1.5) == .timedOut {
-            process.terminate()
-            return false
-        }
-
-        guard process.terminationStatus == 0 else {
-            return false
-        }
-
-        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        return data.isEmpty == false
-    }
 }

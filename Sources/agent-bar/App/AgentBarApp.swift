@@ -16,12 +16,12 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
             providers: AppContainer.shared.availableProviders
         )
         if AppContainer.shared.settings.consumeDisplaySetupNotice() || !AppContainer.shared.store.accounts.contains(where: { $0.isManaged }) {
-            SettingsWindowController.shared.show()
+            SettingsWindowController.shared.show(tab: .accounts)
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        SettingsWindowController.shared.show()
+        SettingsWindowController.shared.show(tab: .accounts)
         return true
     }
 }

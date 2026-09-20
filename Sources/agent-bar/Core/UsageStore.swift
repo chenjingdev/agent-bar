@@ -23,6 +23,7 @@ final class UsageStore: ObservableObject {
     @Published private(set) var storageUnavailable = false
 
     @Published private(set) var displayConfiguration = DisplayConfiguration()
+    @Published private(set) var selectedMenuBarGroupID: UUID?
     @Published var displayError: String?
     @Published var displayWidthWarning = false
     private var displayWritable = true
@@ -51,7 +52,7 @@ final class UsageStore: ObservableObject {
         self.files = files
         do {
             var loaded = try files.load()
-            for provider in availableProviders where !loaded.accounts.contains(where: { $0.provider == provider && !$0.isManaged }) {
+            for provider in availableProviders where !loaded.accounts.contains(where: { $0.provider == provider && $0.isBuiltIn }) {
                 loaded.accounts.append(.currentCLI(provider))
             }
             loaded.repairRepresentatives()
@@ -71,18 +72,33 @@ final class UsageStore: ObservableObject {
             configureTimer()
             settings.$refreshIntervalSeconds.dropFirst().sink { [weak self] interval in self?.configureTimer(interval: interval) }.store(in: &cancellables)
             refreshNow()
-            Task { await retryCleanup() }
+            Task { await retryCleanup(allowUserInteraction: false) }
         }
     }
 
-    private var displayURL: URL { files.root.appendingPathComponent("display-v1.json") }
+    private var displayURL: URL { files.root.appendingPathComponent("display-v2.json") }
+    private var legacyDisplayURL: URL { files.root.appendingPathComponent("display-v1.json") }
+    private var liveAccounts: [UsageAccount] { accounts.filter { !$0.deletionPending } }
     private func loadDisplayConfiguration() {
         do {
             if FileManager.default.fileExists(atPath: displayURL.path) {
-                let loaded = try files.read(DisplayConfiguration.self, at: displayURL)
+                var loaded = try files.read(DisplayConfiguration.self, at: displayURL)
+                let original = loaded
+                loaded.limitLayoutSizes()
+                loaded.normalizeTextLineSlots()
+                if loaded.layouts != nil { loaded.freezeBadgeLabels() }
+                if loaded != original {
+                    try FileManager.default.copyItem(at: displayURL, to: files.root.appendingPathComponent("display-before-three-lines-\(UUID()).json"))
+                }
                 guard loaded.valid else { throw AccountError.message("Invalid display settings format.") }
                 displayConfiguration = loaded
-                updateDisplay { $0.prune(Set(accounts.filter { !$0.deletionPending }.map(\.id))) }
+                updateDisplay { $0.sync(liveAccounts) }
+            } else if FileManager.default.fileExists(atPath: legacyDisplayURL.path) {
+                // The item-based file stays untouched so the previous version can still read it.
+                let legacy = try files.read(LegacyDisplayConfiguration.self, at: legacyDisplayURL)
+                guard legacy.valid else { throw AccountError.message("Invalid original layout.") }
+                displayConfiguration = .migrated(from: legacy, accounts: liveAccounts)
+                try files.write(displayConfiguration, to: displayURL)
             } else {
                 displayConfiguration = .initial(registry, settings: settings)
                 try files.write(displayConfiguration, to: displayURL)
@@ -98,14 +114,39 @@ final class UsageStore: ObservableObject {
             displayError = "Could not read display settings. Using defaults; the original was preserved."
         }
     }
+    var hasOriginalDisplayConfiguration: Bool {
+        FileManager.default.fileExists(atPath: legacyDisplayURL.path)
+    }
+    func restoreOriginalDisplayConfiguration() {
+        guard displayWritable else { return }
+        do {
+            let legacy = try files.read(LegacyDisplayConfiguration.self, at: legacyDisplayURL)
+            guard legacy.valid else { throw AccountError.message("Invalid original layout.") }
+            let restored = DisplayConfiguration.migrated(from: legacy, accounts: liveAccounts)
+            if FileManager.default.fileExists(atPath: displayURL.path) {
+                try FileManager.default.copyItem(at: displayURL, to: files.root.appendingPathComponent("display-before-restore-\(UUID()).json"))
+            }
+            updateDisplay { next in
+                next.layouts = restored.layouts
+                for id in legacy.items.flatMap(\.accountIDs) { next.setVisible(id, true) }
+            }
+        } catch { displayError = "Could not restore original groups: \(error.localizedDescription)" }
+    }
     func updateDisplay(_ change: (inout DisplayConfiguration) -> Void) {
         guard displayWritable else { return }
         var next = displayConfiguration; change(&next)
+        if next.layouts != nil { next.freezeBadgeLabels() }
         guard next.valid else { return }
         do {
+            if displayConfiguration.layouts == nil && next.layouts != nil && FileManager.default.fileExists(atPath: displayURL.path) {
+                try FileManager.default.copyItem(at: displayURL, to: files.root.appendingPathComponent("display-before-layouts-\(UUID()).json"))
+            }
             try files.write(next, to: displayURL)
             let previous = refreshAccountIDs
             displayConfiguration = next
+            if let selectedMenuBarGroupID, !next.effectiveLayouts.contains(where: { $0.id == selectedMenuBarGroupID }) {
+                self.selectedMenuBarGroupID = next.effectiveLayouts.first?.id
+            }
             let current = refreshAccountIDs
             for id in previous.subtracting(current) {
                 controls[id]?.cancel()
@@ -126,11 +167,34 @@ final class UsageStore: ObservableObject {
         }
         catch { displayError = "Could not save display settings: \(error.localizedDescription)" }
     }
-    func displayAccounts(_ item: DisplayItem) -> [UsageAccount] {
-        item.accountIDs.compactMap { id in accounts.first { $0.id == id && !$0.deletionPending } }
+    var visibleAccounts: [UsageAccount] {
+        displayConfiguration.visibleAccountIDs.compactMap { id in liveAccounts.first { $0.id == id } }
     }
-    func displayRows(_ item: DisplayItem) -> [DisplayRow] {
-        DisplayRow.make(item: item, accounts: accounts, snapshots: snapshots, config: displayConfiguration)
+    var orderedAccounts: [UsageAccount] {
+        displayConfiguration.order.compactMap { id in liveAccounts.first { $0.id == id } }
+    }
+    @discardableResult
+    func moveAccount(_ id: UUID, to targetID: UUID) -> Bool {
+        let ids = orderedAccounts.map(\.id)
+        guard id != targetID, ids.contains(id), ids.contains(targetID) else { return false }
+        let before = displayConfiguration.order
+        updateDisplay { config in
+            guard let source = config.order.firstIndex(of: id), let target = config.order.firstIndex(of: targetID) else { return }
+            // Freeze legacy group order before changing the account picker order.
+            if config.layouts == nil { config.layouts = config.effectiveLayouts }
+            let moved = config.order.remove(at: source)
+            config.order.insert(moved, at: target)
+        }
+        return displayConfiguration.order != before
+    }
+    func menuBarEntry(for account: UsageAccount) -> MenuBarEntry {
+        let snapshot = snapshot(for: account)
+        return MenuBarEntry(account: account, display: displayConfiguration.display(account),
+                            metric: .menuBar(snapshot, preferred: displayConfiguration.display(account).primary), metrics: DisplayMetric.all(snapshot),
+                            stale: snapshot.isStale, requiresLogin: snapshot.requiresLogin)
+    }
+    func menuBarEntry(for id: UUID) -> MenuBarEntry? {
+        liveAccounts.first { $0.id == id }.map { menuBarEntry(for: $0) }
     }
 
     var accounts: [UsageAccount] { registry.accounts }
@@ -150,12 +214,34 @@ final class UsageStore: ObservableObject {
     @discardableResult
     private func commit(_ value: AccountRegistry) -> Bool {
         guard !storageUnavailable else { return false }
-        do { try files.write(value, to: files.registryURL); registry = value; updateDisplay { $0.prune(Set(value.accounts.filter { !$0.deletionPending }.map(\.id))) }; updateRepresentatives(); return true }
+        do { try files.write(value, to: files.registryURL); registry = value; updateDisplay { $0.sync(value.accounts.filter { !$0.deletionPending }) }; updateRepresentatives(); return true }
         catch { errorMessage = "Could not save account settings: \(error.localizedDescription)"; return false }
     }
     func selectRepresentative(_ account: UsageAccount) {
         guard !account.deletionPending else { return }
         var next = registry; next.representatives[account.provider.rawValue] = account.id; _ = commit(next)
+    }
+    func selectMenuBarGroup(_ id: UUID) {
+        let groups = displayConfiguration.effectiveLayouts
+        selectedMenuBarGroupID = groups.contains(where: { $0.id == id }) ? id : groups.first?.id
+    }
+    @discardableResult
+    func moveMenuBarGroup(_ id: UUID, to targetID: UUID) -> Bool {
+        let before = displayConfiguration.effectiveLayouts.map(\.id)
+        updateDisplay { $0.moveLayout(id, to: targetID) }
+        let changed = displayConfiguration.effectiveLayouts.map(\.id) != before
+        if changed { selectMenuBarGroup(id) }
+        return changed
+    }
+    func credentialDirectory(for account: UsageAccount) -> URL? {
+        account.credentialID.map { files.credentials($0) }
+    }
+
+    func accountLabel(for account: UsageAccount) -> String {
+        guard account.name == account.identity?.email || account.name == "Current CLI account" else { return account.name }
+        let peers = accounts.filter { $0.provider == account.provider && !$0.deletionPending }
+        let number = (peers.firstIndex(where: { $0.id == account.id }) ?? 0) + 1
+        return account.provider.displayName + (number > 1 ? " \(number)" : "")
     }
     func rename(_ account: UsageAccount, name: String) {
         let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
@@ -206,14 +292,15 @@ final class UsageStore: ObservableObject {
             if let next = nextEligibleRefresh[account.id], Date() < next { continue }
             let control = OperationControl(); controls[account.id] = control
             refreshingAccounts.insert(account.id)
-            let directory = account.credentialID.map { files.credentials($0) }
+            let directory = credentialDirectory(for: account)
             let result: ProviderSnapshot
             if let loadAccount {
                 result = await loadAccount(account, control)
             } else if provider == .codex {
                 result = await CodexUsageProvider(directory: directory, expectedIdentity: account.identity, control: control).load()
             } else {
-                result = await ClaudeUsageProvider(directory: directory, cacheURL: files.cache(account), expectedIdentity: account.identity, control: control).load()
+                result = await ClaudeUsageProvider(directory: directory, cacheURL: files.cache(account),
+                    expectedIdentity: account.identity, control: control).load()
             }
             controls[account.id] = nil; refreshingAccounts.remove(account.id)
             // A hidden response must not update usage, but its provider retry
@@ -253,12 +340,12 @@ final class UsageStore: ObservableObject {
         guard commit(next) else { try? files.removeCredentials(candidate); return }
         let control = OperationControl(); loginControl = control; loginCandidate = candidate
         isLoggingIn = true; errorMessage = nil
-        loginMessage = "Choose your \(provider.displayName) account in the isolated sign-in window. Existing browser sessions are not shared. (Up to 5 minutes)"
+        loginMessage = "Continue in your default browser. Existing sign-ins can be used; choose the account you want to add. Return here to confirm it. (Up to 5 minutes)"
         let directory = files.credentials(candidate.credentialID!)
         let openURL: @Sendable (URL) -> Void = { [weak self] url in
             Task { @MainActor [weak self] in
                 guard let self, !control.cancelled else { return }
-                IsolatedLoginWindow.shared.open(url, control: control) { [weak self] message in
+                BrowserLoginLauncher.open(url, control: control) { [weak self] message in
                     self?.errorMessage = message
                 }
             }
@@ -277,7 +364,6 @@ final class UsageStore: ObservableObject {
             }.value
             guard let self else { return }
             isLoggingIn = false; loginTask = nil
-            IsolatedLoginWindow.shared.finish()
             if !control.cancelled, case .success(let identity) = result {
                 var completed = candidate; completed.identity = identity
                 completed.name = identity.email ?? "\(provider.displayName) account"
@@ -325,14 +411,13 @@ final class UsageStore: ObservableObject {
         Task { await retryCleanup() }
     }
     func cancelLogin() {
-        IsolatedLoginWindow.shared.finish()
         loginControl?.cancel()
         if let pending = pendingLogin {
             pendingLogin = nil; loginMessage = nil
             Task { await cleanCandidate(pending.account) }
         } else if isLoggingIn { loginMessage = "Cancelling sign-in…" }
     }
-    private func cleanCandidate(_ account: UsageAccount) async {
+    private func cleanCandidate(_ account: UsageAccount, allowUserInteraction: Bool = true) async {
         guard let credentialID = account.credentialID, !cleaning.contains(credentialID) else { return }
         cleaning.insert(credentialID)
         defer { cleaning.remove(credentialID) }
@@ -340,7 +425,7 @@ final class UsageStore: ObservableObject {
         let files = files
         let error: String? = await Task.detached {
             do {
-                try files.removeCredentials(account)
+                try files.removeCredentials(account, allowUserInteraction: allowUserInteraction)
                 let cacheDirectory = files.cache(account).deletingLastPathComponent()
                 if FileManager.default.fileExists(atPath: cacheDirectory.path) { try FileManager.default.removeItem(at: cacheDirectory) }
                 return nil
@@ -350,13 +435,13 @@ final class UsageStore: ObservableObject {
         if let error { errorMessage = error; return }
         var next = registry; next.cleanupPending.removeAll { $0.credentialID == account.credentialID }; _ = commit(next)
     }
-    func retryCleanup() async {
+    func retryCleanup(allowUserInteraction: Bool = true) async {
         for account in registry.cleanupPending where account.credentialID != loginCandidate?.credentialID && account.credentialID != pendingLogin?.account.credentialID {
-            await cleanCandidate(account)
+            await cleanCandidate(account, allowUserInteraction: allowUserInteraction)
         }
-        for account in accounts where account.deletionPending { await delete(account) }
+        for account in accounts where account.deletionPending { await delete(account, allowUserInteraction: allowUserInteraction) }
     }
-    func delete(_ account: UsageAccount) async {
+    func delete(_ account: UsageAccount, allowUserInteraction: Bool = true) async {
         guard account.isManaged, !deletingIDs.contains(account.id), let index = registry.accounts.firstIndex(where: { $0.id == account.id }) else { return }
         deletingIDs.insert(account.id)
         defer { deletingIDs.remove(account.id) }
@@ -367,14 +452,13 @@ final class UsageStore: ObservableObject {
         while refreshingAccounts.contains(account.id) { try? await Task.sleep(for: .milliseconds(100)) }
         let files = files
         let error: String? = await Task.detached {
-            do { try files.removeCredentials(account); try files.removeUsage(account); return nil }
+            do { try files.removeCredentials(account, allowUserInteraction: allowUserInteraction); try files.removeUsage(account); return nil }
             catch { return error.localizedDescription }
         }.value
         if let error { errorMessage = error; return }
         next = registry; next.accounts.removeAll { $0.id == account.id }; next.repairRepresentatives(); _ = commit(next)
     }
     func shutdown() {
-        IsolatedLoginWindow.shared.finish()
         refreshTimer?.invalidate(); refreshTask?.cancel(); loginControl?.cancel()
         controls.values.forEach { $0.cancel() }
     }

@@ -6,18 +6,13 @@ final class SettingsWindowController {
     static let shared = SettingsWindowController()
     private var window: NSWindow?
     var presentationWindow: NSWindow {
-        if window == nil { show(accounts: true) }
+        if window == nil { show(tab: .accounts) }
         return window!
     }
-    func show(accounts: Bool = false) {
+    func show(tab: SettingsTab = .accounts, groupID: UUID? = nil) {
         let container = AppContainer.shared
-        let view: AnyView
-        if accounts {
-            view = AnyView(DisplayPopoverView(itemID: container.store.displayConfiguration.items[0].id, showAccounts: true)
-                .environmentObject(container.store).frame(width: 392, height: 568))
-        } else {
-            view = AnyView(SettingsView().environmentObject(container.settings).environmentObject(container.store))
-        }
+        if let groupID { container.store.selectMenuBarGroup(groupID) }
+        let view = SettingsView(tab: tab).environmentObject(container.settings).environmentObject(container.store)
         let controller = NSHostingController(rootView: view)
         if window == nil {
             let created = NSWindow(contentViewController: controller)
@@ -25,8 +20,8 @@ final class SettingsWindowController {
             created.isReleasedWhenClosed = false
             created.center(); window = created
         } else { window?.contentViewController = controller }
-        window?.title = accounts ? "AgentBar — Accounts" : "AgentBar — Settings"
-        window?.setContentSize(accounts ? NSSize(width: 392, height: 568) : NSSize(width: 430, height: 320))
+        window?.title = "AgentBar — Settings"
+        window?.setContentSize(NSSize(width: 540, height: 660))
         SettingsWindowPresenter(
             activateApplication: { NSApplication.shared.activate(ignoringOtherApps: true) },
             openSettings: { self.window?.makeKeyAndOrderFront(nil) }

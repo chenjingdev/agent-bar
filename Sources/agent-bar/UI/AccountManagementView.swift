@@ -1,83 +1,60 @@
 import SwiftUI
 
+private struct AccountFrames: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] { [:] }
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+// Accounts manage identities; menu bar groups control display and polling.
 struct AccountManagementView: View {
     @EnvironmentObject private var store: UsageStore
-    var select: (UsageAccount) -> Void = { _ in }
     @State private var editing: UsageAccount?
     @State private var deleting: UsageAccount?
+    @State private var choosingProvider = false
+    @State private var accountFrames: [UUID: CGRect] = [:]
+    @State private var accountDrag: ReorderDragPreview<UUID>?
+    @State private var settlingAccountDrag = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             if let error = store.errorMessage {
                 VStack(alignment: .leading) {
                     Text(error).foregroundStyle(.red).textSelection(.enabled)
                     Button("Dismiss") { store.errorMessage = nil }
                 }
             }
-            if store.isLoggingIn || store.pendingLogin != nil {
-                VStack(alignment: .leading, spacing: 8) {
-                    if store.isLoggingIn { ProgressView().controlSize(.small) }
-                    Text(store.loginMessage ?? "")
-                    if let pending = store.pendingLogin {
-                        Text(pending.account.identity?.description.isEmpty == false
-                             ? pending.account.identity!.description : "The provider did not return account details.")
-                            .font(.headline).textSelection(.enabled)
-                        if pending.replacing != nil {
-                            if store.reconnectionComparison == .different {
-                                Text("This differs from the existing account. Add it separately to preserve the original.")
-                                Button("Add as New Account") { store.confirmLogin(addAsNew: true) }
-                            } else if store.reconnectionComparison != .same {
-                                Text("Account identity could not be verified automatically. Confirm the displayed account.")
-                                Button("Confirm Reconnection") { store.confirmLogin(replaceUnverified: true) }
-                                Button("Add Separately") { store.confirmLogin(addAsNew: true) }
-                            } else { Button("Complete Reconnection") { store.confirmLogin() } }
-                        } else { Button("Register Account") { store.confirmLogin() }.buttonStyle(.borderedProminent) }
-                    }
-                    Button("Cancel", role: .cancel) { store.cancelLogin() }
-                }
-            }
+            if store.isLoggingIn || store.pendingLogin != nil { LoginProgressView() }
 
-            ForEach(store.accounts) { account in
-                HStack {
-                    Button { select(account) } label: {
-                        HStack {
-                            ProviderBadge(provider: account.provider)
-                            VStack(alignment: .leading) {
-                                Text(account.title).font(.headline).lineLimit(1)
-                                Text(account.isManaged ? (account.identity?.description ?? "") : "Follows the current CLI sign-in.")
-                                    .font(.caption).foregroundStyle(AppTheme.muted).lineLimit(2)
-                                if !store.refreshAccountIDs.contains(account.id) {
-                                    Text("Hidden · refresh paused").font(.caption).foregroundStyle(AppTheme.muted)
-                                }
-                                if account.deletionPending { Text("Deletion pending").font(.caption).foregroundStyle(.orange) }
-                            }
-                            Spacer()
-                        }
-                    }.buttonStyle(.plain)
-                    Menu {
-                        Button("Rename") { editing = account }
-                        Divider()
-                        Text("Limits Shown in Menu Bar")
-                        AccountMetricOptions(account: account).disabled(account.deletionPending)
-                        Divider()
-                        if account.isManaged {
-                            Button("Reconnect") { store.startLogin(account.provider, replacing: account) }
-                                .disabled(store.isLoggingIn || store.pendingLogin != nil || account.deletionPending)
-                            Button(account.deletionPending ? "Retry Deletion" : "Delete", role: .destructive) { deleting = account }
-                        }
-                    } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
-                }.padding(12).background(GlassCardBackground(cornerRadius: 16))
-            }
-            Menu {
-                ForEach(ProviderKind.allCases) { provider in
-                    Button(provider.displayName) { store.startLogin(provider) }
+            VStack(spacing: 12) {
+                ForEach(store.orderedAccounts) { account in
+                    row(account)
+                        .background(GeometryReader { proxy in
+                            Color.clear.preference(key: AccountFrames.self, value: [account.id: proxy.frame(in: .named("account-order"))])
+                        })
+                        .opacity(accountDrag?.source == account.id ? 0 : 1)
+                        .offset(accountDrag?.offset(for: account.id) ?? .zero)
+                        .animation(.snappy(duration: 0.18), value: accountDrag?.target)
                 }
-            } label: { Label("Add Account", systemImage: "plus") }
-                .disabled(store.isLoggingIn || store.pendingLogin != nil || store.storageUnavailable)
+            }
+            .coordinateSpace(name: "account-order")
+            .onPreferenceChange(AccountFrames.self) { accountFrames = $0 }
+            .overlay(alignment: .topLeading) { accountDragOverlay.allowsHitTesting(false) }
+            .zIndex(accountDrag == nil ? 0 : 1)
+            Button { choosingProvider = true } label: {
+                Label("Add Account", systemImage: "plus").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(ChoiceButtonStyle(selected: false))
+            .disabled(store.isLoggingIn || store.pendingLogin != nil || store.storageUnavailable)
             if !store.registry.cleanupPending.isEmpty && !store.isLoggingIn && store.pendingLogin == nil {
                 Button("Retry Pending Cleanup") { Task { await store.retryCleanup() } }
             }
         }
-        .sheet(item: $editing) { account in AccountRenameSheet(account: account) }
+        .onDisappear { accountDrag = nil; settlingAccountDrag = false }
+        .sheet(item: $editing) { account in AccountEditSheet(account: account, displayName: store.accountLabel(for: account)) }
+        .sheet(isPresented: $choosingProvider) {
+            AddAccountProviderSheet { provider in store.startLogin(provider) }
+        }
         .alert("Delete this account from AgentBar?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Cancel", role: .cancel) { deleting = nil }
             Button("Delete", role: .destructive) {
@@ -85,43 +62,195 @@ struct AccountManagementView: View {
             }
         } message: { Text("This removes only the selected account’s AgentBar credentials and usage cache. External CLI sign-ins are preserved.") }
     }
-}
+    private func row(_ account: UsageAccount, preview: Bool = false) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .frame(width: 14, height: 22).contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("account-order"))
+                    .onChanged { if !preview { updateAccountDrag(account.id, value: $0) } }
+                    .onEnded { if !preview { finishAccountDrag(at: $0.location) } })
+                .help("Drag to reorder accounts")
+                .accessibilityLabel("Move \(store.accountLabel(for: account)) account")
+                .accessibilityAction(named: "Move up") { moveAccount(account.id, offset: -1) }
+                .accessibilityAction(named: "Move down") { moveAccount(account.id, offset: 1) }
+            Button { editing = account } label: {
+                Text(store.accountLabel(for: account)).font(.headline).lineLimit(1)
+            }.buttonStyle(.plain).help("Rename account")
+            Spacer()
+            if account.deletionPending {
+                Text("Deletion pending").font(.caption).foregroundStyle(.orange)
+            } else if store.snapshot(for: account).requiresLogin {
+                Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).help("Sign-in required")
+            }
+            Menu {
+                Text(account.provider.displayName)
+                if let identity = account.identity?.description, !identity.isEmpty { Text(identity) }
+                Divider()
+                Button("Rename") { editing = account }
+                if account.isManaged {
+                    Button("Reconnect") { store.startLogin(account.provider, replacing: account) }
+                        .disabled(store.isLoggingIn || store.pendingLogin != nil || account.deletionPending)
+                }
+                if account.isManaged && !account.isBuiltIn {
+                    Button(account.deletionPending ? "Retry Deletion" : "Delete", role: .destructive) { deleting = account }
+                }
+            } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("Account options")
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+    }
 
-// Both entry points use the same persisted metric selection and rename sheet.
-struct AccountMetricOptions: View {
-    let account: UsageAccount
-    @EnvironmentObject private var store: UsageStore
-    var body: some View {
-        ForEach(DisplayMetric.all(store.snapshot(for: account))) { metric in
-            Toggle(metric.title + (metric.window?.utilization == nil ? " · unavailable" : ""), isOn: Binding(
-                get: { store.displayConfiguration.selection(account).contains(metric.id) },
-                set: { selected in
-                    store.updateDisplay { value in
-                        var metrics = value.selection(account)
-                        if selected { metrics.insert(metric.id) } else { metrics.remove(metric.id) }
-                        value.metrics[account.id.uuidString] = metrics
-                    }
-                }))
+    @ViewBuilder private var accountDragOverlay: some View {
+        if let drag = accountDrag, let account = store.orderedAccounts.first(where: { $0.id == drag.source }) {
+            DragSlotPlaceholder(cornerRadius: 10)
+                .frame(width: drag.placeholder.width, height: drag.placeholder.height)
+                .offset(x: drag.placeholder.minX, y: drag.placeholder.minY)
+                .animation(.snappy(duration: 0.18), value: drag.target)
+            row(account, preview: true)
+                .frame(width: drag.floatingFrame.width, height: drag.floatingFrame.height)
+                .modifier(FloatingDragCard(settling: settlingAccountDrag, liftScale: 1.02, cornerRadius: 10))
+                .offset(x: drag.floatingFrame.minX, y: drag.floatingFrame.minY)
         }
     }
+
+    private func updateAccountDrag(_ id: UUID, value: DragGesture.Value) {
+        guard !settlingAccountDrag else { return }
+        if accountDrag == nil {
+            accountDrag = ReorderDragPreview(source: id, order: store.orderedAccounts.map(\.id), frames: accountFrames,
+                                             location: value.location, translation: value.translation,
+                                             hitPadding: CGSize(width: 3, height: 6))
+        } else {
+            accountDrag?.location = value.location
+            accountDrag?.translation = value.translation
+        }
+    }
+
+    private func finishAccountDrag(at point: CGPoint) {
+        guard var drag = accountDrag, !settlingAccountDrag else { return }
+        drag.location = point
+        let target = drag.target
+        accountDrag = drag
+        withAnimation(.easeOut(duration: 0.16)) {
+            settlingAccountDrag = true
+            accountDrag?.translation = drag.landingTranslation
+        } completion: {
+            guard accountDrag?.source == drag.source else { return }
+            var transaction = Transaction(); transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                if let target, store.orderedAccounts.map(\.id) == drag.order { store.moveAccount(drag.source, to: target) }
+                accountDrag = nil
+                settlingAccountDrag = false
+            }
+        }
+    }
+
+    private func moveAccount(_ id: UUID, offset: Int) {
+        let order = store.orderedAccounts.map(\.id)
+        guard let index = order.firstIndex(of: id), order.indices.contains(index + offset) else { return }
+        store.moveAccount(id, to: order[index + offset])
+    }
 }
-struct AccountRenameSheet: View {
+
+private struct AddAccountProviderSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let select: (ProviderKind) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Account").font(.title3.bold())
+            Text("Choose an agent to sign in with.").font(.callout).foregroundStyle(.secondary)
+            ForEach(ProviderKind.allCases) { provider in
+                Button {
+                    dismiss()
+                    select(provider)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 26, height: 26)
+                            .background(AppTheme.tint(for: provider).opacity(0.16), in: RoundedRectangle(cornerRadius: 7))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(provider.displayName).font(.headline)
+                            Text(provider.sourceDescription).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    }.contentShape(Rectangle())
+                }
+                .buttonStyle(ChoiceButtonStyle(selected: false))
+                .accessibilityLabel("Add \(provider.displayName) account")
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 390)
+    }
+}
+
+// Sign-in states. The identity checks stay; only the button labels are unified.
+struct LoginProgressView: View {
+    @EnvironmentObject private var store: UsageStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if store.isLoggingIn { ProgressView().controlSize(.small) }
+            Text(store.loginMessage ?? "")
+            if let pending = store.pendingLogin {
+                Text(pending.account.identity?.description.isEmpty == false
+                     ? pending.account.identity!.description : "The provider did not return account details.")
+                    .font(.headline).textSelection(.enabled)
+                if pending.replacing != nil {
+                    if store.reconnectionComparison == .different {
+                        Text("This is a different account from the one being reconnected. It can only be added as a new account.")
+                        Button("Add Account") { store.confirmLogin(addAsNew: true) }.buttonStyle(.borderedProminent)
+                    } else if store.reconnectionComparison != .same {
+                        Text("The account identity could not be verified automatically. Reconnect only if this is the same account.")
+                        HStack {
+                            Button("Reconnect") { store.confirmLogin(replaceUnverified: true) }.buttonStyle(.borderedProminent)
+                            Button("Add Account") { store.confirmLogin(addAsNew: true) }
+                        }
+                    } else { Button("Reconnect") { store.confirmLogin() }.buttonStyle(.borderedProminent) }
+                } else { Button("Add Account") { store.confirmLogin() }.buttonStyle(.borderedProminent) }
+            }
+            Button("Cancel", role: .cancel) { store.cancelLogin() }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.accentColor.opacity(0.08)))
+    }
+}
+
+struct AccountEditSheet: View {
     let account: UsageAccount
     @EnvironmentObject private var store: UsageStore
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
-    init(account: UsageAccount) { self.account = account; self._name = State(initialValue: account.name) }
+    init(account: UsageAccount, displayName: String) {
+        self.account = account
+        _name = State(initialValue: displayName)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Rename Account").font(.headline)
-            TextField("Account Name", text: $name)
+            TextField("Account name", text: $name)
+                .textFieldStyle(.roundedBorder)
+            Text("Badge text and color are edited on usage lines in Menu Bar.")
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Cancel") { dismiss() }
                 Spacer()
-                Button("Save") { store.rename(account, name: name); dismiss() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Save") {
+                    store.rename(account, name: name)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-        }.padding(24).frame(width: 350)
+        }.padding(24).frame(width: 380)
     }
 }

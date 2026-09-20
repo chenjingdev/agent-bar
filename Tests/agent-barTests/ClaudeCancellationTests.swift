@@ -32,6 +32,24 @@ struct ClaudeCancellationTests {
         #expect(result.isStale)
         #expect(result.note?.contains(AccountError.cancelled.localizedDescription) == true)
     }
+
+    @Test func managedFileRefreshSkipsKeychainReads() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("managed-claude-file-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let expiry = Int((Date().timeIntervalSince1970 + 3600) * 1000)
+        try Data("{\"claudeAiOauth\":{\"accessToken\":\"fixture\",\"expiresAt\":\(expiry),\"subscriptionType\":\"max\"}}".utf8)
+            .write(to: directory.appendingPathComponent(".credentials.json"))
+        let statusCalls = LockedCalls(), httpCalls = LockedCalls()
+        let provider = ClaudeUsageProvider(directory: directory,
+            expectedIdentity: AccountIdentity(email: "fixture@example.invalid"),
+            statusReader: { _, _ in statusCalls.increment(); return AccountIdentity(email: "fixture@example.invalid") },
+            keychainReader: { _, _ in Issue.record("A valid managed file must not access Keychain"); return nil },
+            transport: { _ in httpCalls.increment(); throw URLError(.notConnectedToInternet) })
+        _ = await provider.load()
+        #expect(statusCalls.count == 1)
+        #expect(httpCalls.count == 1)
+    }
 }
 
 private final class LockedCalls: @unchecked Sendable {

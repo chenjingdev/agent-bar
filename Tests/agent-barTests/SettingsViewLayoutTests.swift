@@ -22,9 +22,9 @@ struct SettingsViewLayoutTests {
         let hostingView = NSHostingView(rootView: view)
         let size = hostingView.fittingSize
 
-        #expect(size.width == 430)
+        #expect(size.width == 540)
         #expect(size.height >= 320)
-        #expect(size.height <= 640)
+        #expect(size.height <= 700)
     }
 }
 

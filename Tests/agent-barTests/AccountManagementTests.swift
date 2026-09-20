@@ -3,6 +3,64 @@ import Testing
 @testable import agent_bar
 
 struct AccountManagementTests {
+    @Test @MainActor func accountOrderPersistsWithoutChangingUsageLineSelectionsOrIdentities() throws {
+        let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
+        let a = UsageAccount.currentCLI(.claude), b = UsageAccount.currentCLI(.codex)
+        let c = UsageAccount(id: UUID(), provider: .claude, name: "Work")
+        let d = UsageAccount(id: UUID(), provider: .codex, name: "Extra")
+        var registry = AccountRegistry(accounts: [a, b, c, d]); registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        let suite = "account-order-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        let store = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        defer { store.shutdown() }
+        let group = MenuBarLayout(name: "Mixed", rows: [MenuBarLine(accountID: c.id, metricID: "weekly"), MenuBarLine(accountID: a.id, metricID: "5h")])
+        store.updateDisplay { $0.layouts = [group]; $0.setVisible(c.id, false) }
+        let layouts = store.displayConfiguration.effectiveLayouts
+        let appearances = store.displayConfiguration.accounts
+        #expect(store.moveAccount(c.id, to: a.id))
+        #expect(store.orderedAccounts.map(\.id) == [c.id, a.id, b.id, d.id])
+        #expect(store.displayConfiguration.effectiveLayouts == layouts)
+        #expect(store.displayConfiguration.accounts == appearances)
+        #expect(store.registry == registry)
+        #expect(!store.moveAccount(c.id, to: c.id))
+        #expect(!store.moveAccount(UUID(), to: a.id))
+
+        let restored = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        defer { restored.shutdown() }
+        #expect(restored.orderedAccounts.map(\.id) == [c.id, a.id, b.id, d.id])
+        #expect(restored.displayConfiguration.effectiveLayouts == layouts)
+
+        // Registry sync appends new accounts and removes deleted ones without resetting custom order.
+        let added = UsageAccount(id: UUID(), provider: .codex, name: "New")
+        registry.accounts.append(added)
+        registry.accounts[1].deletionPending = true
+        registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        let synced = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        defer { synced.shutdown() }
+        #expect(synced.orderedAccounts.map(\.id) == [c.id, a.id, d.id, added.id])
+        #expect(!synced.moveAccount(b.id, to: a.id))
+    }
+
+    @Test @MainActor func movingAccountsPreservesLegacyMenuBarGroupOrder() throws {
+        let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
+        let a = UsageAccount.currentCLI(.claude), b = UsageAccount.currentCLI(.codex)
+        try files.write(AccountRegistry(accounts: [a, b]), to: files.registryURL)
+        let suite = "legacy-account-order-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files, autoRefresh: false)
+        defer { store.shutdown() }
+        #expect(store.displayConfiguration.layouts == nil)
+        var normalized = store.displayConfiguration
+        normalized.freezeBadgeLabels()
+        let groups = normalized.effectiveLayouts
+        #expect(store.moveAccount(b.id, to: a.id))
+        #expect(store.orderedAccounts.map(\.id) == [b.id, a.id])
+        #expect(store.displayConfiguration.effectiveLayouts == groups)
+    }
+
     private func temporaryFiles() throws -> AccountFiles {
         let files = AccountFiles(root: FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-tests-\(UUID())"))
         try files.createPrivateDirectory(files.root)
@@ -45,6 +103,35 @@ struct AccountManagementTests {
         #expect(reloaded.representative(for: .codex)?.id == b.id)
         var saved = try files.load(); saved.accounts[1].deletionPending = true; saved.repairRepresentatives()
         #expect(saved.representatives["codex"] == a.id)
+    }
+    @Test @MainActor func everySavedAccountAlwaysUsesItsOwnUsageCredentialDirectory() async throws {
+        let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
+        var original = UsageAccount.currentCLI(.claude)
+        original.credentialID = UUID()
+        original.identity = AccountIdentity(email: "personal@example.test", organizationID: "personal")
+        let work = UsageAccount(id: UUID(), provider: .claude, name: "Work",
+            identity: AccountIdentity(email: "work@example.test", organizationID: "work"), credentialID: UUID())
+        let codex = UsageAccount.currentCLI(.codex)
+        var registry = AccountRegistry(accounts: [original, work, codex]); registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        let suite = "usage-only-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [.claude, .codex],
+            files: files, autoRefresh: false, loadAccount: { account, _ in
+                ProviderSnapshot(provider: account.provider, updatedAt: .now, fiveHour: nil,
+                    weekly: WindowSummary(tokens: account.isBuiltIn ? 20 : 70, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+                    modelWeeklies: [], planName: "Fixture", sourceDescription: "Fixture", note: nil, isStale: false, requiresLogin: false)
+            })
+        defer { store.shutdown() }
+        #expect(store.accounts.count == 3)
+        #expect(store.credentialDirectory(for: original) == files.credentials(original.credentialID!))
+        #expect(store.credentialDirectory(for: work) == files.credentials(work.credentialID!))
+        #expect(store.credentialDirectory(for: codex) == nil)
+        await store.refresh()
+        #expect(store.snapshot(for: original).weekly?.utilization == 0.2)
+        #expect(store.snapshot(for: work).weekly?.utilization == 0.7)
+        #expect(store.accounts.first { $0.id == original.id }?.identity == original.identity)
+        #expect(store.accounts.first { $0.id == work.id }?.identity == work.identity)
     }
     @Test @MainActor func lateResultsCannotRestoreRemovedOrReconnectedAccounts() {
         let a = UsageAccount(id: UUID(), provider: .codex, name: "A", credentialID: UUID())
