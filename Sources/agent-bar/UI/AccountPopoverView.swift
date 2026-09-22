@@ -54,14 +54,12 @@ struct AccountPopoverView: View {
     }
     @ViewBuilder private func content(_ account: UsageAccount) -> some View {
         let snapshot = store.snapshot(for: account)
-        let primary = store.displayConfiguration.display(account).primary
         let metrics = DisplayMetric.all(snapshot)
-        let ordered = metrics.filter { $0.id == primary } + metrics.filter { $0.id != primary }
         Text(statusLine(snapshot))
             .font(.system(size: 11, weight: .medium, design: .rounded))
             .foregroundStyle(snapshot.requiresLogin || snapshot.isStale ? .orange : AppTheme.muted)
             .fixedSize(horizontal: false, vertical: true)
-        ForEach(ordered) { metric in
+        ForEach(metrics) { metric in
             if let window = metric.window, window.utilization != nil {
                 WindowCard(title: metric.title, window: window, provider: account.provider)
             } else if metric.id.hasPrefix("model:") {
