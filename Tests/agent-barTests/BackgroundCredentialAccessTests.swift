@@ -4,6 +4,24 @@ import Testing
 @testable import agent_bar
 
 struct BackgroundCredentialAccessTests {
+    @Test func missingPrivateCredentialNeverUsesDefaultCredentialOrKeychain() async throws {
+        let home = try fixtureHome(); defer { try? FileManager.default.removeItem(at: home) }
+        try credential("external-do-not-use").write(to: home.appendingPathComponent(".claude/.credentials.json"))
+        let directory = home.appendingPathComponent("agentbar-account")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let calls = CredentialCalls()
+        let provider = ClaudeUsageProvider(directory: directory,
+            keychainReader: { service, _ in
+                #expect(service == AccountFiles.claudeService(directory))
+                #expect(service != "Claude Code-credentials")
+                return nil
+            }, transport: { request in calls.http(); return success(request) })
+        let result = await provider.load()
+        #expect(result.requiresLogin && result.isStale)
+        #expect(calls.counts == [0, 0])
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(".credentials.json").path))
+    }
+
     @Test func legacyKeychainUISuppressionIsScopedAndRestoredEvenOnFailure() throws {
         enum FixtureError: Error { case expected }
         try BackgroundKeychain.withInteraction(true) {
@@ -29,12 +47,11 @@ struct BackgroundCredentialAccessTests {
         }
     }
 
-    @Test func currentAccountUsesFileWhenKeychainNeedsApproval() async throws {
+    @Test func accountFileWorksWithoutAnyKeychainAccess() async throws {
         let home = try fixtureHome(); defer { try? FileManager.default.removeItem(at: home) }
         try credential("fixture-original").write(to: home.appendingPathComponent(".claude/.credentials.json"))
         let calls = CredentialCalls()
-        // The external current-login reader also remains noninteractive.
-        let provider = ClaudeUsageProvider(homeDirectory: home,
+        let provider = ClaudeUsageProvider(directory: home.appendingPathComponent(".claude"),
             keychainReader: { _, _ in calls.keychain(); throw BackgroundKeychain.ReadError.authorizationRequired },
             transport: { request in
                 calls.http()
@@ -46,7 +63,7 @@ struct BackgroundCredentialAccessTests {
             #expect(!result.isStale)
             #expect(result.weekly?.utilization == 0.42)
         }
-        #expect(calls.counts == [6, 3]) // Initial read plus race check; no third secret read.
+        #expect(calls.counts == [0, 3])
     }
 
     @Test func unavailableOrExpiredCredentialStopsAfterOneDeniedRead() async throws {
@@ -54,13 +71,13 @@ struct BackgroundCredentialAccessTests {
             let home = try fixtureHome(); defer { try? FileManager.default.removeItem(at: home) }
             if expired { try credential("fixture-expired", expired: true).write(to: home.appendingPathComponent(".claude/.credentials.json")) }
             let calls = CredentialCalls()
-            let provider = ClaudeUsageProvider(homeDirectory: home,
+            let provider = ClaudeUsageProvider(directory: home.appendingPathComponent(".claude"),
                 keychainReader: { _, _ in calls.keychain(); throw BackgroundKeychain.ReadError.authorizationRequired },
                 transport: { request in calls.http(); return success(request) })
             let result = await provider.load()
             #expect(result.isStale && result.note?.contains("Reconnect this account") == true)
             #expect(result.requiresLogin)
-            #expect(calls.counts == [1, 0])
+            #expect(calls.counts == [expired ? 0 : 1, 0])
         }
     }
 
@@ -69,7 +86,7 @@ struct BackgroundCredentialAccessTests {
         let path = home.appendingPathComponent(".claude/.credentials.json")
         try credential("fixture-before").write(to: path)
         let replacement = credential("fixture-after")
-        let provider = ClaudeUsageProvider(homeDirectory: home,
+        let provider = ClaudeUsageProvider(directory: home.appendingPathComponent(".claude"),
             keychainReader: { _, _ in throw BackgroundKeychain.ReadError.authorizationRequired },
             transport: { request in try replacement.write(to: path); return success(request) })
         let result = await provider.load()

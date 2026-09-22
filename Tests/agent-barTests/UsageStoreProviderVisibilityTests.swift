@@ -82,14 +82,14 @@ struct UsageStoreProviderVisibilityTests {
         defaults.set(false, forKey: AppSettings.storageKeyForComponent(.codex, .percentage))
         try FileManager.default.removeItem(at: fixture.files.root.appendingPathComponent("display-v2.json"))
         let settings = AppSettings(defaults: defaults)
-        let store = UsageStore(settings: settings, availableProviders: [], files: fixture.files, autoRefresh: false)
+        let store = UsageStore(settings: settings, files: fixture.files, autoRefresh: false)
         #expect(store.displayConfiguration.visibleAccountIDs == [fixture.codex.id])
         #expect(store.displayConfiguration.order == [fixture.claude.id, fixture.codex.id])
         #expect(store.displayConfiguration.showBar)
         #expect(!store.displayConfiguration.showBadge)
         #expect(!store.displayConfiguration.showPercent)
         store.updateDisplay { $0.setVisible(fixture.claude.id, true) }
-        let reloaded = UsageStore(settings: settings, availableProviders: [], files: fixture.files, autoRefresh: false)
+        let reloaded = UsageStore(settings: settings, files: fixture.files, autoRefresh: false)
         #expect(reloaded.displayConfiguration == store.displayConfiguration)
     }
 
@@ -99,7 +99,7 @@ struct UsageStoreProviderVisibilityTests {
         let displayURL = fixture.files.root.appendingPathComponent("display-v2.json")
         let before = try Data(contentsOf: displayURL)
         try Data("{bad".utf8).write(to: fixture.files.registryURL)
-        let store = UsageStore(settings: AppSettings(defaults: fixture.defaults), availableProviders: [], files: fixture.files, autoRefresh: false)
+        let store = UsageStore(settings: AppSettings(defaults: fixture.defaults), files: fixture.files, autoRefresh: false)
         #expect(store.storageUnavailable)
         #expect(try Data(contentsOf: displayURL) == before)
     }
@@ -110,20 +110,20 @@ private final class VisibilityFixture {
     let files = AccountFiles(root: FileManager.default.temporaryDirectory.appendingPathComponent("visibility-\(UUID())"))
     let suite = "visibility-\(UUID())"
     let defaults: UserDefaults
-    let claude = UsageAccount(id: UUID(), provider: .claude, name: "A")
+    let claude = UsageAccount(id: UUID(), provider: .claude, name: "A", credentialID: UUID())
     let codex: UsageAccount
     let loader: VisibilityLoader
     let store: UsageStore
 
     init(suspend: Bool = false, sameProvider: Bool = false, automatic: Bool = false) throws {
         defaults = UserDefaults(suiteName: suite)!
-        codex = UsageAccount(id: UUID(), provider: sameProvider ? .claude : .codex, name: "B")
+        codex = UsageAccount(id: UUID(), provider: sameProvider ? .claude : .codex, name: "B", credentialID: UUID())
         loader = VisibilityLoader(suspended: suspend)
         var registry = AccountRegistry(accounts: [claude, codex]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
         try files.write(DisplayConfiguration.initial(registry), to: files.root.appendingPathComponent("display-v2.json"))
         let loader = loader
-        store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files,
+        store = UsageStore(settings: AppSettings(defaults: defaults), files: files,
                            autoRefresh: automatic, loadAccount: { await loader.load($0, control: $1) })
     }
     func close() { store.shutdown(); try? FileManager.default.removeItem(at: files.root); defaults.removePersistentDomain(forName: suite) }

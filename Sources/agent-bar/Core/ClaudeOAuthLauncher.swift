@@ -55,6 +55,31 @@ enum ClaudeOAuthLauncher {
         _ = try session.collect(until: Date().addingTimeInterval(300), control: control)
         guard !control.cancelled else { throw AccountError.cancelled }
         guard session.exitStatus == 0 else { throw AccountError.message("Claude sign-in did not complete.") }
-        return try ProviderCLI.claudeStatus(directory: directory, control: control)
+        let identity = try ProviderCLI.claudeStatus(directory: directory, control: control)
+        try control.checkCancellation()
+        try saveLoginCredential(directory: directory)
+        try control.checkCancellation()
+        return identity
+    }
+
+    static func saveLoginCredential(directory: URL,
+        readKeychain: (String, String?) throws -> Data? = { try BackgroundKeychain.readForLogin(service: $0, account: $1) }) throws {
+        let file = directory.appendingPathComponent(".credentials.json")
+        func usable(_ data: Data) -> Bool {
+            guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let oauth = payload["claudeAiOauth"] as? [String: Any],
+                  let token = oauth["accessToken"] as? String, !token.isEmpty else { return false }
+            return (oauth["expiresAt"] as? Double).map { $0 > Date().timeIntervalSince1970 * 1000 } ?? true
+        }
+        if let data = try? Data(contentsOf: file), usable(data) {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            return
+        }
+        let service = AccountFiles.claudeService(directory)
+        guard let data = try readKeychain(service, NSUserName()), usable(data) else {
+            throw AccountError.message("Claude signed in, but its credential could not be saved. Reconnect and allow Keychain access when prompted.")
+        }
+        try data.write(to: file, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }

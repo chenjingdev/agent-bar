@@ -185,7 +185,7 @@ struct DisplayConfigurationTests {
         let legacy = LegacyDisplayConfiguration(activeCount: 1, items: [LegacyDisplayItem(accountIDs: [b.id]), LegacyDisplayItem(accountIDs: [a.id])])
         try files.write(legacy, to: legacyURL)
         let legacyData = try Data(contentsOf: legacyURL)
-        let store = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let store = UsageStore(settings: settings, files: files, autoRefresh: false)
         #expect(store.displayConfiguration.visibleAccountIDs == [b.id])
         #expect(store.displayConfiguration.order == [b.id, a.id])
         #expect(try Data(contentsOf: legacyURL) == legacyData)
@@ -193,7 +193,7 @@ struct DisplayConfigurationTests {
         #expect(FileManager.default.fileExists(atPath: url.path))
 
         store.updateDisplay { $0.setVisible(a.id, true); $0.update(a.id) { $0.badge = "Home"; $0.color = .orange; $0.primary = "5h" } }
-        let again = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let again = UsageStore(settings: settings, files: files, autoRefresh: false)
         #expect(again.displayConfiguration == store.displayConfiguration)
 
         let out = ProcessInfo.processInfo.environment["AGENTBAR_QA_ARTIFACT_DIR"].map { URL(fileURLWithPath: $0) }
@@ -230,7 +230,7 @@ struct DisplayConfigurationTests {
         if let out { try rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("popover.png")) }
 
         let broken = Data("{bad".utf8); try broken.write(to: url)
-        let recovered = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let recovered = UsageStore(settings: settings, files: files, autoRefresh: false)
         #expect(recovered.accounts.count == 2)
         #expect(recovered.displayError != nil)
         #expect(try Data(contentsOf: url) == broken)

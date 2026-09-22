@@ -3,6 +3,65 @@ import Testing
 @testable import agent_bar
 
 struct AccountManagementTests {
+    @Test @MainActor func firstLaunchStartsEmptyWithoutImportingCLILogins() async throws {
+        let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
+        let suite = "empty-accounts-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UsageStore(settings: AppSettings(availableProviders: [.claude, .codex], defaults: defaults),
+            files: files, autoRefresh: false, loadAccount: { account, _ in
+                Issue.record("No account has been connected")
+                return .placeholder(for: account.provider)
+            })
+        defer { store.shutdown() }
+        await store.refresh()
+        #expect(store.accounts.isEmpty && store.refreshAccountIDs.isEmpty)
+        #expect(try files.load().accounts.isEmpty)
+    }
+
+    @Test @MainActor func everyAccountCanBeDeletedAndDeletedDefaultsStayRemoved() async throws {
+        for managed in [false, true] {
+            for builtIn in [false, true] {
+                let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
+                var account = builtIn ? UsageAccount.currentCLI(.codex)
+                    : UsageAccount(id: UUID(), provider: .codex, name: "Extra")
+                if managed { account.credentialID = UUID() }
+                let other = UsageAccount(id: UUID(), provider: .codex, name: "Keep", credentialID: UUID())
+                try files.createPrivateDirectory(files.credentials(other.credentialID!))
+                let keptFile = files.credentials(other.credentialID!).appendingPathComponent("auth.json")
+                try Data("other-account-fixture".utf8).write(to: keptFile)
+                if let credentialID = account.credentialID { try files.createPrivateDirectory(files.credentials(credentialID)) }
+                try files.write(ProviderSnapshot.placeholder(for: .codex), to: files.cache(account))
+                var registry = AccountRegistry(accounts: [account, other]); registry.repairRepresentatives()
+                try files.write(registry, to: files.registryURL)
+                let suite = "account-delete-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+                defer { defaults.removePersistentDomain(forName: suite) }
+                let settings = AppSettings(defaults: defaults)
+                let store = UsageStore(settings: settings, files: files, autoRefresh: false)
+                defer { store.shutdown() }
+                await store.delete(account)
+                #expect(store.accounts.map(\.id) == [other.id])
+                #expect(store.representative(for: .codex)?.id == other.id)
+                #expect(!FileManager.default.fileExists(atPath: files.cache(account).path))
+                if let credentialID = account.credentialID {
+                    #expect(!FileManager.default.fileExists(atPath: files.credentials(credentialID).path))
+                }
+                #expect(try Data(contentsOf: keptFile) == Data("other-account-fixture".utf8))
+                let restored = UsageStore(settings: settings, files: files, autoRefresh: false)
+                defer { restored.shutdown() }
+                #expect(!restored.accounts.contains { $0.id == account.id })
+                #expect(restored.accounts.map(\.id) == [other.id])
+                #expect(restored.registry.cleanupPending.isEmpty)
+            }
+        }
+    }
+
+    @Test func existingRegistryWithoutDefaultSuppressionStillLoads() throws {
+        let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
+        try Data(#"{"version":1,"accounts":[],"representatives":{},"cleanupPending":[]}"#.utf8).write(to: files.registryURL)
+        let loaded = try files.load()
+        #expect(loaded.accounts.isEmpty)
+    }
+
     @Test @MainActor func accountOrderPersistsWithoutChangingUsageLineSelectionsOrIdentities() throws {
         let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
         let a = UsageAccount.currentCLI(.claude), b = UsageAccount.currentCLI(.codex)
@@ -13,7 +72,7 @@ struct AccountManagementTests {
         let suite = "account-order-\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let settings = AppSettings(defaults: defaults)
-        let store = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let store = UsageStore(settings: settings, files: files, autoRefresh: false)
         defer { store.shutdown() }
         let group = MenuBarLayout(name: "Mixed", rows: [MenuBarLine(accountID: c.id, metricID: "weekly"), MenuBarLine(accountID: a.id, metricID: "5h")])
         store.updateDisplay { $0.layouts = [group]; $0.setVisible(c.id, false) }
@@ -27,7 +86,7 @@ struct AccountManagementTests {
         #expect(!store.moveAccount(c.id, to: c.id))
         #expect(!store.moveAccount(UUID(), to: a.id))
 
-        let restored = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let restored = UsageStore(settings: settings, files: files, autoRefresh: false)
         defer { restored.shutdown() }
         #expect(restored.orderedAccounts.map(\.id) == [c.id, a.id, b.id, d.id])
         #expect(restored.displayConfiguration.effectiveLayouts == layouts)
@@ -38,7 +97,7 @@ struct AccountManagementTests {
         registry.accounts[1].deletionPending = true
         registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
-        let synced = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let synced = UsageStore(settings: settings, files: files, autoRefresh: false)
         defer { synced.shutdown() }
         #expect(synced.orderedAccounts.map(\.id) == [c.id, a.id, d.id, added.id])
         #expect(!synced.moveAccount(b.id, to: a.id))
@@ -50,7 +109,7 @@ struct AccountManagementTests {
         try files.write(AccountRegistry(accounts: [a, b]), to: files.registryURL)
         let suite = "legacy-account-order-\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files, autoRefresh: false)
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
         defer { store.shutdown() }
         #expect(store.displayConfiguration.layouts == nil)
         var normalized = store.displayConfiguration
@@ -97,9 +156,9 @@ struct AccountManagementTests {
         let suite = "agentbar-test-\(UUID())"; let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let settings = AppSettings(defaults: defaults)
-        let store = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let store = UsageStore(settings: settings, files: files, autoRefresh: false)
         store.selectRepresentative(b)
-        let reloaded = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let reloaded = UsageStore(settings: settings, files: files, autoRefresh: false)
         #expect(reloaded.representative(for: .codex)?.id == b.id)
         var saved = try files.load(); saved.accounts[1].deletionPending = true; saved.repairRepresentatives()
         #expect(saved.representatives["codex"] == a.id)
@@ -114,11 +173,13 @@ struct AccountManagementTests {
         let codex = UsageAccount.currentCLI(.codex)
         var registry = AccountRegistry(accounts: [original, work, codex]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
+        try files.write(ProviderSnapshot.placeholder(for: .codex), to: files.cache(codex).deletingLastPathComponent().appendingPathComponent("last-good.json"))
         let suite = "usage-only-\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [.claude, .codex],
+        let store = UsageStore(settings: AppSettings(defaults: defaults),
             files: files, autoRefresh: false, loadAccount: { account, _ in
-                ProviderSnapshot(provider: account.provider, updatedAt: .now, fiveHour: nil,
+                #expect(account.isManaged, "Unconnected legacy rows must never run a provider request")
+                return ProviderSnapshot(provider: account.provider, updatedAt: .now, fiveHour: nil,
                     weekly: WindowSummary(tokens: account.isBuiltIn ? 20 : 70, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                     modelWeeklies: [], planName: "Fixture", sourceDescription: "Fixture", note: nil, isStale: false, requiresLogin: false)
             })
@@ -127,9 +188,13 @@ struct AccountManagementTests {
         #expect(store.credentialDirectory(for: original) == files.credentials(original.credentialID!))
         #expect(store.credentialDirectory(for: work) == files.credentials(work.credentialID!))
         #expect(store.credentialDirectory(for: codex) == nil)
+        #expect(store.snapshot(for: codex).requiresLogin)
+        #expect(!store.refreshAccountIDs.contains(codex.id))
         await store.refresh()
         #expect(store.snapshot(for: original).weekly?.utilization == 0.2)
         #expect(store.snapshot(for: work).weekly?.utilization == 0.7)
+        #expect(store.snapshots[codex.id] == nil)
+        #expect(store.snapshot(for: codex).requiresLogin && store.snapshot(for: codex).weekly?.utilization == nil)
         #expect(store.accounts.first { $0.id == original.id }?.identity == original.identity)
         #expect(store.accounts.first { $0.id == work.id }?.identity == work.identity)
     }
@@ -147,7 +212,7 @@ struct AccountManagementTests {
         let bad = Data("{not valid".utf8); try bad.write(to: files.registryURL)
         let suite = "agentbar-test-\(UUID())"; let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [.codex], files: files, autoRefresh: false)
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
         #expect(store.storageUnavailable)
         #expect(try Data(contentsOf: files.registryURL) == bad)
     }
@@ -173,5 +238,12 @@ struct AccountManagementTests {
         #expect(env["OPENAI_API_KEY"] == nil)
         #expect(env["OPENCODEX_API_AUTH_TOKEN"] == nil)
         #expect(env["ANTHROPIC_API_KEY"] == nil)
+        #expect(env["CLAUDE_CONFIG_DIR"] == nil)
+        let claude = ProviderCLI.environment(provider: .claude, directory: directory)
+        #expect(claude["CLAUDE_CONFIG_DIR"] == directory.path && claude["CODEX_HOME"] == nil)
+        #expect(claude["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == directory.path)
+        #expect(ProviderCLI.processEnvironment()["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == nil)
+        #expect(ProviderCLI.processEnvironment()["CLAUDE_CONFIG_DIR"] == nil)
+        #expect(ProviderCLI.processEnvironment()["CODEX_HOME"] == nil)
     }
 }

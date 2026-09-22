@@ -67,7 +67,7 @@ struct ProviderSnapshotWindowTests {
     }
 
     @Test @MainActor
-    func weeklyOnlyStatusItemHasDescriptiveAccessibility() async {
+    func weeklyOnlyStatusItemHasDescriptiveAccessibility() async throws {
         let snapshot = ProviderSnapshot(
             provider: .codex,
             updatedAt: .now,
@@ -91,7 +91,10 @@ struct ProviderSnapshotWindowTests {
         let settings = AppSettings(availableProviders: [.codex], defaults: defaults)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: identifier) }
-        let store = UsageStore(settings: settings, availableProviders: [.codex], files: AccountFiles(root: root), autoRefresh: false,
+        let files = AccountFiles(root: root)
+        let connected = UsageAccount(id: UUID(), provider: .codex, name: "Codex", credentialID: UUID())
+        try files.write(AccountRegistry(accounts: [connected]), to: files.registryURL)
+        let store = UsageStore(settings: settings, files: files, autoRefresh: false,
                                loadAccount: { _, _ in snapshot })
         await store.refresh()
         let account = store.visibleAccounts.first!

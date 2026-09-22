@@ -16,6 +16,6 @@ final class AppContainer {
         let availableProviders = ProviderAvailability.availableProviders()
         self.settings = settings
         self.availableProviders = availableProviders
-        self.store = UsageStore(settings: settings, availableProviders: availableProviders, files: files)
+        self.store = UsageStore(settings: settings, files: files)
     }
 }

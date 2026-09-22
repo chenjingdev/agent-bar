@@ -3,6 +3,29 @@ import Testing
 @testable import agent_bar
 
 struct ClaudeOAuthLauncherTests {
+    @Test func completedLoginCopiesOnlyItsOwnCredentialBeforeReportingSuccess() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-login-save-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let data = Data(#"{"claudeAiOauth":{"accessToken":"fixture","refreshToken":"fixture-refresh"}}"#.utf8)
+        try ClaudeOAuthLauncher.saveLoginCredential(directory: directory) { service, account in
+            #expect(service == AccountFiles.claudeService(directory))
+            #expect(service != "Claude Code-credentials" && account == NSUserName())
+            return data
+        }
+        let file = directory.appendingPathComponent(".credentials.json")
+        #expect(try Data(contentsOf: file) == data)
+        #expect((try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        try ClaudeOAuthLauncher.saveLoginCredential(directory: directory) { _, _ in Issue.record("Existing credential must avoid another prompt"); return nil }
+    }
+
+    @Test func missingCredentialDoesNotReportSuccessfulLogin() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-login-missing-\(UUID())")
+        #expect(throws: AccountError.self) {
+            try ClaudeOAuthLauncher.saveLoginCredential(directory: directory) { _, _ in nil }
+        }
+    }
+
     @Test func onlyOfficialURLWithLoopbackCallbackIsAccepted() throws {
         let valid = "https://claude.ai/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A54321%2Fcallback"
         #expect(try ClaudeOAuthLauncher.validate(Data(valid.utf8)).host == "claude.ai")

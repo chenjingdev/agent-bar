@@ -9,19 +9,14 @@ private enum ClaudeUsagePolicy {
 }
 
 struct ClaudeUsageProvider: UsageProviding {
-    var directory: URL? = nil
+    var directory: URL
     var cacheURL: URL? = nil
     var expectedIdentity: AccountIdentity? = nil
-    var homeDirectory = FileManager.default.homeDirectoryForCurrentUser
     var control = OperationControl()
-    var statusReader: @Sendable (URL?, OperationControl) throws -> AccountIdentity = {
+    var statusReader: @Sendable (URL, OperationControl) throws -> AccountIdentity = {
         try $1.checkCancellation()
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let override = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
-        let root = $0 ?? override ?? home.appendingPathComponent(".claude")
-        let legacy = root.appendingPathComponent(".config.json")
-        let path = FileManager.default.fileExists(atPath: legacy.path) ? legacy
-            : ($0 != nil || override != nil ? root : home).appendingPathComponent(".claude.json")
+        let legacy = $0.appendingPathComponent(".config.json")
+        let path = FileManager.default.fileExists(atPath: legacy.path) ? legacy : $0.appendingPathComponent(".claude.json")
         guard let object = try JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any],
               let account = object["oauthAccount"] as? [String: Any] else { throw AccountError.loginRequired }
         return AccountIdentity(email: account["emailAddress"] as? String,
@@ -46,7 +41,12 @@ struct ClaudeUsageProvider: UsageProviding {
                     }
                 }
                 try control.checkCancellation()
-                let credentials = try readCredentials()
+                var credentials = try readCredentials(allowExpired: true)
+                if credentials.isExpired {
+                    try await ClaudeCredentialRefresher.shared.refresh(data: credentials.rawData, directory: directory, transport: transport)
+                    try control.checkCancellation()
+                    credentials = try readCredentials()
+                }
                 let remoteResult = try await resolveRemoteUsage(credentials: credentials)
                 guard credentials.cacheKey == (try readCredentials().cacheKey) else {
                     throw AccountError.message("The CLI account changed during the request. Refresh again.")
@@ -289,76 +289,25 @@ struct ClaudeUsageProvider: UsageProviding {
         return request
     }
 
-    private func readCredentials() throws -> ClaudeCredentials {
-        let configDirectory = claudeConfigDirectory(homeDirectory: homeDirectory)
-        let serviceNames = keychainServiceNames(configDirectory: configDirectory, homeDirectory: homeDirectory)
-        let accountName = currentAccountName()
-
-        // Managed account directories are private and isolated. Once a credential
-        // has been mirrored there, prefer it so periodic usage refreshes never
-        // invoke /usr/bin/security and repeatedly prompt for the same Keychain item.
-        if directory != nil, let fileCredentials = try? readFileCredentials(configDirectory: configDirectory) {
-            return fileCredentials
-        }
-
-        let loaded: (credentials: ClaudeCredentials, data: Data)?
-        do { loaded = try readKeychainCredentials(serviceNames: serviceNames, accountName: accountName) }
-        catch {
-            // A usable credential file can still be read without prompting when
-            // the Keychain entry is unavailable.
-            if let fileCredentials = try? readFileCredentials(configDirectory: configDirectory) { return fileCredentials }
-            throw error
-        }
-        if let loaded {
-            let credentials = loaded.credentials
-            if directory != nil {
-                let url = configDirectory.appendingPathComponent(".credentials.json")
-                try? loaded.data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-            }
-            if credentials.subscriptionType.isEmpty == false {
-                return credentials
-            }
-
-            if let fallback = try? readFileCredentials(configDirectory: configDirectory) {
-                return ClaudeCredentials(
-                    accessToken: credentials.accessToken,
-                    subscriptionType: fallback.subscriptionType,
-                    cacheKey: credentials.cacheKey
-                )
-            }
-
+    private func readCredentials(allowExpired: Bool = false) throws -> ClaudeCredentials {
+        // Every reader has an explicit account-owned directory. There is no
+        // fallback to ~/.claude, environment overrides, or the shared Keychain.
+        if let credentials = try? readFileCredentials(configDirectory: directory, allowExpired: allowExpired) {
             return credentials
         }
-
-        if let fileCredentials = try? readFileCredentials(configDirectory: configDirectory) {
-            return fileCredentials
-        }
-
-        throw ClaudeUsageError.missingCredentials
-    }
-
-    private func readKeychainCredentials(
-        serviceNames: [String],
-        accountName: String?
-    ) throws -> (credentials: ClaudeCredentials, data: Data)? {
-        for serviceName in serviceNames {
-            if let accountName,
-               let credentials = try loadKeychainCredentials(serviceName: serviceName, accountName: accountName) {
-                return credentials
-            }
-
-            if let credentials = try loadKeychainCredentials(serviceName: serviceName, accountName: nil) {
-                return credentials
-            }
-        }
-
-        return nil
+        let service = AccountFiles.claudeService(directory)
+        let loaded = try loadKeychainCredentials(serviceName: service, accountName: NSUserName(), allowExpired: allowExpired)
+            ?? loadKeychainCredentials(serviceName: service, accountName: nil, allowExpired: allowExpired)
+        guard let loaded else { throw ClaudeUsageError.missingCredentials }
+        let file = directory.appendingPathComponent(".credentials.json")
+        try loaded.data.write(to: file, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        return loaded.credentials
     }
 
     private func loadKeychainCredentials(
         serviceName: String,
-        accountName: String?
+        accountName: String?, allowExpired: Bool
     ) throws -> (credentials: ClaudeCredentials, data: Data)? {
         try control.checkCancellation()
         guard let data = try keychainReader(serviceName, accountName), !data.isEmpty else { return nil }
@@ -368,18 +317,18 @@ struct ClaudeUsageProvider: UsageProviding {
             return nil
         }
 
-        if let expiresAt = credentialsFile.claudeAiOauth?.expiresAt, expiresAt <= Int(Date().timeIntervalSince1970 * 1000) {
+        if !allowExpired, let expiresAt = credentialsFile.claudeAiOauth?.expiresAt, expiresAt <= Int(Date().timeIntervalSince1970 * 1000) {
             return nil
         }
 
         return (ClaudeCredentials(
             accessToken: accessToken,
             subscriptionType: credentialsFile.claudeAiOauth?.subscriptionType ?? "",
-            cacheKey: Self.cacheKey(for: data)
+            cacheKey: Self.cacheKey(for: data), rawData: data, expiresAt: credentialsFile.claudeAiOauth?.expiresAt
         ), data)
     }
 
-    private func readFileCredentials(configDirectory: URL) throws -> ClaudeCredentials {
+    private func readFileCredentials(configDirectory: URL, allowExpired: Bool = false) throws -> ClaudeCredentials {
         let credentialsURL = configDirectory.appendingPathComponent(".credentials.json")
         let data = try Data(contentsOf: credentialsURL)
         let credentialsFile = try JSONDecoder().decode(CredentialsFile.self, from: data)
@@ -388,14 +337,14 @@ struct ClaudeUsageProvider: UsageProviding {
             throw ClaudeUsageError.missingCredentials
         }
 
-        if let expiresAt = credentialsFile.claudeAiOauth?.expiresAt, expiresAt <= Int(Date().timeIntervalSince1970 * 1000) {
+        if !allowExpired, let expiresAt = credentialsFile.claudeAiOauth?.expiresAt, expiresAt <= Int(Date().timeIntervalSince1970 * 1000) {
             throw ClaudeUsageError.missingCredentials
         }
 
         return ClaudeCredentials(
             accessToken: accessToken,
             subscriptionType: credentialsFile.claudeAiOauth?.subscriptionType ?? "",
-            cacheKey: Self.cacheKey(for: data)
+            cacheKey: Self.cacheKey(for: data), rawData: data, expiresAt: credentialsFile.claudeAiOauth?.expiresAt
         )
     }
 
@@ -404,32 +353,6 @@ struct ClaudeUsageProvider: UsageProviding {
             .prefix(16)
             .map { String(format: "%02x", $0) }
             .joined()
-    }
-
-    private func claudeConfigDirectory(homeDirectory: URL) -> URL {
-        if let directory { return directory }
-        if let override = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"], override.isEmpty == false {
-            return URL(fileURLWithPath: override).standardizedFileURL
-        }
-        return homeDirectory.appendingPathComponent(".claude")
-    }
-
-    private func keychainServiceNames(configDirectory: URL, homeDirectory: URL) -> [String] {
-        let legacyService = "Claude Code-credentials"
-        let normalizedConfig = configDirectory.standardizedFileURL.path
-        let normalizedDefault = homeDirectory.appendingPathComponent(".claude").standardizedFileURL.path
-
-        if normalizedConfig == normalizedDefault {
-            return [legacyService]
-        }
-
-        let hash = SHA256.hash(data: Data(normalizedConfig.utf8))
-        let suffix = hash.compactMap { String(format: "%02x", $0) }.joined().prefix(8)
-        return ["\(legacyService)-\(suffix)"]
-    }
-
-    private func currentAccountName() -> String? {
-        NSUserName().isEmpty ? nil : NSUserName()
     }
 
     private func planName(from subscriptionType: String) -> String? {
@@ -606,8 +529,11 @@ enum ClaudeUsageSource: String, Codable {
 
 private struct ClaudeCredentials {
     let accessToken: String
-    let subscriptionType: String
+    var subscriptionType: String
     let cacheKey: String
+    let rawData: Data
+    let expiresAt: Int?
+    var isExpired: Bool { expiresAt.map { $0 <= Int(Date().timeIntervalSince1970 * 1000) } ?? false }
 }
 
 private struct CredentialsFile: Decodable {

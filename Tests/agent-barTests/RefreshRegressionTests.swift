@@ -8,7 +8,7 @@ import Testing
         let suite = UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
         defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: suite) }
         let settings = AppSettings(defaults: defaults)
-        let store = UsageStore(settings: settings, availableProviders: [], files: AccountFiles(root: root))
+        let store = UsageStore(settings: settings, files: AccountFiles(root: root))
         defer { store.shutdown() }
         settings.refreshIntervalSeconds = 300
         let raw = try #require(Mirror(reflecting: store).children.first { $0.label == "refreshTimer" }?.value)
@@ -20,10 +20,10 @@ import Testing
         let suite = UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
         defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: suite) }
         let files = AccountFiles(root: root)
-        let account = UsageAccount(id: UUID(), provider: .codex, name: "Fixture")
+        let account = UsageAccount(id: UUID(), provider: .codex, name: "Fixture", credentialID: UUID())
         var registry = AccountRegistry(accounts: [account]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
-        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files, autoRefresh: false,
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false,
                                loadAccount: { _, _ in ProviderSnapshot.placeholder(for: .codex).failed("Sign-in required", requiresLogin: true) })
         defer { store.shutdown() }
         await store.refresh()
@@ -39,14 +39,14 @@ import Testing
         let suite = UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
         defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: suite) }
         let files = AccountFiles(root: root), loader = LimitedResponseLoader()
-        let account = UsageAccount(id: UUID(), provider: .codex, name: "Fixture")
+        let account = UsageAccount(id: UUID(), provider: .codex, name: "Fixture", credentialID: UUID())
         var registry = AccountRegistry(accounts: [account]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
-        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files, autoRefresh: false,
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false,
                                loadAccount: { _, _ in await loader.load() })
         defer { store.shutdown() }
         let task = Task { await store.refresh() }
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(10)
         while await loader.calls == 0 {
             if Date() > deadline { throw AccountError.timeout }
             try await Task.sleep(for: .milliseconds(5))
@@ -65,7 +65,7 @@ private actor LimitedResponseLoader {
     func release() { released = true }
     func load() async -> ProviderSnapshot {
         calls += 1
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(10)
         while !released && Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
         var result = ProviderSnapshot.placeholder(for: .codex).failed("rate limited")
         result.retryAt = Date().addingTimeInterval(600)

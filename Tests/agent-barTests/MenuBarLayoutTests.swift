@@ -309,7 +309,7 @@ struct MenuBarLayoutTests {
         let path = f.files.root.appendingPathComponent("display-v2.json")
         try f.files.write(config, to: path)
         let before = try Data(contentsOf: path)
-        let loaded = UsageStore(settings: f.settings, availableProviders: [], files: f.files, autoRefresh: false)
+        let loaded = UsageStore(settings: f.settings, files: f.files, autoRefresh: false)
         defer { loaded.shutdown() }
         let repaired = try #require(loaded.displayConfiguration.layouts?.first)
         #expect(repaired.rows.map(\.id) == [first.id, second.id])
@@ -360,7 +360,7 @@ struct MenuBarLayoutTests {
         #expect(try Data(contentsOf: legacyURL) == original)
         let backup = try #require(FileManager.default.contentsOfDirectory(at: f.files.root, includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("display-before-restore-") })
         #expect(try Data(contentsOf: backup) == before)
-        let reloaded = UsageStore(settings: f.settings, availableProviders: [], files: f.files, autoRefresh: false)
+        let reloaded = UsageStore(settings: f.settings, files: f.files, autoRefresh: false)
         #expect(reloaded.displayConfiguration == f.store.displayConfiguration)
     }
 
@@ -413,15 +413,15 @@ private final class LayoutFixture {
     let suite = "layout-\(UUID())"
     let defaults: UserDefaults
     let settings: AppSettings
-    let a = UsageAccount(id: UUID(), provider: .claude, name: "Claude Work")
-    let b = UsageAccount(id: UUID(), provider: .codex, name: "Codex Personal")
+    let a = UsageAccount(id: UUID(), provider: .claude, name: "Claude Work", credentialID: UUID())
+    let b = UsageAccount(id: UUID(), provider: .codex, name: "Codex Personal", credentialID: UUID())
     let store: UsageStore
     init() throws {
         defaults = UserDefaults(suiteName: suite)!
         settings = AppSettings(defaults: defaults)
         var registry = AccountRegistry(accounts: [a, b]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
-        store = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false, loadAccount: { account, _ in
+        store = UsageStore(settings: settings, files: files, autoRefresh: false, loadAccount: { account, _ in
             ProviderSnapshot(provider: account.provider, updatedAt: .now, fiveHour: nil,
                 weekly: WindowSummary(tokens: account.provider == .claude ? 42 : 71, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                 modelWeeklies: [], planName: "Fixture", sourceDescription: "Fixture", note: nil, isStale: false, requiresLogin: false)

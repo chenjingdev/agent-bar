@@ -145,22 +145,27 @@ enum ProviderCLI {
         }
         return URL(fileURLWithPath: path).resolvingSymlinksInPath()
     }
-    static func environment(provider: ProviderKind, directory: URL?) -> [String: String] {
+    static func processEnvironment() -> [String: String] {
         let source = ProcessInfo.processInfo.environment
         var env: [String: String] = ["HOME": FileManager.default.homeDirectoryForCurrentUser.path,
             "PATH": "/opt/homebrew/bin:/usr/local/bin:" + FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bun/bin").path + ":/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"]
         for key in ["USER", "LOGNAME", "TMPDIR"] { env[key] = source[key] }
-        if let directory { env[provider == .codex ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"] = directory.path }
-        else {
-            let key = provider == .codex ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"
-            env[key] = source[key]
+        return env
+    }
+    static func environment(provider: ProviderKind, directory: URL) -> [String: String] {
+        var env = processEnvironment()
+        env[provider == .codex ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"] = directory.path
+        if provider == .claude {
+            // Current Claude Code can namespace Keychain separately from its
+            // config directory. Both must belong to the same AgentBar account.
+            env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = directory.path
         }
         return env
     }
-    static func claudeStatus(directory: URL?, control: OperationControl = OperationControl()) throws -> AccountIdentity {
+    static func claudeStatus(directory: URL, control: OperationControl = OperationControl()) throws -> AccountIdentity {
         let session = try ProcessSession(executable: executable(.claude), arguments: ["auth", "status", "--json"],
             environment: environment(provider: .claude, directory: directory),
-            directory: directory ?? FileManager.default.temporaryDirectory)
+            directory: directory)
         defer { session.stop() }
         let data = try session.collect(until: Date().addingTimeInterval(20), control: control)
         guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -180,16 +185,15 @@ final class CodexRPC {
     private var nextID = 1
     private var notifications: [[String: Any]] = []
 
-    init(directory: URL?, control: OperationControl = OperationControl(), executable: URL? = nil,
+    init(directory: URL, control: OperationControl = OperationControl(), executable: URL? = nil,
          environment: [String: String]? = nil, requestTimeout: TimeInterval = 25) throws {
         self.control = control
         self.requestTimeout = requestTimeout
-        var arguments = ["app-server", "--listen", "stdio://"]
+        let arguments = ["app-server", "--listen", "stdio://", "-c", "cli_auth_credentials_store=\"file\""]
         // Official file storage isolates auth and makes deletion exact. No tokens in app settings.
-        if directory != nil { arguments += ["-c", "cli_auth_credentials_store=\"file\""] }
         session = try ProcessSession(executable: executable ?? ProviderCLI.executable(.codex), arguments: arguments,
             environment: environment ?? ProviderCLI.environment(provider: .codex, directory: directory),
-            directory: directory ?? FileManager.default.temporaryDirectory)
+            directory: directory)
         do {
             _ = try request("initialize", params: ["clientInfo": ["name": "agent-bar", "version": "0.2.0"],
                                                  "capabilities": ["experimentalApi": true]])

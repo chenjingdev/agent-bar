@@ -19,6 +19,7 @@ final class UsageStore: ObservableObject {
     @Published private(set) var loginMessage: String?
     @Published private(set) var pendingLogin: PendingAccountLogin?
     @Published private(set) var isLoggingIn = false
+    @Published private(set) var canOpenPrivateLogin = false
     @Published var errorMessage: String?
     @Published private(set) var storageUnavailable = false
 
@@ -34,6 +35,8 @@ final class UsageStore: ObservableObject {
     private var loginTask: Task<Void, Never>?
     private var loginControl: OperationControl?
     private var loginCandidate: UsageAccount?
+    private let loginBrowser = BrowserLoginLauncher()
+    private var loginAuthorizationURL: URL?
     private var controls: [UUID: OperationControl] = [:]
     private var nextEligibleRefresh: [UUID: Date] = [:]
     private var cleaning: Set<UUID> = []
@@ -44,7 +47,7 @@ final class UsageStore: ObservableObject {
     private var refreshTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
 
-    init(settings: AppSettings, availableProviders: [ProviderKind], files: AccountFiles = AccountFiles(), autoRefresh: Bool = true,
+    init(settings: AppSettings, files: AccountFiles = AccountFiles(), autoRefresh: Bool = true,
          loadAccount: (@Sendable (UsageAccount, OperationControl) async -> ProviderSnapshot)? = nil) {
         self.settings = settings
         self.automaticRefresh = autoRefresh
@@ -52,13 +55,11 @@ final class UsageStore: ObservableObject {
         self.files = files
         do {
             var loaded = try files.load()
-            for provider in availableProviders where !loaded.accounts.contains(where: { $0.provider == provider && $0.isBuiltIn }) {
-                loaded.accounts.append(.currentCLI(provider))
-            }
             loaded.repairRepresentatives()
             try files.write(loaded, to: files.registryURL)
             registry = loaded
-            // Only managed accounts have reusable, account-owned snapshots.
+            // Legacy rows without an AgentBar credential stay in their existing
+            // layouts, but require a separate login before any usage is read.
             for account in loaded.accounts where account.isManaged && !account.deletionPending {
                 if let cached = try? files.read(ProviderSnapshot.self, at: lastGoodURL(account)) {
                     snapshots[account.id] = cached.failed("Cached usage. Checking for an update.")
@@ -206,7 +207,10 @@ final class UsageStore: ObservableObject {
         representative(for: provider).map { snapshot(for: $0) } ?? .placeholder(for: provider)
     }
     func snapshot(for account: UsageAccount) -> ProviderSnapshot {
-        snapshots[account.id] ?? .placeholder(for: account.provider)
+        guard account.isManaged else {
+            return .placeholder(for: account.provider).failed("Sign in to connect this account to AgentBar in Settings › Accounts.", requiresLogin: true)
+        }
+        return snapshots[account.id] ?? .placeholder(for: account.provider)
     }
     private func lastGoodURL(_ account: UsageAccount) -> URL {
         files.cache(account).deletingLastPathComponent().appendingPathComponent("last-good.json")
@@ -258,7 +262,7 @@ final class UsageStore: ObservableObject {
     }
 
     var refreshAccountIDs: Set<UUID> {
-        displayConfiguration.refreshAccountIDs.intersection(accounts.filter { !$0.deletionPending }.map(\.id))
+        displayConfiguration.refreshAccountIDs.intersection(accounts.filter { $0.isManaged && !$0.deletionPending }.map(\.id))
     }
 
     func refreshNow() { requestRefresh(refreshAccountIDs) }
@@ -289,10 +293,10 @@ final class UsageStore: ObservableObject {
         let selected = accounts(for: provider).filter { !$0.deletionPending && requested.contains($0.id) }
         for account in selected {
             guard !Task.isCancelled, refreshAccountIDs.contains(account.id), Self.acceptsResult(request: account, current: accounts.first(where: { $0.id == account.id })) else { continue }
+            guard let directory = credentialDirectory(for: account) else { continue }
             if let next = nextEligibleRefresh[account.id], Date() < next { continue }
             let control = OperationControl(); controls[account.id] = control
             refreshingAccounts.insert(account.id)
-            let directory = credentialDirectory(for: account)
             let result: ProviderSnapshot
             if let loadAccount {
                 result = await loadAccount(account, control)
@@ -315,7 +319,6 @@ final class UsageStore: ObservableObject {
                let previous = snapshots[account.id], previous.fiveHour?.utilization != nil || previous.weekly?.utilization != nil {
                 display = previous.failed(result.note ?? "Could not load usage", requiresLogin: result.requiresLogin)
             }
-            // CLI accounts never carry a previous account's fallback across a refresh.
             snapshots[account.id] = display
             nextEligibleRefresh[account.id] = result.retryAt ?? Date().addingTimeInterval(result.isStale ? 60 : 5)
             if account.isManaged && !result.isStale { try? files.write(result, to: lastGoodURL(account)) }
@@ -340,14 +343,12 @@ final class UsageStore: ObservableObject {
         guard commit(next) else { try? files.removeCredentials(candidate); return }
         let control = OperationControl(); loginControl = control; loginCandidate = candidate
         isLoggingIn = true; errorMessage = nil
-        loginMessage = "Continue in your default browser. Existing sign-ins can be used; choose the account you want to add. Return here to confirm it. (Up to 5 minutes)"
+        loginMessage = "Preparing browser sign-in…"
         let directory = files.credentials(candidate.credentialID!)
         let openURL: @Sendable (URL) -> Void = { [weak self] url in
             Task { @MainActor [weak self] in
-                guard let self, !control.cancelled else { return }
-                BrowserLoginLauncher.open(url, control: control) { [weak self] message in
-                    self?.errorMessage = message
-                }
+                guard let self, self.loginControl === control, !control.cancelled else { return }
+                self.presentLogin(url, mode: .standard, control: control)
             }
         }
         loginTask = Task { [weak self] in
@@ -362,8 +363,9 @@ final class UsageStore: ObservableObject {
                     return .success(try ClaudeOAuthLauncher.login(directory: directory, control: control, openURL: openURL))
                 } catch { return .failure(error) }
             }.value
-            guard let self else { return }
-            isLoggingIn = false; loginTask = nil
+            guard let self, self.loginControl === control else { return }
+            loginBrowser.close()
+            loginAuthorizationURL = nil; canOpenPrivateLogin = false
             if !control.cancelled, case .success(let identity) = result {
                 var completed = candidate; completed.identity = identity
                 completed.name = identity.email ?? "\(provider.displayName) account"
@@ -374,8 +376,32 @@ final class UsageStore: ObservableObject {
                 if !control.cancelled, case .failure(let error) = result { errorMessage = error.localizedDescription }
                 await cleanCandidate(candidate)
             }
-            loginControl = nil; loginCandidate = nil
+            // Keep the attempt busy until cleanup finishes. Otherwise an old
+            // cancellation can clear the controls of a newly started login.
+            loginControl = nil; loginCandidate = nil; loginTask = nil; isLoggingIn = false
         }
+    }
+
+    private func presentLogin(_ url: URL, mode: LoginBrowserMode, control: OperationControl) {
+        guard loginControl === control, !control.cancelled else { return }
+        loginAuthorizationURL = url
+        canOpenPrivateLogin = mode == .standard
+        if mode == .privateWindow {
+            loginMessage = "Continue in the private window, then return here to confirm the account. (Up to 5 minutes)"
+        } else if loginCandidate?.provider == .claude {
+            loginMessage = "Continue in your browser. To use another account, choose Switch account on Claude’s approval page. This also switches the Claude website login. Return here to confirm. (Up to 5 minutes)"
+        } else {
+            loginMessage = "Choose an account in your browser, or select Sign in with another account. Return here to confirm. (Up to 5 minutes)"
+        }
+        loginBrowser.open(url, mode: mode, control: control, failed: { [weak self] message in
+            self?.errorMessage = message
+            self?.canOpenPrivateLogin = false
+        }, cancelled: { [weak self] in self?.cancelLogin() })
+    }
+
+    func openPrivateLogin() {
+        guard canOpenPrivateLogin, isLoggingIn, let url = loginAuthorizationURL, let control = loginControl else { return }
+        presentLogin(url, mode: .privateWindow, control: control)
     }
     var reconnectionComparison: IdentityComparison? {
         guard let pendingLogin, let id = pendingLogin.replacing,
@@ -396,7 +422,8 @@ final class UsageStore: ObservableObject {
             if reconnectionComparison != .same && !replaceUnverified { return }
             let old = next.accounts[index]
             incoming = UsageAccount(id: old.id, provider: old.provider, name: old.name, identity: incoming.identity, credentialID: incoming.credentialID)
-            next.accounts[index] = incoming; next.cleanupPending.append(old)
+            next.accounts[index] = incoming
+            if old.isManaged { next.cleanupPending.append(old) }
             controls[id]?.cancel(); snapshots[id] = nil; nextEligibleRefresh[id] = nil
         } else {
             let hasManaged = next.accounts.contains { $0.provider == incoming.provider && $0.isManaged && !$0.deletionPending }
@@ -412,6 +439,8 @@ final class UsageStore: ObservableObject {
     }
     func cancelLogin() {
         loginControl?.cancel()
+        loginBrowser.close()
+        loginAuthorizationURL = nil; canOpenPrivateLogin = false
         if let pending = pendingLogin {
             pendingLogin = nil; loginMessage = nil
             Task { await cleanCandidate(pending.account) }
@@ -442,7 +471,8 @@ final class UsageStore: ObservableObject {
         for account in accounts where account.deletionPending { await delete(account, allowUserInteraction: allowUserInteraction) }
     }
     func delete(_ account: UsageAccount, allowUserInteraction: Bool = true) async {
-        guard account.isManaged, !deletingIDs.contains(account.id), let index = registry.accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        guard !deletingIDs.contains(account.id), let index = registry.accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        let account = registry.accounts[index]
         deletingIDs.insert(account.id)
         defer { deletingIDs.remove(account.id) }
         var next = registry; next.accounts[index].deletionPending = true; next.repairRepresentatives()
@@ -460,6 +490,8 @@ final class UsageStore: ObservableObject {
     }
     func shutdown() {
         refreshTimer?.invalidate(); refreshTask?.cancel(); loginControl?.cancel()
+        loginBrowser.close()
+        loginAuthorizationURL = nil; canOpenPrivateLogin = false
         controls.values.forEach { $0.cancel() }
     }
 }

@@ -15,7 +15,7 @@ struct SettingsViewLayoutTests {
         let settings = AppSettings(availableProviders: providers, defaults: defaults)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: identifier) }
-        let store = UsageStore(settings: settings, availableProviders: providers, files: AccountFiles(root: root), autoRefresh: false)
+        let store = UsageStore(settings: settings, files: AccountFiles(root: root), autoRefresh: false)
         let view = SettingsView()
             .environmentObject(settings)
             .environmentObject(store)

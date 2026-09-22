@@ -19,12 +19,12 @@ struct AccountViewRenderingTests {
         ]
         var registry = AccountRegistry(accounts: examples); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
-        let store = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let store = UsageStore(settings: settings, files: files, autoRefresh: false)
         try render(SettingsView(tab: .general).environmentObject(settings).environmentObject(store), size: NSSize(width: 430, height: 620), name: "settings-general")
         try render(SettingsView(tab: .accounts).environmentObject(settings).environmentObject(store), size: NSSize(width: 430, height: 620), name: "settings-accounts")
         try render(AccountPopoverView(accountID: examples[1].id).environmentObject(store), size: NSSize(width: 392, height: 520), name: "popover")
         let emptyFiles = AccountFiles(root: root.appendingPathComponent("empty"))
-        let empty = UsageStore(settings: settings, availableProviders: [], files: emptyFiles, autoRefresh: false)
+        let empty = UsageStore(settings: settings, files: emptyFiles, autoRefresh: false)
         try render(SettingsView(tab: .accounts).environmentObject(settings).environmentObject(empty), size: NSSize(width: 430, height: 620), name: "settings-empty")
         try render(AccountPopoverView(accountID: examples[0].id).environmentObject(empty), size: NSSize(width: 392, height: 520), name: "popover-removed")
     }

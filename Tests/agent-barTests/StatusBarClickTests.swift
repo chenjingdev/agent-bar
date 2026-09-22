@@ -14,7 +14,7 @@ struct StatusBarClickTests {
         let b = UsageAccount(id: UUID(), provider: .codex, name: "B")
         var registry = AccountRegistry(accounts: [a,b]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
-        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files, autoRefresh: false)
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
         let coordinator = StatusBarCoordinator(store: store, providers: [.claude, .codex])
         defer { coordinator.removeAll() }
         #expect(coordinator.physicalStatusItemCount == 2)
@@ -58,7 +58,7 @@ struct StatusBarClickTests {
         let other = UsageAccount(id: UUID(), provider: .codex, name: "Other account")
         var registry = AccountRegistry(accounts: [account, other]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
-        let store = UsageStore(settings: AppSettings(defaults: defaults), availableProviders: [], files: files, autoRefresh: false)
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
         defer { store.shutdown() }
         let first = MenuBarLayout(name: "Week", rows: [MenuBarLine(accountID: account.id, metricID: "weekly")])
         let second = MenuBarLayout(name: "Session", rows: [MenuBarLine(accountID: account.id, metricID: "5h")])
@@ -97,7 +97,7 @@ struct StatusBarClickTests {
         let registry = AccountRegistry(accounts: [account])
         try files.write(registry, to: files.registryURL)
         let settings = AppSettings(defaults: defaults)
-        let store = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let store = UsageStore(settings: settings, files: files, autoRefresh: false)
         defer { store.shutdown() }
         let groups = ["weekly", "5h", "model:fable"].map {
             MenuBarLayout(name: $0, rows: [MenuBarLine(accountID: account.id, metricID: $0)])
@@ -123,7 +123,7 @@ struct StatusBarClickTests {
         #expect(saved.effectiveLayouts.map(\.id) == expectedOrder)
         #expect(saved.effectiveLayouts.compactMap(\.statusItemPositionID) == slots)
         coordinator.removeAll()
-        let restoredStore = UsageStore(settings: settings, availableProviders: [], files: files, autoRefresh: false)
+        let restoredStore = UsageStore(settings: settings, files: files, autoRefresh: false)
         defer { restoredStore.shutdown() }
         let restored = StatusBarCoordinator(store: restoredStore, providers: [.claude])
         defer { restored.removeAll() }

@@ -46,7 +46,8 @@ struct AccountManagementView: View {
             }
             .buttonStyle(ChoiceButtonStyle(selected: false))
             .disabled(store.isLoggingIn || store.pendingLogin != nil || store.storageUnavailable)
-            if !store.registry.cleanupPending.isEmpty && !store.isLoggingIn && store.pendingLogin == nil {
+            if (!store.registry.cleanupPending.isEmpty || store.accounts.contains(where: \.deletionPending))
+                && !store.isLoggingIn && store.pendingLogin == nil {
                 Button("Retry Pending Cleanup") { Task { await store.retryCleanup() } }
             }
         }
@@ -74,9 +75,22 @@ struct AccountManagementView: View {
                 .accessibilityLabel("Move \(store.accountLabel(for: account)) account")
                 .accessibilityAction(named: "Move up") { moveAccount(account.id, offset: -1) }
                 .accessibilityAction(named: "Move down") { moveAccount(account.id, offset: 1) }
-            Button { editing = account } label: {
-                Text(store.accountLabel(for: account)).font(.headline).lineLimit(1)
-            }.buttonStyle(.plain).help("Rename account")
+            VStack(alignment: .leading, spacing: 4) {
+                Button { editing = account } label: {
+                    Text(store.accountLabel(for: account)).font(.headline).lineLimit(1)
+                }.buttonStyle(.plain).help("Rename account")
+                if let email = account.identity?.email, !email.isEmpty {
+                    Text(email).font(.callout).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(account.isManaged ? "Account details unavailable" : "Sign-in required")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Text([account.provider.displayName, account.identity?.organization]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Spacer()
             if account.deletionPending {
                 Text("Deletion pending").font(.caption).foregroundStyle(.orange)
@@ -84,17 +98,12 @@ struct AccountManagementView: View {
                 Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).help("Sign-in required")
             }
             Menu {
-                Text(account.provider.displayName)
-                if let identity = account.identity?.description, !identity.isEmpty { Text(identity) }
-                Divider()
                 Button("Rename") { editing = account }
-                if account.isManaged {
-                    Button("Reconnect") { store.startLogin(account.provider, replacing: account) }
-                        .disabled(store.isLoggingIn || store.pendingLogin != nil || account.deletionPending)
-                }
-                if account.isManaged && !account.isBuiltIn {
-                    Button(account.deletionPending ? "Retry Deletion" : "Delete", role: .destructive) { deleting = account }
-                }
+                    .disabled(account.deletionPending || store.storageUnavailable)
+                Button("Reconnect") { store.startLogin(account.provider, replacing: account) }
+                    .disabled(store.isLoggingIn || store.pendingLogin != nil || account.deletionPending || store.storageUnavailable)
+                Button("Delete", role: .destructive) { deleting = account }
+                    .disabled(store.isLoggingIn || store.pendingLogin != nil || store.storageUnavailable)
             } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help("Account options")
@@ -162,6 +171,8 @@ private struct AddAccountProviderSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add Account").font(.title3.bold())
             Text("Choose an agent to sign in with.").font(.callout).foregroundStyle(.secondary)
+            Text("Sign in using your usual browser. AgentBar keeps a separate sign-in for usage monitoring.")
+                .font(.caption).foregroundStyle(.secondary)
             ForEach(ProviderKind.allCases) { provider in
                 Button {
                     dismiss()
@@ -200,6 +211,9 @@ struct LoginProgressView: View {
         VStack(alignment: .leading, spacing: 8) {
             if store.isLoggingIn { ProgressView().controlSize(.small) }
             Text(store.loginMessage ?? "")
+            if store.canOpenPrivateLogin {
+                Button("Use Private Window Instead") { store.openPrivateLogin() }
+            }
             if let pending = store.pendingLogin {
                 Text(pending.account.identity?.description.isEmpty == false
                      ? pending.account.identity!.description : "The provider did not return account details.")
@@ -237,6 +251,12 @@ struct AccountEditSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Rename Account").font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(account.provider.displayName).font(.subheadline)
+                if let identity = account.identity?.description, !identity.isEmpty {
+                    Text(identity).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
             TextField("Account name", text: $name)
                 .textFieldStyle(.roundedBorder)
             Text("Badge text and color are edited on usage lines in Menu Bar.")

@@ -1,7 +1,7 @@
 import Foundation
 
 struct CodexUsageProvider: UsageProviding {
-    var directory: URL? = nil
+    var directory: URL
     var expectedIdentity: AccountIdentity? = nil
     var control = OperationControl()
 
@@ -17,7 +17,7 @@ struct CodexUsageProvider: UsageProviding {
                 let response: [String: Any]
                 do { response = try rpc.request("account/rateLimits/read") }
                 catch {
-                    guard directory != nil, case AccountError.loginRequired = error else { throw error }
+                    guard case AccountError.loginRequired = error else { throw error }
                     _ = try rpc.identity(refresh: true)
                     response = try rpc.request("account/rateLimits/read")
                 }

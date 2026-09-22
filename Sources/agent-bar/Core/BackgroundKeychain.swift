@@ -49,6 +49,14 @@ enum BackgroundKeychain {
         try withInteraction(false) { try read(query: query(service: service, account: account, secret: true)) }
     }
 
+    /// Only called while completing an explicit account connection. Once copied
+    /// into that account's private file, polling needs no Keychain authorization.
+    static func readForLogin(service: String, account: String?) throws -> Data? {
+        var query = query(service: service, account: account, secret: true)
+        query.removeValue(forKey: kSecUseAuthenticationUI as String)
+        return try withInteraction(true) { try read(query: query) }
+    }
+
     private static func read(query: [String: Any]) throws -> Data? {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)

@@ -146,7 +146,7 @@ struct CodexAppServerClientTests {
     private func request(codexBinary: URL, runtimeDirectories: [URL], environment: [String: String], timeout: TimeInterval = 10) throws -> [String: Any] {
         var env = environment
         env["PATH"] = (runtimeDirectories.map(\.path) + [env["PATH"] ?? ""]).joined(separator: ":")
-        let rpc = try CodexRPC(directory: nil, executable: codexBinary, environment: env, requestTimeout: 10)
+        let rpc = try CodexRPC(directory: codexBinary.deletingLastPathComponent(), executable: codexBinary, environment: env, requestTimeout: 10)
         defer { rpc.stop() }
         return ["id": 2, "result": try rpc.request("account/rateLimits/read", timeout: timeout)]
     }
