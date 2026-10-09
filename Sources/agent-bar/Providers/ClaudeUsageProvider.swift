@@ -314,8 +314,18 @@ struct ClaudeUsageProvider: UsageProviding {
 
     // Claude Code's API client sends this header to the usage and reset endpoints, and the reset
     // program reads the CLI version (`cli_version`) and surface (`surface`) from it. Without it
-    // Claude reports the account ineligible with reason `surface` and lists no grants.
-    static var userAgent: String { "claude-cli/\(installedVersion ?? "2.1") (external, cli)" }
+    // Claude reports the account ineligible with reason `surface` and lists no grants. Below some
+    // version it reports reason `cli_version` (2.1.200 and an unreadable "2.1" were refused on
+    // 2026-10-09; 2.1.295 was accepted), so an older or undetected CLI sends that version.
+    static var userAgent: String { "claude-cli/\(userAgentVersion(installed: installedVersion)) (external, cli)" }
+
+    static let minimumResetVersion = "2.1.295"
+
+    static func userAgentVersion(installed: String?) -> String {
+        guard let installed else { return minimumResetVersion }
+        let parts = { (version: String) in version.split(separator: ".").map { Int($0) ?? 0 } }
+        return parts(installed).lexicographicallyPrecedes(parts(minimumResetVersion)) ? minimumResetVersion : installed
+    }
 
     private static var installedVersion: String? {
         guard let executable = try? ProviderCLI.executable(.claude) else { return nil }
@@ -1108,6 +1118,7 @@ struct ClaudeResetStatus: Decodable {
 
     // What keeps every coupon from being used; a single coupon's reason is its note.
     private func notice(available: Int, now: Date) -> String? {
+        if ineligibleReason == "cli_version" { return "Not available until Claude Code is updated (cli_version)." }
         if !eligible { return "Not available for this account (\(ineligibleReason ?? "unknown"))." }
         if let cooldown = Self.date(cooldownUntil), cooldown > now {
             return "Cooling down until \(TokenFormatters.expiryDateString(cooldown))."
