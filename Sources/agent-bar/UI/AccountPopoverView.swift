@@ -66,6 +66,14 @@ struct AccountPopoverView: View {
                 Text("\(metric.title) · no data yet").font(.system(size: 11)).foregroundStyle(AppTheme.muted)
             }
         }
+        if snapshot.reportsCredits {
+            CreditsCard(resets: snapshot.usageLimitResets, credits: snapshot.credits, claudeCredits: snapshot.claudeCredits,
+                        provider: account.provider, limits: metrics,
+                        redeemingCoupon: store.redeemingCoupons[account.id], result: store.limitResetResults[account.id],
+                        redeem: snapshot.requiresLogin ? nil : { store.redeemLimitReset(account, couponID: $0) },
+                        openLog: { NSWorkspace.shared.open(store.limitResetLogURL) })
+                .id(account.id)
+        }
     }
     private func statusLine(_ snapshot: ProviderSnapshot) -> String {
         let updated = "Updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))"

@@ -13,6 +13,9 @@ struct ClaudeUsageProvider: UsageProviding {
     var cacheURL: URL? = nil
     var expectedIdentity: AccountIdentity? = nil
     var control = OperationControl()
+    // Skips a fresh cached reply, but not a rate-limit backoff. Used right after a reset.
+    var forceFetch = false
+    var resetLog: LimitResetLog? = nil
     var statusReader: @Sendable (URL, OperationControl) throws -> AccountIdentity = {
         try $1.checkCancellation()
         let legacy = $0.appendingPathComponent(".config.json")
@@ -79,7 +82,9 @@ struct ClaudeUsageProvider: UsageProviding {
                     sourceDescription: remoteResult.sourceDescription,
                     note: remoteResult.note,
                     isStale: remoteResult.isStale,
-                    requiresLogin: Self.requiresLogin(for: remoteResult.data.apiError)
+                    requiresLogin: Self.requiresLogin(for: remoteResult.data.apiError),
+                    usageLimitResets: remoteResult.data.usageLimitResets,
+                    claudeCredits: remoteResult.data.claudeCredits
                 )
             } catch {
                 let requiresLogin = Self.requiresLogin(for: error)
@@ -107,7 +112,8 @@ struct ClaudeUsageProvider: UsageProviding {
         let now = Date.now
         let previousCache = try? cache.readRaw()
 
-        if let cacheState = try? cache.readState(now: now, credentialCacheKey: credentials.cacheKey), cacheState.isFresh {
+        if let cacheState = try? cache.readState(now: now, credentialCacheKey: credentials.cacheKey), cacheState.isFresh,
+           !forceFetch || cacheState.data.apiError == "rate-limited" {
             return RemoteUsageResult(
                 data: cacheState.data,
                 updatedAt: cacheState.updatedAt,
@@ -133,7 +139,9 @@ struct ClaudeUsageProvider: UsageProviding {
                 apiUnavailable: false,
                 apiError: nil,
                 usageSource: .oauthApi,
-                weeklyWindowLabel: selectedWeeklyWindow?.label
+                weeklyWindowLabel: selectedWeeklyWindow?.label,
+                usageLimitResets: payload.resetStatus?.usageLimitResets(),
+                claudeCredits: apiResult.credits
             )
 
             try? cache.write(
@@ -242,8 +250,18 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 
     private func fetchUsageApi(accessToken: String) async -> UsageApiResult {
+        let result = await fetchUsageApi(accessToken: accessToken, url: Self.usageWithResetsURL)
+        // Usage matters more than resets. If the reset flag is refused, read plain usage.
+        guard let status = result.httpStatus, (400..<500).contains(status), ![401, 403, 429].contains(status) else {
+            return result
+        }
+        resetLog?.recordStatus("reset flag refused (HTTP \(status))", ["url": Self.usageWithResetsURL, "httpStatus": status])
+        return await fetchUsageApi(accessToken: accessToken, url: Self.usageURL)
+    }
+
+    private func fetchUsageApi(accessToken: String, url: String) async -> UsageApiResult {
         do {
-            let request = try makeUsageRequest(accessToken: accessToken)
+            let request = try makeUsageRequest(accessToken: accessToken, url: url)
             try control.checkCancellation()
             let (data, response) = try await transport(request)
 
@@ -256,12 +274,16 @@ struct ClaudeUsageProvider: UsageProviding {
                 let retryAfterSeconds = httpResponse.statusCode == 429
                     ? Self.parseRetryAfterSeconds(httpResponse.value(forHTTPHeaderField: "Retry-After"))
                     : nil
-                return UsageApiResult(data: nil, error: error, retryAfterSeconds: retryAfterSeconds)
+                return UsageApiResult(data: nil, error: error, retryAfterSeconds: retryAfterSeconds,
+                                      httpStatus: httpResponse.statusCode)
             }
 
             do {
                 let payload = try JSONDecoder().decode(UsageApiResponse.self, from: data)
-                return UsageApiResult(data: payload, error: nil, retryAfterSeconds: nil)
+                let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                if url == Self.usageWithResetsURL { recordResetStatus(payload.resetStatus, raw: reply?["cedar_ember"]) }
+                return UsageApiResult(data: payload, error: nil, retryAfterSeconds: nil, httpStatus: 200,
+                                      credits: reply.flatMap(ClaudeCredits.parse))
             } catch {
                 return UsageApiResult(data: nil, error: "parse", retryAfterSeconds: nil)
             }
@@ -275,8 +297,43 @@ struct ClaudeUsageProvider: UsageProviding {
         }
     }
 
-    private func makeUsageRequest(accessToken: String) throws -> URLRequest {
-        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
+    // Refresh reports any refusal or malformed reset block once, until it changes.
+    private func recordResetStatus(_ status: ClaudeResetStatus?, raw: Any?) {
+        guard let resetLog else { return }
+        let summary = status.map { String(describing: $0.usageLimitResets()) }
+            ?? (raw == nil || raw is NSNull ? "not reported" : "unreadable")
+        resetLog.recordStatus(summary, ["cedar_ember": raw as Any])
+    }
+
+    private static let usageURL = "https://api.anthropic.com/api/oauth/usage"
+    // The same usage reply plus Claude's usage limit reset program (`cedar_ember`).
+    private static let usageWithResetsURL = usageURL + "?cedar_ember=1"
+    // Claude Code reads the program this way before it uses a reset; skip_spend leaves out
+    // the extra-usage spend it does not need.
+    private static let resetStatusURL = usageURL + "?cedar_ember=1&skip_spend=1"
+
+    // Claude Code's API client sends this header to the usage and reset endpoints, and the reset
+    // program reads the CLI version (`cli_version`) and surface (`surface`) from it. Without it
+    // Claude reports the account ineligible with reason `surface` and lists no grants.
+    static var userAgent: String { "claude-cli/\(installedVersion ?? "2.1") (external, cli)" }
+
+    private static var installedVersion: String? {
+        guard let executable = try? ProviderCLI.executable(.claude) else { return nil }
+        let pattern = #"^\d+\.\d+\.\d+$"#
+        if let version = executable.pathComponents.reversed().first(where: { $0.range(of: pattern, options: .regularExpression) != nil }) {
+            return version
+        }
+        // npm and Bun installs keep the version in the package beside the entry point.
+        let package = executable.deletingLastPathComponent().appendingPathComponent("package.json")
+        guard let data = try? Data(contentsOf: package),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = object["version"] as? String,
+              version.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return version
+    }
+
+    private func makeUsageRequest(accessToken: String, url: String) throws -> URLRequest {
+        guard let url = URL(string: url) else {
             throw ClaudeUsageError.invalidURL
         }
 
@@ -285,7 +342,7 @@ struct ClaudeUsageProvider: UsageProviding {
         request.timeoutInterval = 15
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("claude-code/2.1", forHTTPHeaderField: "User-Agent")
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         return request
     }
 
@@ -491,6 +548,8 @@ struct RemoteUsageData: Codable {
     let apiError: String?
     let usageSource: ClaudeUsageSource?
     let weeklyWindowLabel: String?
+    var usageLimitResets: UsageLimitResets? = nil
+    var claudeCredits: ClaudeCredits? = nil
 
     func with(apiUnavailable: Bool, apiError: String?) -> RemoteUsageData {
         RemoteUsageData(
@@ -503,7 +562,9 @@ struct RemoteUsageData: Codable {
             apiUnavailable: apiUnavailable,
             apiError: apiError,
             usageSource: usageSource,
-            weeklyWindowLabel: weeklyWindowLabel
+            weeklyWindowLabel: weeklyWindowLabel,
+            usageLimitResets: usageLimitResets,
+            claudeCredits: claudeCredits
         )
     }
 }
@@ -553,6 +614,7 @@ private struct UsageApiResponse: Decodable {
     let sevenDayOpus: UsageWindowPayload?
     let sevenDaySonnet: UsageWindowPayload?
     let limits: [UsageLimitPayload]?
+    let resetStatus: ClaudeResetStatus?
 
     enum CodingKeys: String, CodingKey {
         case fiveHour = "five_hour"
@@ -561,6 +623,19 @@ private struct UsageApiResponse: Decodable {
         case sevenDayOpus = "seven_day_opus"
         case sevenDaySonnet = "seven_day_sonnet"
         case limits
+        case resetStatus = "cedar_ember"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fiveHour = try c.decodeIfPresent(UsageWindowPayload.self, forKey: .fiveHour)
+        sevenDay = try c.decodeIfPresent(UsageWindowPayload.self, forKey: .sevenDay)
+        sevenDayOauthApps = try c.decodeIfPresent(UsageWindowPayload.self, forKey: .sevenDayOauthApps)
+        sevenDayOpus = try c.decodeIfPresent(UsageWindowPayload.self, forKey: .sevenDayOpus)
+        sevenDaySonnet = try c.decodeIfPresent(UsageWindowPayload.self, forKey: .sevenDaySonnet)
+        limits = try c.decodeIfPresent([UsageLimitPayload].self, forKey: .limits)
+        // Resets are an extra. A changed shape must not hide the usage windows.
+        resetStatus = try? c.decodeIfPresent(ClaudeResetStatus.self, forKey: .resetStatus)
     }
 }
 
@@ -608,6 +683,8 @@ private struct UsageApiResult {
     let data: UsageApiResponse?
     let error: String?
     let retryAfterSeconds: Int?
+    var httpStatus: Int? = nil
+    var credits: ClaudeCredits? = nil
 }
 
 private struct UsageWindowPayload: Decodable {
@@ -832,5 +909,325 @@ struct ClaudeUsageCache {
             ClaudeUsagePolicy.rateLimitedMaxTTL
         )
         return cache.timestamp.addingTimeInterval(backoff)
+    }
+}
+
+extension ClaudeUsageProvider {
+    // Uses the reset grant the person picked the way Claude Code uses one: read the reset
+    // program, then claim that grant with a fresh request ID. Claude only takes the grant it
+    // names next, so any other grant is not claimed.
+    func redeemLimitReset(couponID: String, log: LimitResetLog) async -> LimitResetResult {
+        await Task.detached(priority: .userInitiated) {
+            var step = "account"
+            do {
+                let identity = try statusReader(directory, control)
+                if let expectedIdentity, identity.comparison(to: expectedIdentity) == .different {
+                    log.record("stopped", ["step": step, "reason": "The signed-in Claude account differs from the linked one."])
+                    return LimitResetResult(succeeded: false, message: "The linked Claude account has changed. Reconnect it in Settings › Accounts.")
+                }
+                guard let organization = identity.organizationID ?? expectedIdentity?.organizationID,
+                      UUID(uuidString: organization) != nil else {
+                    log.record("stopped", ["step": step, "reason": "No organization UUID for this account.",
+                                           "organization": identity.organizationID as Any])
+                    return LimitResetResult(succeeded: false, message: "Claude did not record this account's organization. Reconnect it in Settings › Accounts.")
+                }
+
+                step = "credentials"
+                var credentials = try readCredentials(allowExpired: true)
+                if credentials.isExpired {
+                    log.record("credentials", ["action": "Refreshing an expired sign-in."])
+                    try await ClaudeCredentialRefresher.shared.refresh(data: credentials.rawData, directory: directory, transport: transport)
+                    credentials = try readCredentials()
+                }
+
+                step = "status"
+                let statusRequest = try makeUsageRequest(accessToken: credentials.accessToken, url: Self.resetStatusURL)
+                let (statusData, statusResponse) = try await transport(statusRequest)
+                let statusCode = (statusResponse as? HTTPURLResponse)?.statusCode
+                log.record("status", ["method": "GET", "url": Self.resetStatusURL, "httpStatus": statusCode as Any,
+                                      "headers": Self.headers(statusResponse), "body": LimitResetLog.body(statusData)])
+                guard statusCode == 200 else { return Self.failure(httpStatus: statusCode, while: "reading the resets") }
+                guard let status = (try? JSONDecoder().decode(UsageApiResponse.self, from: statusData))?.resetStatus else {
+                    return LimitResetResult(succeeded: false, message: "Claude did not report usage limit resets for this account.")
+                }
+                guard status.eligible else {
+                    return LimitResetResult(succeeded: false,
+                        message: "Resets are not available for this account (\(status.ineligibleReason ?? "unknown")).")
+                }
+                // The next grant is always a listed one.
+                guard status.nextGrantID == couponID else {
+                    let listed = status.grants.contains { $0.id == couponID }
+                    log.record("stopped", ["step": step, "grant": couponID, "listed": listed, "nextGrant": status.nextGrantID as Any,
+                                           "reason": "The chosen grant is not the one Claude takes next."])
+                    return LimitResetResult(succeeded: false, message: !listed ? "Claude no longer lists that reset. Refresh and pick another."
+                        : status.nextGrantID == nil ? "Claude has no reset to use right now."
+                        : "Claude uses another reset first. Refresh to see which one.")
+                }
+
+                step = "claim"
+                let body = ["program": "cedar_ember", "grant_id": couponID, "request_id": UUID().uuidString.lowercased()]
+                var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/organizations/\(organization)/reset_rate_limits")!)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 25
+                request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+                request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+                request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                log.record("request", ["method": "POST", "url": request.url as Any, "body": body,
+                                       "headers": (request.allHTTPHeaderFields ?? [:]).filter { $0.key.lowercased() != "authorization" }])
+                let (data, response) = try await transport(request)
+                let code = (response as? HTTPURLResponse)?.statusCode
+                log.record("response", ["httpStatus": code as Any, "headers": Self.headers(response), "body": LimitResetLog.body(data)])
+                guard let code, (200..<300).contains(code) else { return Self.failure(httpStatus: code, while: "using the reset") }
+                guard let claim = try? JSONDecoder().decode(ClaudeResetClaim.self, from: data) else {
+                    return LimitResetResult(succeeded: false, message: "Claude's answer could not be read. Refresh to see whether the reset applied.")
+                }
+                return claim.outcome()
+            } catch {
+                log.record("error", ["step": step, "error": String(describing: error), "message": error.localizedDescription])
+                if step == "claim" {
+                    return LimitResetResult(succeeded: false,
+                        message: "The reset request did not complete: \(error.localizedDescription) Refresh to see whether it applied.")
+                }
+                return LimitResetResult(succeeded: false, message: error.localizedDescription)
+            }
+        }.value
+    }
+
+    private static func headers(_ response: URLResponse) -> [String: Any] {
+        guard let response = response as? HTTPURLResponse else { return [:] }
+        var headers: [String: Any] = [:]
+        for (key, value) in response.allHeaderFields { headers[String(describing: key)] = String(describing: value) }
+        return headers
+    }
+
+    private static func failure(httpStatus: Int?, while action: String) -> LimitResetResult {
+        let message: String
+        switch httpStatus {
+        case 429?: message = "Claude is limiting requests. Try again in a few minutes."
+        case let code? where code == 401 || code == 403:
+            message = "Claude refused the request (HTTP \(code)). Refresh, or reconnect the account in Settings › Accounts."
+        case let code?: message = "Claude returned HTTP \(code) while \(action)."
+        case nil: message = "Claude sent no readable reply while \(action)."
+        }
+        return LimitResetResult(succeeded: false, message: message)
+    }
+}
+
+// Claude's usage limit reset program (`cedar_ember` in the usage reply), read as leniently as
+// Claude Code reads it: a malformed grant is skipped and a malformed optional field is absent.
+struct ClaudeResetStatus: Decodable {
+    let eligible: Bool
+    let ineligibleReason: String?
+    let atLimit: Bool
+    let grants: [Grant]
+    let nextGrantID: String?
+    let cooldownUntil: String?
+
+    struct Grant: Decodable {
+        let id: String
+        let label: String?
+        let resetsLeft: Int
+        let endsAt: String?
+        let clears: [String]
+        let paused: Bool
+        let useRequiresLimit: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case id, label, clears, paused
+            case resetsLeft = "resets_left"
+            case endsAt = "ends_at"
+            case useRequiresLimit = "use_requires_limit"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            resetsLeft = try c.decode(Int.self, forKey: .resetsLeft)
+            guard ClaudeResetStatus.isGrantID(id), resetsLeft >= 0 else {
+                throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "Malformed grant.")
+            }
+            label = (try? c.decodeIfPresent(String.self, forKey: .label)).flatMap { $0.isEmpty ? nil : $0 }
+            endsAt = try? c.decodeIfPresent(String.self, forKey: .endsAt)
+            clears = (try? c.decodeIfPresent([String].self, forKey: .clears)) ?? []
+            paused = (try? c.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
+            useRequiresLimit = (try? c.decodeIfPresent(Bool.self, forKey: .useRequiresLimit)) ?? true
+        }
+    }
+
+    private struct Lenient<Value: Decodable>: Decodable {
+        let value: Value?
+        init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case eligible, grants
+        case ineligibleReason = "ineligible_reason"
+        case atLimit = "at_limit"
+        case nextGrantID = "next_grant_id"
+        case cooldownUntil = "cooldown_until"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        eligible = try c.decode(Bool.self, forKey: .eligible)
+        ineligibleReason = try? c.decodeIfPresent(String.self, forKey: .ineligibleReason)
+        atLimit = (try? c.decodeIfPresent(Bool.self, forKey: .atLimit)) ?? false
+        let listed = ((try? c.decodeIfPresent([Lenient<Grant>].self, forKey: .grants)) ?? []).compactMap(\.value)
+        grants = listed
+        // Like Claude Code, only a listed grant can be the next one.
+        let next = try? c.decodeIfPresent(String.self, forKey: .nextGrantID)
+        nextGrantID = next.flatMap { id in listed.contains { $0.id == id } ? id : nil }
+        cooldownUntil = try? c.decodeIfPresent(String.self, forKey: .cooldownUntil)
+    }
+
+    static func isGrantID(_ id: String) -> Bool {
+        id.range(of: #"^[a-z0-9_-]{1,40}$"#, options: .regularExpression) != nil
+    }
+
+    // Claude Code counts the remaining resets of every listed grant, and uses only the grant the
+    // program names next. Each grant with resets left is a coupon.
+    func usageLimitResets(now: Date = .now) -> UsageLimitResets {
+        let open = eligible && !(Self.date(cooldownUntil).map { $0 > now } ?? false)
+        let coupons = grants.filter { $0.resetsLeft > 0 }.map { grant in
+            var coupon = UsageLimitResets.Coupon(id: grant.id, title: grant.label, count: min(grant.resetsLeft, 9_999),
+                                                 expiresAt: Self.date(grant.endsAt), usable: false,
+                                                 clears: grant.clears.isEmpty ? nil : grant.clears.compactMap(Self.metricID))
+            if open, let nextGrantID {
+                if grant.id != nextGrantID { coupon.note = "Claude uses another reset first." }
+                else if grant.paused { coupon.note = "Paused." }
+                else if grant.useRequiresLimit && !atLimit { coupon.note = "Usable once a usage limit is reached." }
+                else { coupon.usable = true }
+            }
+            return coupon
+        }
+        let available = coupons.reduce(0) { $0 + $1.count }
+        return UsageLimitResets(available: available, unsorted: coupons, notice: notice(available: available, now: now))
+    }
+
+    // What keeps every coupon from being used; a single coupon's reason is its note.
+    private func notice(available: Int, now: Date) -> String? {
+        if !eligible { return "Not available for this account (\(ineligibleReason ?? "unknown"))." }
+        if let cooldown = Self.date(cooldownUntil), cooldown > now {
+            return "Cooling down until \(TokenFormatters.expiryDateString(cooldown))."
+        }
+        if available > 0 && nextGrantID == nil { return "No reset can be used right now." }
+        return nil
+    }
+
+    // The popover metric for a limit a grant clears. Claude Code calls seven_day_overage_included
+    // the Fable limit.
+    static func metricID(_ limit: String) -> String? {
+        switch limit {
+        case "five_hour": return "5h"
+        case "seven_day": return "weekly"
+        case "seven_day_overage_included": return "model:fable"
+        case "seven_day_opus": return "model:opus"
+        case "seven_day_sonnet": return "model:sonnet"
+        default: return nil
+        }
+    }
+
+    static func date(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let precise = ISO8601DateFormatter()
+        precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = precise.date(from: value) { return date }
+        return ISO8601DateFormatter().date(from: value)
+    }
+}
+
+extension ClaudeCredits {
+    // Reads the reply the way Claude Code's /usage screen does: a window priced in dollars, other
+    // than the plan's 5-hour and weekly limits, is a one-time credit titled by its label or
+    // "Credit"; `extra_usage` amounts are minor units; `spend.balance` is the prepaid balance.
+    // Nil when the reply reports none of them.
+    static func parse(_ reply: [String: Any]) -> ClaudeCredits? {
+        var credits = ClaudeCredits()
+        for (key, value) in reply.sorted(by: { $0.key < $1.key }) where !key.hasPrefix("five_hour") && !key.hasPrefix("seven_day") {
+            guard let window = value as? [String: Any], let limit = number(window["limit_dollars"]) else { continue }
+            let used = number(window["used_dollars"]) ?? 0
+            let label = (window["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            credits.oneTime.append(OneTime(title: label ?? "Credit", used: used, limit: limit,
+                remaining: number(window["remaining_dollars"]) ?? max(0, limit - used),
+                expiresAt: ClaudeResetStatus.date(window["resets_at"] as? String),
+                lockedReason: window["locked_reason"] as? String))
+        }
+        if let extra = reply["extra_usage"] as? [String: Any], let enabled = extra["is_enabled"] as? Bool {
+            let scale = pow(10, number(extra["decimal_places"]) ?? 2)
+            credits.extraUsage = ExtraUsage(enabled: enabled, used: number(extra["used_credits"]).map { $0 / scale },
+                monthlyLimit: number(extra["monthly_limit"]).map { $0 / scale },
+                currency: extra["currency"] as? String ?? "USD")
+        }
+        if let balance = (reply["spend"] as? [String: Any])?["balance"] as? [String: Any],
+           let minor = number(balance["amount_minor"]) {
+            credits.prepaidBalance = minor / pow(10, number(balance["exponent"]) ?? 2)
+            credits.prepaidCurrency = balance["currency"] as? String ?? "USD"
+        }
+        return credits.isEmpty ? nil : credits
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite else {
+            return nil
+        }
+        return number.doubleValue
+    }
+}
+
+// Claude's answer to a reset claim. An unknown result is kept so the message can name it.
+struct ClaudeResetClaim: Decodable {
+    let result: String
+    let reason: String?
+    let resetsLeft: Int?
+    let cleared: [String]
+    let cooldownUntil: String?
+
+    enum CodingKeys: String, CodingKey {
+        case result, reason, cleared
+        case resetsLeft = "resets_left"
+        case cooldownUntil = "cooldown_until"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        result = (try? c.decode(String.self, forKey: .result)) ?? "unavailable"
+        reason = try? c.decodeIfPresent(String.self, forKey: .reason)
+        resetsLeft = try? c.decodeIfPresent(Int.self, forKey: .resetsLeft)
+        cleared = (try? c.decodeIfPresent([String].self, forKey: .cleared)) ?? []
+        cooldownUntil = try? c.decodeIfPresent(String.self, forKey: .cooldownUntil)
+    }
+
+    func outcome() -> LimitResetResult {
+        switch result {
+        case "reset":
+            var message = "Usage limits reset"
+            if !cleared.isEmpty { message += ": " + cleared.map(Self.limitName).joined(separator: ", ") }
+            if let resetsLeft { message += " · \(resetsLeft) left" }
+            return LimitResetResult(succeeded: true, message: message + ".")
+        case "already_used": return LimitResetResult(succeeded: false, message: "That reset was already used.")
+        case "not_limited": return LimitResetResult(succeeded: false, message: "Nothing to reset: no usage limit is reached.")
+        case "cooldown":
+            let until = ClaudeResetStatus.date(cooldownUntil).map { " until \(TokenFormatters.expiryDateString($0))" } ?? ""
+            return LimitResetResult(succeeded: false, message: "Resets are cooling down\(until).")
+        case "ineligible":
+            return LimitResetResult(succeeded: false, message: "Not eligible for a reset (\(reason ?? "unknown")).")
+        case "unavailable":
+            return LimitResetResult(succeeded: false, message: "Resets are unavailable right now (\(reason ?? "unknown")).")
+        default:
+            return LimitResetResult(succeeded: false, message: "Claude gave an unexpected answer (\(result)). Details are in the reset log.")
+        }
+    }
+
+    static func limitName(_ limit: String) -> String {
+        switch limit {
+        case "five_hour": return "5-hour"
+        case "seven_day": return "weekly"
+        case "seven_day_opus": return "Opus weekly"
+        case "seven_day_sonnet": return "Sonnet weekly"
+        case "seven_day_overage_included": return "Fable weekly"
+        default: return limit.replacingOccurrences(of: "_", with: " ")
+        }
     }
 }

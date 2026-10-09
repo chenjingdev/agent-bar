@@ -201,28 +201,31 @@ final class CodexRPC {
         } catch { session.stop(); throw error }
     }
     func request(_ method: String, params: Any = NSNull(), timeout: TimeInterval? = nil) throws -> [String: Any] {
+        let value = try response(method, params: params, timeout: timeout)
+        if let error = value["error"] as? [String: Any] {
+            let message = (error["message"] as? String ?? "").lowercased()
+            if message.contains("401") || message.contains("unauthorized") || message.contains("not logged") || message.contains("authentication") {
+                throw AccountError.loginRequired
+            }
+            if message.contains("429") || message.contains("rate limit") {
+                let detail = error["data"] as? [String: Any]
+                throw AccountError.rateLimited(max(60, detail?["retryAfterSeconds"] as? Double ?? 60))
+            }
+            // Avoid surfacing raw provider payloads/credentials.
+            if method == "account/rateLimits/read" { throw AccountError.message("Could not load Codex usage. Check your sign-in status.") }
+            throw AccountError.message("Codex request failed: \(method).")
+        }
+        return value["result"] as? [String: Any] ?? [:]
+    }
+    // The whole JSON-RPC reply, error object included, for callers that record it.
+    func response(_ method: String, params: Any = NSNull(), timeout: TimeInterval? = nil) throws -> [String: Any] {
         let id = nextID; nextID += 1
         try session.send(["id": id, "method": method, "params": params])
         let deadline = Date().addingTimeInterval(timeout ?? requestTimeout)
         while true {
             let data = try session.line(until: deadline, control: control)
             guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            if value["id"] as? Int == id {
-                if let error = value["error"] as? [String: Any] {
-                    let message = (error["message"] as? String ?? "").lowercased()
-                    if message.contains("401") || message.contains("unauthorized") || message.contains("not logged") || message.contains("authentication") {
-                        throw AccountError.loginRequired
-                    }
-                    if message.contains("429") || message.contains("rate limit") {
-                        let detail = error["data"] as? [String: Any]
-                        throw AccountError.rateLimited(max(60, detail?["retryAfterSeconds"] as? Double ?? 60))
-                    }
-                    // Avoid surfacing raw provider payloads/credentials.
-                    if method == "account/rateLimits/read" { throw AccountError.message("Could not load Codex usage. Check your sign-in status.") }
-                    throw AccountError.message("Codex request failed: \(method).")
-                }
-                return value["result"] as? [String: Any] ?? [:]
-            }
+            if value["id"] as? Int == id { return value }
             if value["method"] != nil { notifications.append(value) }
         }
     }

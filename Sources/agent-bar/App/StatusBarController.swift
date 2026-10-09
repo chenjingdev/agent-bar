@@ -171,7 +171,10 @@ final class StatusBarController {
             let wanted = entries.map { entry -> CGFloat in
                 let cards = entry.metrics.filter { $0.window?.utilization != nil }.count
                 let notes = entry.metrics.filter { $0.window?.utilization == nil && $0.id.hasPrefix("model:") }.count
-                return CGFloat(180 + cards * 120 + notes * 24) + (entries.count > 1 ? 40 : 0)
+                let snapshot = store.snapshot(for: entry.account)
+                let credits = CreditsCard.estimatedHeight(resets: snapshot.usageLimitResets, credits: snapshot.credits,
+                    claudeCredits: snapshot.claudeCredits, showsResult: store.limitResetResults[entry.account.id] != nil)
+                return CGFloat(180 + cards * 120 + notes * 24 + credits) + (entries.count > 1 ? 40 : 0)
             }.max() ?? 240
             let height = min(wanted, max(240, (button.window?.screen?.visibleFrame.height ?? 768) - 40))
             popover.contentSize = NSSize(width: 392, height: height)

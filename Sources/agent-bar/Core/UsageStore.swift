@@ -16,6 +16,9 @@ final class UsageStore: ObservableObject {
     @Published private(set) var lastRefresh: Date?
     @Published private(set) var isRefreshing = false
     @Published private(set) var refreshingAccounts: Set<UUID> = []
+    // The coupon each account is using right now, by account.
+    @Published private(set) var redeemingCoupons: [UUID: String] = [:]
+    @Published private(set) var limitResetResults: [UUID: LimitResetResult] = [:]
     @Published private(set) var loginMessage: String?
     @Published private(set) var pendingLogin: PendingAccountLogin?
     @Published private(set) var isLoggingIn = false
@@ -42,6 +45,7 @@ final class UsageStore: ObservableObject {
     private var cleaning: Set<UUID> = []
     private var deletingIDs: Set<UUID> = []
     private var pendingRefreshIDs: Set<UUID> = []
+    private var forcedRefreshIDs: Set<UUID> = []
     private let automaticRefresh: Bool
     private let loadAccount: (@Sendable (UsageAccount, OperationControl) async -> ProviderSnapshot)?
     private var refreshTimer: Timer?
@@ -301,10 +305,12 @@ final class UsageStore: ObservableObject {
             if let loadAccount {
                 result = await loadAccount(account, control)
             } else if provider == .codex {
-                result = await CodexUsageProvider(directory: directory, expectedIdentity: account.identity, control: control).load()
+                result = await CodexUsageProvider(directory: directory, expectedIdentity: account.identity, control: control,
+                    resetLog: LimitResetLog(root: files.root, account: account)).load()
             } else {
                 result = await ClaudeUsageProvider(directory: directory, cacheURL: files.cache(account),
-                    expectedIdentity: account.identity, control: control).load()
+                    expectedIdentity: account.identity, control: control, forceFetch: forcedRefreshIDs.remove(account.id) != nil,
+                    resetLog: LimitResetLog(root: files.root, account: account)).load()
             }
             controls[account.id] = nil; refreshingAccounts.remove(account.id)
             // A hidden response must not update usage, but its provider retry
@@ -325,6 +331,43 @@ final class UsageStore: ObservableObject {
             updateRepresentatives()
         }
     }
+    var limitResetLogURL: URL { LimitResetLog.url(root: files.root) }
+
+    // Uses the usage limit reset coupon the person picked and records each step in the reset log,
+    // then reads the account again without waiting for the usage cache or the refresh cooldown.
+    func redeemLimitReset(_ account: UsageAccount, couponID: String) {
+        guard !storageUnavailable, redeemingCoupons[account.id] == nil, !account.deletionPending,
+              let directory = credentialDirectory(for: account) else { return }
+        let log = LimitResetLog(root: files.root, account: account, attempt: UUID())
+        let info = Bundle.main.infoDictionary
+        log.record("start", ["coupon": couponID, "shown": LimitResetLog.describe(snapshot(for: account)),
+                             "appVersion": info?["CFBundleShortVersionString"] as Any, "appBuild": info?["CFBundleVersion"] as Any])
+        redeemingCoupons[account.id] = couponID
+        limitResetResults[account.id] = nil
+        Task { [weak self] in
+            guard let self else { return }
+            // A refresh in flight may be using the same CLI home or credential file.
+            while refreshingAccounts.contains(account.id) { try? await Task.sleep(for: .milliseconds(100)) }
+            let result: LimitResetResult
+            if account.provider == .codex {
+                result = await CodexUsageProvider(directory: directory, expectedIdentity: account.identity)
+                    .redeemLimitReset(couponID: couponID, log: log)
+            } else {
+                result = await ClaudeUsageProvider(directory: directory, cacheURL: files.cache(account),
+                    expectedIdentity: account.identity).redeemLimitReset(couponID: couponID, log: log)
+            }
+            redeemingCoupons[account.id] = nil
+            log.record("result", ["succeeded": result.succeeded, "message": result.message])
+            guard Self.acceptsResult(request: account, current: accounts.first(where: { $0.id == account.id })) else { return }
+            limitResetResults[account.id] = result
+            if snapshots[account.id]?.retryAt.map({ $0 <= Date() }) ?? true { nextEligibleRefresh[account.id] = nil }
+            if account.provider == .claude { forcedRefreshIDs.insert(account.id) }
+            requestRefresh([account.id])
+            await refreshTask?.value
+            log.record("after", ["shown": LimitResetLog.describe(snapshot(for: account))])
+        }
+    }
+
     private func configureTimer(interval: Double? = nil) {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: max(60, interval ?? settings.refreshIntervalSeconds), repeats: true) { [weak self] _ in
@@ -424,7 +467,7 @@ final class UsageStore: ObservableObject {
             incoming = UsageAccount(id: old.id, provider: old.provider, name: old.name, identity: incoming.identity, credentialID: incoming.credentialID)
             next.accounts[index] = incoming
             if old.isManaged { next.cleanupPending.append(old) }
-            controls[id]?.cancel(); snapshots[id] = nil; nextEligibleRefresh[id] = nil
+            controls[id]?.cancel(); snapshots[id] = nil; nextEligibleRefresh[id] = nil; limitResetResults[id] = nil
         } else {
             let hasManaged = next.accounts.contains { $0.provider == incoming.provider && $0.isManaged && !$0.deletionPending }
             next.accounts.append(incoming)
@@ -477,7 +520,7 @@ final class UsageStore: ObservableObject {
         defer { deletingIDs.remove(account.id) }
         var next = registry; next.accounts[index].deletionPending = true; next.repairRepresentatives()
         guard commit(next) else { return }
-        controls[account.id]?.cancel(); snapshots[account.id] = nil; updateRepresentatives()
+        controls[account.id]?.cancel(); snapshots[account.id] = nil; limitResetResults[account.id] = nil; updateRepresentatives()
         // Wait for this account's in-flight request before removing its cache directory.
         while refreshingAccounts.contains(account.id) { try? await Task.sleep(for: .milliseconds(100)) }
         let files = files
