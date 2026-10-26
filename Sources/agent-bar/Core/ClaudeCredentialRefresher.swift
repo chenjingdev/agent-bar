@@ -60,8 +60,9 @@ actor ClaudeCredentialRefresher {
             throw AccountError.message("The Claude account changed during sign-in refresh. Refresh again.")
         }
         // Persist a rotated token even if the UI cancelled during the exchange;
-        // dropping it would force an unnecessary browser login next time.
-        try JSONSerialization.data(withJSONObject: document).write(to: file, options: [.atomic, .completeFileProtectionUnlessOpen])
+        // dropping it would force an unnecessary browser login next time. Polling
+        // reads the file while the Mac is locked, which complete protection blocks.
+        try JSONSerialization.data(withJSONObject: document).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }

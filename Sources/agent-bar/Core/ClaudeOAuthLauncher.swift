@@ -79,7 +79,8 @@ enum ClaudeOAuthLauncher {
         guard let data = try readKeychain(service, NSUserName()), usable(data) else {
             throw AccountError.message("Claude signed in, but its credential could not be saved. Reconnect and allow Keychain access when prompted.")
         }
-        try data.write(to: file, options: [.atomic, .completeFileProtectionUnlessOpen])
+        // Polling reads the file while the Mac is locked, which complete protection blocks.
+        try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }

@@ -9,7 +9,6 @@ struct ClaudeCredentialRefreshTests {
         try fixtureCredential.write(to: file)
         let calls = RefreshCalls()
         let provider = ClaudeUsageProvider(directory: directory,
-            keychainReader: { _, _ in Issue.record("Managed credential must not read shared Keychain"); return nil },
             transport: { request in
                 await calls.record(request.httpMethod ?? "GET")
                 if request.httpMethod == "POST" {
@@ -31,7 +30,9 @@ struct ClaudeCredentialRefreshTests {
         #expect(oauth["refreshToken"] as? String == "fixture-rotated")
         #expect(oauth["subscriptionType"] as? String == "max")
         #expect(saved["unrelatedField"] as? String == "preserved")
-        #expect((try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        #expect(attributes[.protectionKey] as? FileProtectionType == .completeUntilFirstUserAuthentication)
         _ = await provider.load()
         #expect(await calls.methods == ["POST", "GET", "GET"])
     }
@@ -101,17 +102,6 @@ struct ClaudeCredentialRefreshTests {
         let result = await provider.load()
         #expect(result.isStale)
         #expect(try String(contentsOf: file, encoding: .utf8).contains("fixture-rotated"))
-    }
-
-    @Test func expiredKeychainCredentialIsMirroredBeforeRefresh() async throws {
-        let directory = try fixtureDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
-        let provider = ClaudeUsageProvider(directory: directory,
-            keychainReader: { service, _ in
-                #expect(service == AccountFiles.claudeService(directory))
-                return fixtureCredential
-            }, transport: { request in reply(request, body: request.httpMethod == "POST" ? refreshed : usage) })
-        let result = await provider.load()
-        #expect(!result.requiresLogin && !result.isStale)
     }
 }
 

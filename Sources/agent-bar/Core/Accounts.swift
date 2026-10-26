@@ -76,7 +76,7 @@ struct AccountFiles: Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(value)
-        try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
     func read<T: Decodable>(_ type: T.Type, at url: URL) throws -> T {

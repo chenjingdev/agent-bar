@@ -45,10 +45,6 @@ enum BackgroundKeychain {
         return query
     }
 
-    static func read(service: String, account: String?) throws -> Data? {
-        try withInteraction(false) { try read(query: query(service: service, account: account, secret: true)) }
-    }
-
     /// Only called while completing an explicit account connection. Once copied
     /// into that account's private file, polling needs no Keychain authorization.
     static func readForLogin(service: String, account: String?) throws -> Data? {

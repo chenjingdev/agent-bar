@@ -44,7 +44,6 @@ struct ClaudeCancellationTests {
         let provider = ClaudeUsageProvider(directory: directory,
             expectedIdentity: AccountIdentity(email: "fixture@example.invalid"),
             statusReader: { _, _ in statusCalls.increment(); return AccountIdentity(email: "fixture@example.invalid") },
-            keychainReader: { _, _ in Issue.record("A valid managed file must not access Keychain"); return nil },
             transport: { _ in httpCalls.increment(); throw URLError(.notConnectedToInternet) })
         _ = await provider.load()
         #expect(statusCalls.count == 1)

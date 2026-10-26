@@ -15,7 +15,9 @@ struct ClaudeOAuthLauncherTests {
         }
         let file = directory.appendingPathComponent(".credentials.json")
         #expect(try Data(contentsOf: file) == data)
-        #expect((try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        #expect(attributes[.protectionKey] as? FileProtectionType == .completeUntilFirstUserAuthentication)
         try ClaudeOAuthLauncher.saveLoginCredential(directory: directory) { _, _ in Issue.record("Existing credential must avoid another prompt"); return nil }
     }
 

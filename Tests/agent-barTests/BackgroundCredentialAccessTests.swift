@@ -10,16 +10,29 @@ struct BackgroundCredentialAccessTests {
         let directory = home.appendingPathComponent("agentbar-account")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let calls = CredentialCalls()
-        let provider = ClaudeUsageProvider(directory: directory,
-            keychainReader: { service, _ in
-                #expect(service == AccountFiles.claudeService(directory))
-                #expect(service != "Claude Code-credentials")
-                return nil
-            }, transport: { request in calls.http(); return success(request) })
+        let provider = ClaudeUsageProvider(directory: directory, transport: { request in calls.http(); return success(request) })
         let result = await provider.load()
         #expect(result.requiresLogin && result.isStale)
-        #expect(calls.counts == [0, 0])
+        #expect(calls.requests == 0)
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(".credentials.json").path))
+    }
+
+    // A file the Mac keeps unreadable while locked was once replaced with the Keychain copy
+    // from sign-in, whose spent refresh token then signed the account out.
+    @Test func unreadableCredentialIsLeftForTheNextRefresh() async throws {
+        let home = try fixtureHome(); defer { try? FileManager.default.removeItem(at: home) }
+        let file = home.appendingPathComponent(".claude/.credentials.json")
+        let saved = credential("fixture-renewed")
+        try saved.write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file.path)
+        let calls = CredentialCalls()
+        let provider = ClaudeUsageProvider(directory: home.appendingPathComponent(".claude"),
+            transport: { request in calls.http(); return success(request) })
+        let result = await provider.load()
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        #expect(result.isStale && !result.requiresLogin)
+        #expect(calls.requests == 0)
+        #expect(try Data(contentsOf: file) == saved)
     }
 
     @Test func legacyKeychainUISuppressionIsScopedAndRestoredEvenOnFailure() throws {
@@ -52,7 +65,6 @@ struct BackgroundCredentialAccessTests {
         try credential("fixture-original").write(to: home.appendingPathComponent(".claude/.credentials.json"))
         let calls = CredentialCalls()
         let provider = ClaudeUsageProvider(directory: home.appendingPathComponent(".claude"),
-            keychainReader: { _, _ in calls.keychain(); throw BackgroundKeychain.ReadError.authorizationRequired },
             transport: { request in
                 calls.http()
                 #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-original")
@@ -63,31 +75,29 @@ struct BackgroundCredentialAccessTests {
             #expect(!result.isStale)
             #expect(result.weekly?.utilization == 0.42)
         }
-        #expect(calls.counts == [0, 3])
+        #expect(calls.requests == 3)
     }
 
-    @Test func unavailableOrExpiredCredentialStopsAfterOneDeniedRead() async throws {
+    @Test func missingOrUnrenewableCredentialRequiresLogin() async throws {
         for expired in [false, true] {
             let home = try fixtureHome(); defer { try? FileManager.default.removeItem(at: home) }
             if expired { try credential("fixture-expired", expired: true).write(to: home.appendingPathComponent(".claude/.credentials.json")) }
             let calls = CredentialCalls()
             let provider = ClaudeUsageProvider(directory: home.appendingPathComponent(".claude"),
-                keychainReader: { _, _ in calls.keychain(); throw BackgroundKeychain.ReadError.authorizationRequired },
                 transport: { request in calls.http(); return success(request) })
             let result = await provider.load()
             #expect(result.isStale && result.note?.contains("Reconnect this account") == true)
             #expect(result.requiresLogin)
-            #expect(calls.counts == [expired ? 0 : 1, 0])
+            #expect(calls.requests == 0)
         }
     }
 
-    @Test func fileFallbackStillRejectsAccountChangeDuringHTTPRequest() async throws {
+    @Test func accountChangeDuringHTTPRequestIsRejected() async throws {
         let home = try fixtureHome(); defer { try? FileManager.default.removeItem(at: home) }
         let path = home.appendingPathComponent(".claude/.credentials.json")
         try credential("fixture-before").write(to: path)
         let replacement = credential("fixture-after")
         let provider = ClaudeUsageProvider(directory: home.appendingPathComponent(".claude"),
-            keychainReader: { _, _ in throw BackgroundKeychain.ReadError.authorizationRequired },
             transport: { request in try replacement.write(to: path); return success(request) })
         let result = await provider.load()
         #expect(result.isStale && result.weekly?.utilization == nil)
@@ -103,11 +113,10 @@ struct BackgroundCredentialAccessTests {
         let calls = CredentialCalls()
         let provider = ClaudeUsageProvider(directory: directory,
             expectedIdentity: AccountIdentity(email: "selected@example.invalid", organizationID: "org-selected"),
-            keychainReader: { _, _ in calls.keychain(); return nil },
             transport: { request in calls.http(); return success(request) })
         let result = await provider.load()
         #expect(result.isStale && result.note?.contains("linked Claude account has changed") == true)
-        #expect(calls.counts == [0, 0])
+        #expect(calls.requests == 0)
     }
 }
 
@@ -126,8 +135,7 @@ private func success(_ request: URLRequest) -> (Data, URLResponse) {
 }
 private final class CredentialCalls: @unchecked Sendable {
     private let lock = NSLock()
-    private var value = [0, 0]
-    var counts: [Int] { lock.lock(); defer { lock.unlock() }; return value }
-    func keychain() { lock.lock(); defer { lock.unlock() }; value[0] += 1 }
-    func http() { lock.lock(); defer { lock.unlock() }; value[1] += 1 }
+    private var count = 0
+    var requests: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func http() { lock.lock(); defer { lock.unlock() }; count += 1 }
 }
