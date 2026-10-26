@@ -1,8 +1,10 @@
 import AppKit
+import Combine
 import SwiftUI
 
 final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: StatusBarCoordinator?
+    private var themeSubscription: AnyCancellable?
 
     func applicationWillTerminate(_ notification: Notification) {
         AppContainer.shared.store.shutdown()
@@ -11,6 +13,8 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
+        // Windows follow the app appearance. Menu bar items keep the menu bar's own.
+        themeSubscription = AppContainer.shared.settings.$theme.sink { NSApplication.shared.appearance = $0.appearance }
         coordinator = StatusBarCoordinator(
             store: AppContainer.shared.store,
             providers: AppContainer.shared.availableProviders

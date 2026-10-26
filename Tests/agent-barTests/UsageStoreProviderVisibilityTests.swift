@@ -64,7 +64,7 @@ struct UsageStoreProviderVisibilityTests {
         let fixture = try VisibilityFixture(automatic: true)
         defer { fixture.close() }
         try await fixture.waitFor { !fixture.store.isRefreshing }
-        fixture.store.updateDisplay { $0.showBadge = false; $0.update(fixture.codex.id) { $0.color = .teal }; $0.move(fixture.codex.id, offset: -1) }
+        fixture.store.updateDisplay { $0.showPercent = false; $0.update(fixture.codex.id) { $0.color = .teal }; $0.move(fixture.codex.id, offset: -1) }
         #expect(!fixture.store.isRefreshing)
         fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, false) }
         fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, true) }
@@ -73,22 +73,19 @@ struct UsageStoreProviderVisibilityTests {
         #expect(await fixture.loader.count(fixture.codex.id) == 2)
     }
 
-    @Test func upstreamPreferencesMigrateOnceAndPreserveHiddenAccount() throws {
+    @Test func newDisplayFileIgnoresAndKeepsOldProviderPreferences() throws {
         let fixture = try VisibilityFixture()
         defer { fixture.close() }
         let defaults = fixture.defaults
-        defaults.set(false, forKey: AppSettings.storageKeyForProvider(.claude))
-        defaults.set(false, forKey: AppSettings.storageKeyForComponent(.codex, .badge))
-        defaults.set(false, forKey: AppSettings.storageKeyForComponent(.codex, .percentage))
+        let old = ["provider_claude_enabled", "provider_codex_component_badge", "provider_codex_component_percentage"]
+        for key in old { defaults.set(false, forKey: key) }
         try FileManager.default.removeItem(at: fixture.files.root.appendingPathComponent("display-v2.json"))
         let settings = AppSettings(defaults: defaults)
         let store = UsageStore(settings: settings, files: fixture.files, autoRefresh: false)
-        #expect(store.displayConfiguration.visibleAccountIDs == [fixture.codex.id])
-        #expect(store.displayConfiguration.order == [fixture.claude.id, fixture.codex.id])
-        #expect(store.displayConfiguration.showBar)
-        #expect(!store.displayConfiguration.showBadge)
-        #expect(!store.displayConfiguration.showPercent)
-        store.updateDisplay { $0.setVisible(fixture.claude.id, true) }
+        #expect(store.displayConfiguration == DisplayConfiguration.initial(store.registry))
+        #expect(store.displayConfiguration.visibleAccountIDs == [fixture.claude.id, fixture.codex.id])
+        #expect(store.displayConfiguration.showBar && store.displayConfiguration.showPercent)
+        #expect(old.allSatisfy { defaults.object(forKey: $0) as? Bool == false })
         let reloaded = UsageStore(settings: settings, files: fixture.files, autoRefresh: false)
         #expect(reloaded.displayConfiguration == store.displayConfiguration)
     }

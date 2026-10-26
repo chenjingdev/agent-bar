@@ -88,7 +88,7 @@ struct ProviderSnapshotWindowTests {
         let identifier = "ProviderSnapshotWindowTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: identifier)!
         defaults.removePersistentDomain(forName: identifier)
-        let settings = AppSettings(availableProviders: [.codex], defaults: defaults)
+        let settings = AppSettings(defaults: defaults)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: identifier) }
         let files = AccountFiles(root: root)

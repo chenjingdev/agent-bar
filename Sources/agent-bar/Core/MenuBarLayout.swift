@@ -33,7 +33,6 @@ struct MenuBarLayout: Codable, Equatable, Identifiable {
     var name = "Group"
     var enabled = true
     var style: MenuBarStyle = .bars
-    var showBadge = true // Legacy visibility; used only until a badge mode is chosen.
     var badgeMode: BadgeDisplayMode? = nil
     var commonBadgeText: String? = nil
     var commonBadgeColor: AccountColor? = nil
@@ -95,7 +94,6 @@ struct MenuBarLayout: Codable, Equatable, Identifiable {
     func renderingConfiguration(_ base: DisplayConfiguration) -> DisplayConfiguration {
         var value = base
         value.style = style
-        value.showBadge = false
         value.commonBadgeText = effectiveBadgeMode.includesCommon ? commonBadgeLabel : nil
         value.commonBadgeColor = commonBadgeColor ?? .blue
         value.showBar = style.selection == .bars ? true : showBar
@@ -130,7 +128,7 @@ extension DisplayConfiguration {
             if let index = result.firstIndex(where: { $0.id == key }) { result[index].rows += lines }
             else {
                 result.append(MenuBarLayout(id: key, name: display.group > 0 ? "Group \(display.group)" : display.badge,
-                    style: style, showBadge: showBadge, showBar: showBar, showPercent: showPercent,
+                    style: style, showBar: showBar, showPercent: showPercent,
                     rowsPerColumn: min(3, max(1, rowsPerColumn)), rows: lines))
             }
         }

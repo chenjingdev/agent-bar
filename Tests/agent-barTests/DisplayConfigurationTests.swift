@@ -42,10 +42,6 @@ struct DisplayConfigurationTests {
         value.sync([home])
         #expect(value.order == [home.id])
         #expect(value.accounts.count == 1)
-        let refused = value.setComponent(badge: false, bar: false, percent: false)
-        #expect(!refused && value.showsAnything)
-        let accepted = value.setComponent(bar: false, percent: false)
-        #expect(accepted && value.showBadge && !value.showBar)
     }
 
     @Test func earlierVersionTwoFilesDecodeWithDefaultStyle() throws {
@@ -67,6 +63,52 @@ struct DisplayConfigurationTests {
         changed.update(id) { $0.bars = ["5h"] }
         let round = try JSONDecoder().decode(DisplayConfiguration.self, from: JSONEncoder().encode(changed))
         #expect(round == changed)
+    }
+
+    // Shaped like a current installation's file, which still carries the removed
+    // top-level and per-group showBadge keys.
+    @Test @MainActor func storedFileWithRemovedBadgeKeysLoadsUnchanged() throws {
+        let a = UsageAccount(id: UUID(), provider: .claude, name: "A", credentialID: UUID())
+        let b = UsageAccount(id: UUID(), provider: .codex, name: "B", credentialID: UUID())
+        let first = UUID(), second = UUID(), slotA = UUID(), slotB = UUID()
+        let json = """
+        {"version":2,"order":["\(a.id.uuidString)","\(b.id.uuidString)"],
+         "accounts":{"\(a.id.uuidString)":{"visible":true,"badge":"CL","color":"blue","primary":"weekly","bars":["5h","weekly","model:fable"],"group":0},
+                     "\(b.id.uuidString)":{"visible":true,"badge":"CX","color":"purple","primary":"weekly","bars":["5h","weekly"],"group":1}},
+         "showBadge":true,"showBar":true,"showPercent":true,"style":"bars","rowsPerColumn":3,
+         "layouts":[
+          {"id":"\(first.uuidString)","name":"Work","enabled":true,"style":"bars","showBadge":true,"badgeMode":"common","commonBadgeText":"W",
+           "commonBadgeColor":"teal","showBar":true,"showPercent":true,"percentageLineID":"r2","rowsPerColumn":3,"statusItemPositionID":"\(slotA.uuidString)",
+           "rows":[{"id":"r1","accountID":"\(a.id.uuidString)","metricID":"5h","slot":0,"badgeText":"CL·5H","showLimitLabel":true},
+                   {"id":"r2","accountID":"\(b.id.uuidString)","metricID":"weekly","slot":1,"badgeText":"CX·WK"}]},
+          {"id":"\(second.uuidString)","name":"Solo","enabled":true,"style":"capsule","showBadge":false,"badgeMode":"common","showBar":true,
+           "showPercent":true,"rowsPerColumn":3,"statusItemPositionID":"\(slotB.uuidString)",
+           "rows":[{"id":"r3","accountID":"\(a.id.uuidString)","metricID":"weekly","slot":0,"badgeText":"CL","showLimitLabel":false}]}]}
+        """
+        let value = try JSONDecoder().decode(DisplayConfiguration.self, from: Data(json.utf8))
+        #expect(value.valid && value.order == [a.id, b.id] && value.style == .bars && value.rowsPerColumn == 3)
+        #expect(value.showBar && value.showPercent && value.display(b).group == 1 && value.display(a).bars == AccountDisplay.defaultBars)
+        let groups = try #require(value.layouts)
+        #expect(groups.map(\.id) == [first, second] && groups.map(\.style) == [.bars, .capsule])
+        #expect(groups.map(\.effectiveBadgeMode) == [.common, .common] && groups[0].commonBadgeText == "W" && groups[0].commonBadgeColor == .teal)
+        #expect(groups[0].percentageLineID == "r2" && groups.map(\.statusItemPositionID) == [slotA, slotB])
+        #expect(groups.flatMap(\.rows).map(\.badgeText) == ["CL·5H", "CX·WK", "CL"] && groups[1].rows[0].showLimitLabel == false)
+        // The removed keys change nothing and are no longer written.
+        let stripped = json.replacingOccurrences(of: "\"showBadge\":true,", with: "").replacingOccurrences(of: "\"showBadge\":false,", with: "")
+        #expect(try JSONDecoder().decode(DisplayConfiguration.self, from: Data(stripped.utf8)) == value)
+        #expect(try !String(decoding: JSONEncoder().encode(value), as: UTF8.self).contains("showBadge"))
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-stored-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = AccountFiles(root: root)
+        var registry = AccountRegistry(accounts: [a, b]); registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        try Data(json.utf8).write(to: root.appendingPathComponent("display-v2.json"))
+        let suite = "agentbar-stored-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
+        #expect(store.displayError == nil && store.displayConfiguration == value)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.hasPrefix("display-") } == ["display-v2.json"])
     }
 
     @Test @MainActor func everyStyleRendersAndOnlyMultiBarDrawsSecondaryLimits() throws {
@@ -142,31 +184,7 @@ struct DisplayConfigurationTests {
         #expect(DisplayMetric.menuBar(placeholder, preferred: "weekly").window?.utilization == nil)
     }
 
-    @Test func legacyItemsMigrateToPerAccountVisibility() throws {
-        let shown = UsageAccount(id: UUID(), provider: .claude, name: "Shown")
-        let grouped = UsageAccount(id: UUID(), provider: .claude, name: "Grouped")
-        let parked = UsageAccount(id: UUID(), provider: .codex, name: "Parked")
-        let unknown = UsageAccount(id: UUID(), provider: .codex, name: "Unassigned")
-        let legacy = LegacyDisplayConfiguration(activeCount: 1, items: [
-            LegacyDisplayItem(accountIDs: [shown.id, grouped.id], showService: false, showBars: true, showPercent: true),
-            LegacyDisplayItem(accountIDs: [parked.id]),
-        ], metrics: [shown.id.uuidString: ["5h"]])
-        let value = DisplayConfiguration.migrated(from: legacy, accounts: [unknown, parked, grouped, shown])
-        #expect(value.rowsPerColumn == 2)
-        #expect(value.display(shown).group == 1 && value.display(grouped).group == 1 && value.display(parked).group == 0)
-        #expect(value.menuBarGroups().map(\.accountIDs) == [[shown.id, grouped.id]])
-        #expect(value.display(shown).bars == ["5h"])
-        #expect(value.display(shown).badge == "CL" && value.display(grouped).badge == "CL2")
-        #expect(value.display(grouped).bars == AccountDisplay.defaultBars)
-        #expect(value.order == [shown.id, grouped.id, parked.id, unknown.id])
-        #expect(value.visibleAccountIDs == [shown.id, grouped.id])
-        #expect(!value.showBadge && value.showBar && value.showPercent)
-        #expect(value.display(shown).primary == "5h")
-        #expect(value.display(grouped).primary == "weekly")
-        #expect(value.valid)
-    }
-
-    @Test @MainActor func persistenceMigrationRecoveryAndRendering() throws {
+    @Test @MainActor func persistenceRecoveryAndRendering() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-display-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let files = AccountFiles(root: root)
@@ -180,14 +198,13 @@ struct DisplayConfigurationTests {
         for account in [a,b] {
             try files.write(snapshot(account.provider), to: files.cache(account).deletingLastPathComponent().appendingPathComponent("last-good.json"))
         }
-        // An existing item-based file is migrated once and left in place.
+        // An old item-based file is no longer read, and it is left in place.
         let legacyURL = root.appendingPathComponent("display-v1.json")
-        let legacy = LegacyDisplayConfiguration(activeCount: 1, items: [LegacyDisplayItem(accountIDs: [b.id]), LegacyDisplayItem(accountIDs: [a.id])])
-        try files.write(legacy, to: legacyURL)
-        let legacyData = try Data(contentsOf: legacyURL)
+        let legacyData = Data(#"{"version":1,"activeCount":1,"items":[],"metrics":{}}"#.utf8)
+        try legacyData.write(to: legacyURL)
         let store = UsageStore(settings: settings, files: files, autoRefresh: false)
-        #expect(store.displayConfiguration.visibleAccountIDs == [b.id])
-        #expect(store.displayConfiguration.order == [b.id, a.id])
+        #expect(store.displayError == nil && store.displayConfiguration == DisplayConfiguration.initial(registry))
+        #expect(store.displayConfiguration.visibleAccountIDs == [a.id, b.id])
         #expect(try Data(contentsOf: legacyURL) == legacyData)
         let url = root.appendingPathComponent("display-v2.json")
         #expect(FileManager.default.fileExists(atPath: url.path))
@@ -203,21 +220,21 @@ struct DisplayConfigurationTests {
         #expect(entry.metric.id == "5h")
         // Every toggle combination is sized from its visible contents, not fixed slots.
         var widths: [CGFloat] = []
-        for mask in 1..<8 {
+        for mask in 1..<4 {
             var config = store.displayConfiguration
-            config.showBadge = mask & 1 != 0; config.showBar = mask & 2 != 0; config.showPercent = mask & 4 != 0
+            config.showBar = mask & 1 != 0; config.showPercent = mask & 2 != 0
             for scale: CGFloat in [1, 2] {
                 let image = DisplayStatusRenderer.render(entry: entry, config: config, scale: scale)
                 #expect(image.size.height == 22)
                 #expect(image.size.width > 0)
                 if scale == 2 { widths.append(image.size.width) }
-                if mask == 2 { #expect(image.size.width == DisplayStatusRenderer.barWidth + DisplayStatusRenderer.inset * 2) }
+                if mask == 1 { #expect(image.size.width == DisplayStatusRenderer.barWidth + DisplayStatusRenderer.inset * 2) }
                 if let out, scale == 2, let rep = image.representations.first as? NSBitmapImageRep {
                     try rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("combination-\(mask).png"))
                 }
             }
         }
-        #expect(widths.max() == widths.last) // all three components is the widest
+        #expect(widths.max() == widths.last) // both components is the widest
         let stale = MenuBarEntry(account: b, display: store.displayConfiguration.display(b),
                                  metric: .menuBar(snapshot(.claude, stale: true), preferred: "weekly"), stale: true, requiresLogin: false)
         let staleImage = DisplayStatusRenderer.render(entry: stale, config: store.displayConfiguration)

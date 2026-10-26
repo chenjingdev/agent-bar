@@ -105,7 +105,7 @@ struct ClaudeUsageProvider: UsageProviding {
 
     private func resolveRemoteUsage(credentials: ClaudeCredentials) async throws -> RemoteUsageResult {
         try control.checkCancellation()
-        let cache = ClaudeUsageCache(overrideURL: cacheURL, enabled: cacheURL != nil)
+        let cache = ClaudeUsageCache(cacheURL: cacheURL)
         let now = Date.now
         let previousCache = try? cache.readRaw()
 
@@ -223,8 +223,6 @@ struct ClaudeUsageProvider: UsageProviding {
             return "Couldn't read the Anthropic usage API (\(data.apiError ?? "unknown"))."
         }
         switch data.usageSource {
-        case .statusLine:
-            return "Showing Claude Code live rate_limits from your active status line session."
         case .oauthApi:
             if let weeklyWindowLabel = data.weeklyWindowLabel {
                 return "Anthropic did not return an account-wide weekly window, so Weekly is following the \(weeklyWindowLabel) window."
@@ -237,8 +235,6 @@ struct ClaudeUsageProvider: UsageProviding {
 
     private func sourceDescription(for data: RemoteUsageData) -> String {
         switch data.usageSource {
-        case .statusLine:
-            return "Claude Code live rate_limits"
         case .oauthApi:
             return "Anthropic OAuth usage API + cache"
         case nil:
@@ -563,7 +559,6 @@ private struct RemoteUsageResult {
 
 enum ClaudeUsageSource: String, Codable {
     case oauthApi = "oauth_api"
-    case statusLine = "status_line"
 }
 
 private struct ClaudeCredentials {
@@ -718,41 +713,6 @@ struct ClaudeUsageCacheRecord: Codable {
     let lastGoodTimestamp: Date?
 }
 
-private struct LegacyClaudeUsageCacheRecord: Decodable {
-    let timestamp: Date
-    let cooldownUntil: Date?
-    let planName: String?
-    let fiveHourUsedPercent: Int?
-    let weeklyUsedPercent: Int?
-    let fiveHourResetAt: Date?
-    let weeklyResetAt: Date?
-
-    var upgraded: ClaudeUsageCacheRecord {
-        let data = RemoteUsageData(
-            planName: planName,
-            fiveHourUsedPercent: fiveHourUsedPercent,
-            weeklyUsedPercent: weeklyUsedPercent,
-            fiveHourResetAt: fiveHourResetAt,
-            weeklyResetAt: weeklyResetAt,
-            modelWeeklies: nil,
-            apiUnavailable: false,
-            apiError: nil,
-            usageSource: nil,
-            weeklyWindowLabel: nil
-        )
-
-        return ClaudeUsageCacheRecord(
-            data: data,
-            timestamp: timestamp,
-            credentialCacheKey: nil,
-            rateLimitedCount: nil,
-            retryAfterUntil: cooldownUntil,
-            lastGoodData: data,
-            lastGoodTimestamp: timestamp
-        )
-    }
-}
-
 struct ClaudeUsageCacheState {
     let data: RemoteUsageData
     let updatedAt: Date
@@ -760,27 +720,17 @@ struct ClaudeUsageCacheState {
 }
 
 struct ClaudeUsageCache {
-    var overrideURL: URL?
-    var enabled: Bool
+    // The account's own cache file. nil turns the cache off.
+    var cacheURL: URL?
 
     private let fileManager = FileManager.default
 
-    private var cacheURL: URL {
-        if let overrideURL { return overrideURL }
-        let base = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(".agentbar", isDirectory: true)
-        return base.appendingPathComponent("claude-usage-cache.json")
-    }
-
     func readRaw() throws -> ClaudeUsageCacheRecord {
-        guard enabled else { throw ClaudeUsageError.missingCredentials }
+        guard let cacheURL else { throw ClaudeUsageError.missingCredentials }
         let data = try Data(contentsOf: cacheURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        if let record = try? decoder.decode(ClaudeUsageCacheRecord.self, from: data) {
-            return record
-        }
-        return try decoder.decode(LegacyClaudeUsageCacheRecord.self, from: data).upgraded
+        return try decoder.decode(ClaudeUsageCacheRecord.self, from: data)
     }
 
     func readState(now: Date, credentialCacheKey: String?) throws -> ClaudeUsageCacheState {
@@ -833,7 +783,7 @@ struct ClaudeUsageCache {
         lastGoodData: RemoteUsageData? = nil,
         lastGoodTimestamp: Date? = nil
     ) throws {
-        guard enabled else { return }
+        guard let cacheURL else { return }
         let record = ClaudeUsageCacheRecord(
             data: data,
             timestamp: timestamp,

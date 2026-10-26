@@ -32,9 +32,6 @@ struct StatusBarClickTests {
         #expect(coordinator.popoverAccountIDs(for: b.id) == [b.id])
         #expect((coordinator.statusItemLength(for: b.id) ?? 0) > 0)
         #expect(store.visibleAccounts.map(\.id) == [a.id, b.id])
-        // Turning off every component is refused so an item never renders empty.
-        store.updateDisplay { $0.setComponent(badge: false, bar: false, percent: false) }
-        #expect(store.displayConfiguration.showsAnything)
         // Accounts sharing a group fold into one item whose popover lists them all.
         let group = DisplayConfiguration.groupKey(1)
         store.updateDisplay { $0.update(a.id) { $0.group = 1 }; $0.update(b.id) { $0.group = 1 } }
@@ -47,6 +44,38 @@ struct StatusBarClickTests {
         store.updateDisplay { $0.update(b.id) { $0.group = 0 } }
         try await waitFor { coordinator.popoverAccountIDs(for: b.id) == [b.id] }
         #expect(coordinator.physicalStatusItemCount == 1)
+    }
+
+    @Test("The theme reaches every popover at once but not the menu bar item")
+    func themeAppliesToPopoversButNotStatusItems() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("theme-\(UUID())")
+        let suite = "theme-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: suite); NSApplication.shared.appearance = nil }
+        let files = AccountFiles(root: root)
+        let a = UsageAccount(id: UUID(), provider: .claude, name: "A")
+        let b = UsageAccount(id: UUID(), provider: .codex, name: "B")
+        var registry = AccountRegistry(accounts: [a, b]); registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        let settings = AppSettings(defaults: defaults)
+        let store = UsageStore(settings: settings, files: files, autoRefresh: false)
+        let coordinator = StatusBarCoordinator(store: store, providers: [.claude, .codex])
+        defer { coordinator.removeAll() }
+        #expect(coordinator.popoverAppearanceName(for: a.id) == nil)
+        let menuBar = coordinator.statusItemAppearanceName(for: a.id)
+        store.updateDisplay { $0.setVisible(b.id, false) }
+        try await waitFor { coordinator.physicalStatusItemCount == 1 }
+        settings.theme = .dark
+        NSApplication.shared.appearance = settings.theme.appearance // as the app delegate does
+        #expect(coordinator.popoverAppearanceName(for: a.id) == .darkAqua)
+        // An item created after the change gets the theme too.
+        store.updateDisplay { $0.setVisible(b.id, true) }
+        try await waitFor { coordinator.physicalStatusItemCount == 2 }
+        #expect(coordinator.popoverAppearanceName(for: b.id) == .darkAqua)
+        #expect(coordinator.statusItemAppearanceName(for: a.id) == menuBar)
+        settings.theme = .light
+        #expect(coordinator.popoverAppearanceName(for: a.id) == .aqua && coordinator.popoverAppearanceName(for: b.id) == .aqua)
+        settings.theme = .system
+        #expect(coordinator.popoverAppearanceName(for: a.id) == nil && coordinator.popoverAppearanceName(for: b.id) == nil)
     }
 
     @Test func settingsContextIdentifiesTheClickedGroupEvenWhenAccountsOverlap() async throws {

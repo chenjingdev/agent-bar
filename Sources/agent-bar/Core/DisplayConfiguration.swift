@@ -98,7 +98,6 @@ struct DisplayConfiguration: Codable, Equatable {
     var version = 2
     var order: [UUID] = []
     var accounts: [String: AccountDisplay] = [:]
-    var showBadge = true
     var showBar = true
     var showPercent = true
     var style: MenuBarStyle = .badge
@@ -119,7 +118,6 @@ struct DisplayConfiguration: Codable, Equatable {
         version = try c.decode(Int.self, forKey: .version)
         order = try c.decode([UUID].self, forKey: .order)
         accounts = try c.decode([String: AccountDisplay].self, forKey: .accounts)
-        showBadge = try c.decodeIfPresent(Bool.self, forKey: .showBadge) ?? true
         showBar = try c.decodeIfPresent(Bool.self, forKey: .showBar) ?? true
         showPercent = try c.decodeIfPresent(Bool.self, forKey: .showPercent) ?? true
         style = try c.decodeIfPresent(MenuBarStyle.self, forKey: .style) ?? .badge
@@ -135,14 +133,14 @@ struct DisplayConfiguration: Codable, Equatable {
         }
     }
     private enum CodingKeys: String, CodingKey {
-        case version, order, accounts, showBadge, showBar, showPercent, style, rowsPerColumn, layouts
+        case version, order, accounts, showBar, showPercent, style, rowsPerColumn, layouts
         case legacyBarMetric = "barMetric"
         case legacyCompact = "compact"
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(version, forKey: .version); try c.encode(order, forKey: .order); try c.encode(accounts, forKey: .accounts)
-        try c.encode(showBadge, forKey: .showBadge); try c.encode(showBar, forKey: .showBar); try c.encode(showPercent, forKey: .showPercent)
+        try c.encode(showBar, forKey: .showBar); try c.encode(showPercent, forKey: .showPercent)
         try c.encode(style, forKey: .style); try c.encode(rowsPerColumn, forKey: .rowsPerColumn)
         try c.encodeIfPresent(layouts, forKey: .layouts)
     }
@@ -173,7 +171,6 @@ struct DisplayConfiguration: Codable, Equatable {
         guard let layouts else { return Set(visibleAccountIDs) }
         return Set(layouts.filter { $0.enabled && $0.showsAnything }.flatMap(\.displayedRows).map(\.accountID).filter(isVisible))
     }
-    var showsAnything: Bool { showBadge || showBar || showPercent }
 
     static func trimmedBadge(_ text: String) -> String {
         String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(badgeLimit))
@@ -188,13 +185,6 @@ struct DisplayConfiguration: Codable, Equatable {
     mutating func move(_ id: UUID, offset: Int) {
         guard let index = order.firstIndex(of: id), order.indices.contains(index + offset) else { return }
         order.swapAt(index, index + offset)
-    }
-    @discardableResult
-    mutating func setComponent(badge: Bool? = nil, bar: Bool? = nil, percent: Bool? = nil) -> Bool {
-        let next = (badge ?? showBadge, bar ?? showBar, percent ?? showPercent)
-        guard next.0 || next.1 || next.2 else { return false }
-        (showBadge, showBar, showPercent) = next
-        return true
     }
     // Registers accounts that appeared since the last save and forgets deleted ones.
     mutating func sync(_ live: [UsageAccount]) {
@@ -233,81 +223,10 @@ struct DisplayConfiguration: Codable, Equatable {
             && (1...6).contains(rowsPerColumn) && accounts.values.allSatisfy { (0...Self.groupLimit).contains($0.group) }
     }
 
-    @MainActor static func initial(_ registry: AccountRegistry, settings: AppSettings? = nil) -> Self {
+    static func initial(_ registry: AccountRegistry) -> Self {
         var value = Self()
-        let live = registry.accounts.filter { !$0.deletionPending }
-        value.sync(live)
-        guard let settings else { return value }
-        for account in live where !settings.getProviderDisplaySettings(account.provider).isEnabled {
-            value.setVisible(account.id, false)
-        }
-        if let provider = ProviderKind.allCases.first(where: { settings.getProviderDisplaySettings($0).isEnabled }) {
-            let preference = settings.getProviderDisplaySettings(provider)
-            value.setComponent(badge: preference.showsBadge, bar: preference.showsUsageBars, percent: preference.showsPercentage)
-        }
+        value.sync(registry.accounts.filter { !$0.deletionPending })
         return value
-    }
-    // Preserve original item layouts alongside the account appearance metadata.
-    static func migrated(from legacy: LegacyDisplayConfiguration, accounts live: [UsageAccount]) -> Self {
-        var value = Self()
-        let active = legacy.items.prefix(legacy.activeCount)
-        let shown = active.flatMap(\.accountIDs)
-        let hidden = legacy.items.dropFirst(legacy.activeCount).flatMap(\.accountIDs)
-        let ordered = (shown + hidden).filter { id in live.contains { $0.id == id } } + live.map(\.id)
-        var seen = Set<UUID>()
-        value.sync(ordered.filter { seen.insert($0).inserted }.compactMap { id in live.first { $0.id == id } })
-        for account in live where !shown.contains(account.id) { value.setVisible(account.id, false) }
-        if let first = active.first(where: { !$0.accountIDs.isEmpty }) ?? active.first {
-            value.setComponent(badge: first.showService, bar: first.showBars, percent: first.showPercent)
-        }
-        for (key, selection) in legacy.metrics {
-            guard let id = UUID(uuidString: key) else { continue }
-            value.update(id) {
-                $0.bars = selection
-                if !selection.contains("weekly"), let first = ["5h", "model:fable"].first(where: selection.contains) { $0.primary = first }
-            }
-        }
-        // Items that held several accounts stay together as a group.
-        var group = 0
-        for item in active where item.accountIDs.count > 1 && group < Self.groupLimit {
-            group += 1
-            for id in item.accountIDs { value.update(id) { $0.group = group } }
-            value.rowsPerColumn = min(6, max(1, item.maxRows))
-        }
-        value.layouts = legacy.items.enumerated().map { index, item in
-            MenuBarLayout(id: item.id, name: "Group \(index + 1)", enabled: index < legacy.activeCount,
-                style: .bars, showBadge: item.showService, showBar: item.showBars, showPercent: item.showPercent,
-                rowsPerColumn: min(3, max(1, item.maxRows)), rows: item.accountIDs.flatMap { id -> [MenuBarLine] in
-                    guard let account = live.first(where: { $0.id == id }) else { return [] }
-                    let selection = legacy.metrics[id.uuidString] ?? (account.provider == .claude ? ["5h", "weekly", "model:fable"] : ["5h", "weekly"])
-                    return orderedMetrics(selection).map { MenuBarLine(accountID: id, metricID: $0) }
-                })
-        }
-        // Group visibility controls polling; parked accounts remain available when their group is enabled.
-        for id in legacy.items.flatMap(\.accountIDs) { value.setVisible(id, true) }
-        value.limitLayoutSizes()
-        return value
-    }
-}
-
-struct LegacyDisplayItem: Codable {
-    var id = UUID()
-    var accountIDs: [UUID] = []
-    var showService = true
-    var showBars = true
-    var showPercent = true
-    var maxRows = 2
-}
-struct LegacyDisplayConfiguration: Codable {
-    var version = 1
-    var activeCount = 2
-    var items: [LegacyDisplayItem] = []
-    var metrics: [String: Set<String>] = [:]
-    var valid: Bool {
-        let accounts = items.flatMap(\.accountIDs)
-        return version == 1 && activeCount >= 1 && activeCount <= items.count
-            && Set(items.map(\.id)).count == items.count && Set(accounts).count == accounts.count
-            && items.allSatisfy { (1...6).contains($0.maxRows) }
     }
 }
 

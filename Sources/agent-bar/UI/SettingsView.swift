@@ -15,7 +15,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var store: UsageStore
-    @State private var restoring = false
     @State private var tab: SettingsTab
     init(tab: SettingsTab = .accounts) { _tab = State(initialValue: tab) }
     var body: some View {
@@ -38,12 +37,12 @@ struct SettingsView: View {
                         Text("Only accounts used by visible groups are refreshed. Hidden groups keep their settings.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    if store.hasOriginalDisplayConfiguration {
-                        Section("Recovery") {
-                            Button("Restore Original Groups…") { restoring = true }
-                            Text("Restore the saved layout from before the UX changes. The current layout is backed up first; account names and colors are kept.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+                    Section("Appearance") {
+                        Picker("Theme", selection: $settings.theme) {
+                            ForEach(AppearanceTheme.allCases) { Text($0.title).tag($0) }
+                        }.pickerStyle(.segmented)
+                        Text("Applies to AgentBar's windows and popovers. Menu bar items follow the menu bar.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }.formStyle(.grouped)
             }
@@ -59,9 +58,5 @@ struct SettingsView: View {
                 Text(error).font(.caption).foregroundStyle(.orange).padding(10)
             }
         }.frame(width: 540, height: 660)
-        .alert("Restore the original menu bar layout?", isPresented: $restoring) {
-            Button("Cancel", role: .cancel) { }
-            Button("Restore") { store.restoreOriginalDisplayConfiguration(); tab = .menuBar }
-        } message: { Text("This restores the original groups, account order, selected limits and display options. Your current layout is saved as a backup first.") }
     }
 }

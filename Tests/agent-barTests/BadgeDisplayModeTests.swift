@@ -6,9 +6,10 @@ import Testing
 @MainActor
 struct BadgeDisplayModeTests {
     @Test func legacyIndividualModesMigrateAwayWithoutBreakingDecoding() throws {
-        let old = MenuBarLayout(name: "Old", showBadge: false)
-        let data = try JSONEncoder().encode(old)
-        let decoded = try JSONDecoder().decode(MenuBarLayout.self, from: data)
+        // Stored groups still carry the removed showBadge key and may lack badgeMode.
+        var old = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(MenuBarLayout(name: "Old"))) as? [String: Any])
+        old["showBadge"] = false
+        let decoded = try JSONDecoder().decode(MenuBarLayout.self, from: JSONSerialization.data(withJSONObject: old))
         #expect(decoded.badgeMode == nil && decoded.effectiveBadgeMode == .none)
         var capsule = decoded; capsule.style = .capsule
         #expect(capsule.effectiveBadgeMode == .none)
@@ -22,7 +23,7 @@ struct BadgeDisplayModeTests {
         #expect(roundTrip == config)
         let render = group.renderingConfiguration(config)
         #expect(group.effectiveBadgeMode == .common)
-        #expect(render.commonBadgeText == "Team" && render.commonBadgeColor == .orange && !render.showBadge)
+        #expect(render.commonBadgeText == "Team" && render.commonBadgeColor == .orange)
     }
 
     @Test func commonBadgeDrawsOnceAndLegacyIndividualModesAreSuppressed() throws {
@@ -40,10 +41,9 @@ struct BadgeDisplayModeTests {
         let commonOne = DisplayStatusRenderer.render(entries: Array(entries.prefix(1)), config: common, explicitRows: true)
         let commonThree = DisplayStatusRenderer.render(entries: entries, config: common, explicitRows: true)
         #expect(commonOne.size.width == commonThree.size.width)
-        #expect(!common.showBadge && group.showsAnything)
+        #expect(group.showsAnything)
         group.badgeMode = .individual
         #expect(group.effectiveBadgeMode == .none)
-        #expect(!group.renderingConfiguration(DisplayConfiguration()).showBadge)
         group.badgeMode = .both
         #expect(group.effectiveBadgeMode == .common)
         let migratedBoth = DisplayStatusRenderer.render(entries: entries, config: group.renderingConfiguration(DisplayConfiguration()), explicitRows: true)
@@ -68,7 +68,6 @@ struct BadgeDisplayModeTests {
                 var group = MenuBarLayout(name: "Team", style: style)
                 group.badgeMode = mode; group.commonBadgeColor = .teal
                 let config = group.renderingConfiguration(DisplayConfiguration())
-                #expect(!config.showBadge)
                 #expect((config.commonBadgeText != nil) == mode.includesCommon)
                 let image = DisplayStatusRenderer.render(entries: entries, config: config, explicitRows: true)
                 #expect(image.size.height == 22 && image.size.width > 0)

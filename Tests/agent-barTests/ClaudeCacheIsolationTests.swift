@@ -6,7 +6,7 @@ struct ClaudeCacheIsolationTests {
     @Test func cooldownWithoutGoodValueAndCredentialChange() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-cache-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let cache = ClaudeUsageCache(overrideURL: directory.appendingPathComponent("usage.json"), enabled: true)
+        let cache = ClaudeUsageCache(cacheURL: directory.appendingPathComponent("usage.json"))
         let now = Date()
         let failure = RemoteUsageData(planName: nil, fiveHourUsedPercent: nil, weeklyUsedPercent: nil,
             fiveHourResetAt: nil, weeklyResetAt: nil, modelWeeklies: nil, apiUnavailable: true,
@@ -23,7 +23,7 @@ struct ClaudeCacheIsolationTests {
     @Test func lastGoodValueRequiresMatchingCredential() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-cache-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let cache = ClaudeUsageCache(overrideURL: directory.appendingPathComponent("usage.json"), enabled: true)
+        let cache = ClaudeUsageCache(cacheURL: directory.appendingPathComponent("usage.json"))
         let good = RemoteUsageData(planName: "Pro", fiveHourUsedPercent: 25, weeklyUsedPercent: 40,
             fiveHourResetAt: nil, weeklyResetAt: nil, modelWeeklies: nil, apiUnavailable: false,
             apiError: nil, usageSource: .oauthApi, weeklyWindowLabel: nil)

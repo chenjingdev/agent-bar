@@ -32,7 +32,7 @@ final class UsageStore: ObservableObject {
     @Published var displayWidthWarning = false
     private var displayWritable = true
 
-    private let settings: AppSettings
+    let settings: AppSettings
     let files: AccountFiles
     private var refreshTask: Task<Void, Never>?
     private var loginTask: Task<Void, Never>?
@@ -82,7 +82,6 @@ final class UsageStore: ObservableObject {
     }
 
     private var displayURL: URL { files.root.appendingPathComponent("display-v2.json") }
-    private var legacyDisplayURL: URL { files.root.appendingPathComponent("display-v1.json") }
     private var liveAccounts: [UsageAccount] { accounts.filter { !$0.deletionPending } }
     private func loadDisplayConfiguration() {
         do {
@@ -98,18 +97,12 @@ final class UsageStore: ObservableObject {
                 guard loaded.valid else { throw AccountError.message("Invalid display settings format.") }
                 displayConfiguration = loaded
                 updateDisplay { $0.sync(liveAccounts) }
-            } else if FileManager.default.fileExists(atPath: legacyDisplayURL.path) {
-                // The item-based file stays untouched so the previous version can still read it.
-                let legacy = try files.read(LegacyDisplayConfiguration.self, at: legacyDisplayURL)
-                guard legacy.valid else { throw AccountError.message("Invalid original layout.") }
-                displayConfiguration = .migrated(from: legacy, accounts: liveAccounts)
-                try files.write(displayConfiguration, to: displayURL)
             } else {
-                displayConfiguration = .initial(registry, settings: settings)
+                displayConfiguration = .initial(registry)
                 try files.write(displayConfiguration, to: displayURL)
             }
         } catch {
-            displayConfiguration = .initial(registry, settings: settings)
+            displayConfiguration = .initial(registry)
             // Preserve the damaged original, then allow the recovered configuration to be saved.
             do {
                 if FileManager.default.fileExists(atPath: displayURL.path) {
@@ -118,24 +111,6 @@ final class UsageStore: ObservableObject {
             } catch { displayWritable = false }
             displayError = "Could not read display settings. Using defaults; the original was preserved."
         }
-    }
-    var hasOriginalDisplayConfiguration: Bool {
-        FileManager.default.fileExists(atPath: legacyDisplayURL.path)
-    }
-    func restoreOriginalDisplayConfiguration() {
-        guard displayWritable else { return }
-        do {
-            let legacy = try files.read(LegacyDisplayConfiguration.self, at: legacyDisplayURL)
-            guard legacy.valid else { throw AccountError.message("Invalid original layout.") }
-            let restored = DisplayConfiguration.migrated(from: legacy, accounts: liveAccounts)
-            if FileManager.default.fileExists(atPath: displayURL.path) {
-                try FileManager.default.copyItem(at: displayURL, to: files.root.appendingPathComponent("display-before-restore-\(UUID()).json"))
-            }
-            updateDisplay { next in
-                next.layouts = restored.layouts
-                for id in legacy.items.flatMap(\.accountIDs) { next.setVisible(id, true) }
-            }
-        } catch { displayError = "Could not restore original groups: \(error.localizedDescription)" }
     }
     func updateDisplay(_ change: (inout DisplayConfiguration) -> Void) {
         guard displayWritable else { return }

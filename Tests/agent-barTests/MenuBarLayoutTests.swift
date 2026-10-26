@@ -101,37 +101,6 @@ struct MenuBarLayoutTests {
         #expect(entry.badgeLabel == "Work")
     }
 
-    @Test func originalGroupsKeepMixedAccountsOptionsAndParkedSelections() throws {
-        let claude = UsageAccount(id: UUID(), provider: .claude, name: "Work")
-        let codex = UsageAccount(id: UUID(), provider: .codex, name: "Personal")
-        let parked = UsageAccount(id: UUID(), provider: .claude, name: "Parked")
-        let items = [
-            LegacyDisplayItem(accountIDs: [codex.id, claude.id], showService: false, showBars: true, showPercent: false, maxRows: 3),
-            LegacyDisplayItem(accountIDs: [], showService: true, showBars: false, showPercent: true, maxRows: 1),
-            LegacyDisplayItem(accountIDs: []), LegacyDisplayItem(accountIDs: []), LegacyDisplayItem(accountIDs: []),
-            LegacyDisplayItem(accountIDs: [parked.id], showService: false, showBars: false, showPercent: true, maxRows: 2)
-        ]
-        let legacy = LegacyDisplayConfiguration(activeCount: 5, items: items,
-            metrics: [codex.id.uuidString: ["weekly"], claude.id.uuidString: ["5h", "model:fable"], parked.id.uuidString: []])
-        var value = DisplayConfiguration.migrated(from: legacy, accounts: [claude, codex, parked])
-        let groups = value.effectiveLayouts
-        #expect(value.valid && groups.count == 6)
-        #expect(groups.map(\.id) == items.map(\.id))
-        #expect(groups[0].rows.map(\.accountID) == [codex.id, claude.id, claude.id])
-        #expect(groups[0].rows.map(\.metricID) == ["weekly", "5h", "model:fable"])
-        #expect(!groups[0].showBadge && groups[0].showBar && !groups[0].showPercent)
-        #expect(groups[0].rowsPerColumn == 3 && groups[1].rowsPerColumn == 1)
-        #expect(!groups[5].enabled && groups[5].rows.isEmpty)
-        #expect(value.refreshAccountIDs == [claude.id, codex.id])
-        value.editLayout(groups[5].id) { group in
-            group.enabled = true
-            group.rows.append(MenuBarLine(accountID: parked.id, metricID: "weekly"))
-        }
-        #expect(value.refreshAccountIDs == [claude.id, codex.id, parked.id])
-        let roundTrip = try JSONDecoder().decode(DisplayConfiguration.self, from: JSONEncoder().encode(value))
-        #expect(roundTrip == value)
-    }
-
     @Test func layoutsPreserveOrderAcrossMovesAndAccountDeletion() throws {
         let a = UsageAccount(id: UUID(), provider: .claude, name: "A")
         let b = UsageAccount(id: UUID(), provider: .codex, name: "B")
@@ -340,28 +309,6 @@ struct MenuBarLayoutTests {
         config.editLayout(group.id) { $0.rows.removeAll() }
         config.editLayout(group.id) { $0.rows.append(added) }
         #expect(config.valid && config.layouts?.first?.rows.compactMap(\.slot) == [0])
-    }
-
-    @Test func restoringOriginalLayoutBacksUpCurrentPreferencesAndRetainsNames() throws {
-        let f = try LayoutFixture(); defer { f.close() }
-        let legacy = LegacyDisplayConfiguration(activeCount: 1, items: [
-            LegacyDisplayItem(accountIDs: [f.b.id, f.a.id], showService: false, maxRows: 3)
-        ], metrics: [f.a.id.uuidString: ["5h"], f.b.id.uuidString: ["weekly"]])
-        let legacyURL = f.files.root.appendingPathComponent("display-v1.json")
-        try f.files.write(legacy, to: legacyURL)
-        let original = try Data(contentsOf: legacyURL)
-        f.store.updateDisplay { $0.update(f.a.id) { $0.badge = "Work"; $0.color = .teal } }
-        let before = try Data(contentsOf: f.files.root.appendingPathComponent("display-v2.json"))
-        f.store.restoreOriginalDisplayConfiguration()
-        #expect(f.store.displayConfiguration.display(f.a).badge == "Work")
-        #expect(f.store.displayConfiguration.display(f.a).color == .teal)
-        #expect(f.store.displayConfiguration.effectiveLayouts[0].rows.map(\.accountID) == [f.b.id, f.a.id])
-        #expect(f.store.displayConfiguration.effectiveLayouts[0].rows.map(\.metricID) == ["weekly", "5h"])
-        #expect(try Data(contentsOf: legacyURL) == original)
-        let backup = try #require(FileManager.default.contentsOfDirectory(at: f.files.root, includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("display-before-restore-") })
-        #expect(try Data(contentsOf: backup) == before)
-        let reloaded = UsageStore(settings: f.settings, files: f.files, autoRefresh: false)
-        #expect(reloaded.displayConfiguration == f.store.displayConfiguration)
     }
 
     @Test func mixedGroupAndSettingsRenderWithEveryStyle() async throws {

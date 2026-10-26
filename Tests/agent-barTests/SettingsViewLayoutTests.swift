@@ -11,8 +11,7 @@ struct SettingsViewLayoutTests {
         let identifier = "SettingsViewLayoutTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: identifier)!
         defaults.removePersistentDomain(forName: identifier)
-        let providers: [ProviderKind] = [.claude, .codex]
-        let settings = AppSettings(availableProviders: providers, defaults: defaults)
+        let settings = AppSettings(defaults: defaults)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: identifier) }
         let store = UsageStore(settings: settings, files: AccountFiles(root: root), autoRefresh: false)

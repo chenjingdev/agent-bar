@@ -7,7 +7,7 @@ struct AccountManagementTests {
         let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
         let suite = "empty-accounts-\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = UsageStore(settings: AppSettings(availableProviders: [.claude, .codex], defaults: defaults),
+        let store = UsageStore(settings: AppSettings(defaults: defaults),
             files: files, autoRefresh: false, loadAccount: { account, _ in
                 Issue.record("No account has been connected")
                 return .placeholder(for: account.provider)
@@ -22,8 +22,9 @@ struct AccountManagementTests {
         for managed in [false, true] {
             for builtIn in [false, true] {
                 let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
-                var account = builtIn ? UsageAccount.currentCLI(.codex)
-                    : UsageAccount(id: UUID(), provider: .codex, name: "Extra")
+                // Rows first created as the removed built-in CLI rows keep their fixed IDs.
+                var account = UsageAccount(id: builtIn ? try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000002")) : UUID(),
+                    provider: .codex, name: "Extra")
                 if managed { account.credentialID = UUID() }
                 let other = UsageAccount(id: UUID(), provider: .codex, name: "Keep", credentialID: UUID())
                 try files.createPrivateDirectory(files.credentials(other.credentialID!))
@@ -64,7 +65,7 @@ struct AccountManagementTests {
 
     @Test @MainActor func accountOrderPersistsWithoutChangingUsageLineSelectionsOrIdentities() throws {
         let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
-        let a = UsageAccount.currentCLI(.claude), b = UsageAccount.currentCLI(.codex)
+        let a = UsageAccount(id: UUID(), provider: .claude, name: "Claude"), b = UsageAccount(id: UUID(), provider: .codex, name: "Codex")
         let c = UsageAccount(id: UUID(), provider: .claude, name: "Work")
         let d = UsageAccount(id: UUID(), provider: .codex, name: "Extra")
         var registry = AccountRegistry(accounts: [a, b, c, d]); registry.repairRepresentatives()
@@ -105,7 +106,7 @@ struct AccountManagementTests {
 
     @Test @MainActor func movingAccountsPreservesLegacyMenuBarGroupOrder() throws {
         let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
-        let a = UsageAccount.currentCLI(.claude), b = UsageAccount.currentCLI(.codex)
+        let a = UsageAccount(id: UUID(), provider: .claude, name: "Claude"), b = UsageAccount(id: UUID(), provider: .codex, name: "Codex")
         try files.write(AccountRegistry(accounts: [a, b]), to: files.registryURL)
         let suite = "legacy-account-order-\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -165,12 +166,11 @@ struct AccountManagementTests {
     }
     @Test @MainActor func everySavedAccountAlwaysUsesItsOwnUsageCredentialDirectory() async throws {
         let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
-        var original = UsageAccount.currentCLI(.claude)
-        original.credentialID = UUID()
-        original.identity = AccountIdentity(email: "personal@example.test", organizationID: "personal")
+        let original = UsageAccount(id: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000001")), provider: .claude,
+            name: "Personal", identity: AccountIdentity(email: "personal@example.test", organizationID: "personal"), credentialID: UUID())
         let work = UsageAccount(id: UUID(), provider: .claude, name: "Work",
             identity: AccountIdentity(email: "work@example.test", organizationID: "work"), credentialID: UUID())
-        let codex = UsageAccount.currentCLI(.codex)
+        let codex = UsageAccount(id: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000002")), provider: .codex, name: "Codex")
         var registry = AccountRegistry(accounts: [original, work, codex]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
         try files.write(ProviderSnapshot.placeholder(for: .codex), to: files.cache(codex).deletingLastPathComponent().appendingPathComponent("last-good.json"))
@@ -180,7 +180,7 @@ struct AccountManagementTests {
             files: files, autoRefresh: false, loadAccount: { account, _ in
                 #expect(account.isManaged, "Unconnected legacy rows must never run a provider request")
                 return ProviderSnapshot(provider: account.provider, updatedAt: .now, fiveHour: nil,
-                    weekly: WindowSummary(tokens: account.isBuiltIn ? 20 : 70, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
+                    weekly: WindowSummary(tokens: account.id == original.id ? 20 : 70, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
                     modelWeeklies: [], planName: "Fixture", sourceDescription: "Fixture", note: nil, isStale: false, requiresLogin: false)
             })
         defer { store.shutdown() }

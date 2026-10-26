@@ -9,8 +9,15 @@ final class StatusBarCoordinator {
     private var subscriptions = Set<AnyCancellable>()
     private var lastGroupOrder: [UUID] = []
     private var forceReorder = false
+    private var theme: AppearanceTheme
     init(store: UsageStore, providers: [ProviderKind]) {
         self.store = store
+        theme = store.settings.theme
+        // Popovers do not inherit the app appearance, so each one gets the theme itself.
+        store.settings.$theme.sink { [weak self] theme in
+            self?.theme = theme
+            self?.controllers.values.forEach { $0.applyTheme(theme) }
+        }.store(in: &subscriptions)
         Publishers.CombineLatest3(store.$displayConfiguration, store.$snapshots, store.$registry)
             .receive(on: RunLoop.main).sink { [weak self] _, _, _ in self?.update() }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
@@ -22,6 +29,8 @@ final class StatusBarCoordinator {
     func popoverAccountIDs(for id: UUID) -> [UUID]? { controllers[id]?.popoverAccountIDs }
     func popoverGroupID(for id: UUID) -> UUID? { controllers[id]?.popoverGroupID }
     func positionID(for id: UUID) -> UUID? { controllers[id]?.positionID }
+    func popoverAppearanceName(for id: UUID) -> NSAppearance.Name? { controllers[id]?.popoverAppearanceName }
+    func statusItemAppearanceName(for id: UUID) -> NSAppearance.Name? { controllers[id]?.statusItemAppearanceName }
     var groupOrderOnScreen: [UUID] { controllersFromLeftToRight().map(\.popoverGroupID) }
     func removeAll() { controllers.values.forEach { $0.remove() }; controllers.removeAll() }
     private func controllersFromLeftToRight() -> [StatusBarController] {
@@ -77,6 +86,7 @@ final class StatusBarCoordinator {
         for group in groups.reversed() where controllers[group.id] == nil {
             controllers[group.id] = StatusBarController(key: group.id, store: store, positionID: group.statusItemPositionID,
                 moveGroup: { [weak self] source, target in self?.moveFromMenuBar(source, to: target) ?? false })
+            controllers[group.id]?.applyTheme(theme)
         }
         for group in groups {
             controllers[group.id]?.apply(store.entries(for: group), config: group.renderingConfiguration(config), explicitRows: true, name: group.name)
@@ -113,6 +123,9 @@ final class StatusBarController {
     var popoverGroupID: UUID { host.rootView.groupID }
     var screenWidth: CGFloat? { statusItem.button?.window?.screen?.frame.width }
     var screenFrame: NSRect? { statusItem.button?.window?.frame }
+    var popoverAppearanceName: NSAppearance.Name? { popover.appearance?.name }
+    var statusItemAppearanceName: NSAppearance.Name? { statusItem.button?.effectiveAppearance.name }
+    func applyTheme(_ theme: AppearanceTheme) { popover.appearance = theme.appearance }
     init(key: UUID, store: UsageStore, positionID: UUID? = nil, moveGroup: ((UUID, UUID) -> Bool)? = nil) {
         self.store = store
         groupID = key
@@ -298,7 +311,6 @@ enum DisplayStatusRenderer {
         let pitch: CGFloat
         var badgeFont: NSFont { .monospacedDigitSystemFont(ofSize: min(9, pitch * 0.55), weight: .bold) }
         var percentFont: NSFont { .monospacedDigitSystemFont(ofSize: min(11, pitch * 0.78), weight: .bold) }
-        var badgeHeight: CGFloat { min(14, pitch * 0.88) }
         var barThickness: CGFloat { min(5, pitch * 0.45) }
         var ringDiameter: CGFloat { min(20, pitch) }
         var capsuleHeight: CGFloat { min(16, pitch - 1) }
@@ -331,16 +343,9 @@ enum DisplayStatusRenderer {
 
     private static func layout(row: Row, config: DisplayConfiguration, metrics m: Metrics) -> [Part] {
         let entry = row.entry
-        let badge = row.label
         let percent = row.percentage
-        let badgeColor = entry.display.color.nsColor.withAlphaComponent(entry.stale ? 0.7 : 1)
         let percentColor = NSColor.white.withAlphaComponent(entry.stale ? 0.6 : 0.96)
         let value = CGFloat(min(1, max(0, row.metric.window?.utilization ?? 0)))
-        let badgePart = Part(width: width(badge, m.badgeFont) + 8) { rect, _ in
-            badgeColor.setFill()
-            NSBezierPath(roundedRect: NSRect(x: rect.minX, y: rect.midY - m.badgeHeight / 2, width: rect.width, height: m.badgeHeight), xRadius: min(4, m.badgeHeight / 3), yRadius: min(4, m.badgeHeight / 3)).fill()
-            text(badge, font: m.badgeFont, color: .white, in: rect, align: .center)
-        }
         let percentPart = Part(width: width(percent, m.percentFont)) { rect, _ in
             text(percent, font: m.percentFont, color: percentColor, in: rect)
         }
@@ -356,7 +361,6 @@ enum DisplayStatusRenderer {
         case .badge, .bars:
             // Multi Bar is this same line repeated once per limit, so every bar is equal.
             var parts: [Part] = []
-            if config.showBadge && !badge.isEmpty { parts.append(badgePart) }
             if config.showBar {
                 parts.append(Part(width: barWidth) { rect, scale in
                     bar(row.metric.window?.utilization, thickness: m.barThickness, y: rect.midY, color: fillColor(row), in: rect, scale: scale)
@@ -379,12 +383,11 @@ enum DisplayStatusRenderer {
                     fillColor(row).setStroke(); arc.stroke()
                 }
             }
-            var parts = config.showBadge && !badge.isEmpty ? [badgePart, ring] : [ring]
+            var parts = [ring]
             if config.showPercent { parts.append(percentPart) }
             return parts
         case .capsule:
             let pillFont = m.badgeFont
-            let visibleBadge = config.showBadge ? badge : ""
             let pad: CGFloat = 8
             let pillWidth = barWidth
             return [Part(width: pillWidth) { rect, _ in
@@ -397,9 +400,7 @@ enum DisplayStatusRenderer {
                 fill.withAlphaComponent(entry.stale ? 0.55 : 0.95).setFill()
                 NSRect(x: pill.minX, y: pill.minY, width: pill.width * value, height: pill.height).fill()
                 NSGraphicsContext.restoreGraphicsState()
-                text(visibleBadge, font: pillFont, color: .white, in: pill.insetBy(dx: pad, dy: 0))
-                text(percent, font: pillFont, color: .white.withAlphaComponent(0.92), in: pill.insetBy(dx: pad, dy: 0),
-                     align: visibleBadge.isEmpty ? .center : .right)
+                text(percent, font: pillFont, color: .white.withAlphaComponent(0.92), in: pill.insetBy(dx: pad, dy: 0), align: .center)
             }]
         case .text:
             // The selected row's full-size percentage is drawn once outside the row grid.
