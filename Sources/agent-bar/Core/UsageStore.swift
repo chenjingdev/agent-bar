@@ -221,7 +221,7 @@ final class UsageStore: ObservableObject {
     }
 
     func accountLabel(for account: UsageAccount) -> String {
-        guard account.name == account.identity?.email || account.name == "Current CLI account" else { return account.name }
+        guard account.name == account.identity?.email else { return account.name }
         let peers = accounts.filter { $0.provider == account.provider && !$0.deletionPending }
         let number = (peers.firstIndex(where: { $0.id == account.id }) ?? 0) + 1
         return account.provider.displayName + (number > 1 ? " \(number)" : "")

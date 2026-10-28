@@ -52,12 +52,13 @@ struct DisplayConfigurationTests {
         let value = try JSONDecoder().decode(DisplayConfiguration.self, from: Data(json.utf8))
         #expect(value.style == .badge)
         #expect(value.rowsPerColumn == 2 && value.accounts[id.uuidString]?.group == 0)
+        // The removed compact and barMetric keys no longer change anything.
         let compact = try JSONDecoder().decode(DisplayConfiguration.self, from: Data(json.replacingOccurrences(of: "\"version\":2", with: "\"version\":2,\"compact\":true").utf8))
-        #expect(compact.accounts[id.uuidString]?.group == 1)
+        #expect(compact.accounts[id.uuidString]?.group == 0)
         #expect(value.accounts[id.uuidString]?.bars == AccountDisplay.defaultBars)
         #expect(value.accounts[id.uuidString]?.primary == "weekly")
         let shared = try JSONDecoder().decode(DisplayConfiguration.self, from: Data(json.replacingOccurrences(of: "\"weekly\"", with: "\"fiveHour\"").utf8))
-        #expect(shared.accounts[id.uuidString]?.primary == "5h")
+        #expect(shared.accounts[id.uuidString]?.primary == "weekly")
         #expect(value.valid)
         var changed = value; changed.style = .ring; changed.rowsPerColumn = 3; changed.update(id) { $0.group = 2 }
         changed.update(id) { $0.bars = ["5h"] }

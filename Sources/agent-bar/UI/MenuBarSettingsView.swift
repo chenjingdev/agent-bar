@@ -156,7 +156,7 @@ private struct MenuBarGroupEditor: View {
             }
             HStack(spacing: 4) {
                 Text("Badges").font(.caption).foregroundStyle(.secondary)
-                ForEach(BadgeDisplayMode.selectableCases) { mode in
+                ForEach(BadgeDisplayMode.allCases) { mode in
                     Button {
                         let color = group.rows.first.flatMap { store.menuBarEntry(for: $0.accountID)?.display.color } ?? .blue
                         store.updateDisplay { $0.editLayout(group.id) { value in

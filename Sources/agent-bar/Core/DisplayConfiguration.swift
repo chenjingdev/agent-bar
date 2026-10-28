@@ -123,19 +123,9 @@ struct DisplayConfiguration: Codable, Equatable {
         style = try c.decodeIfPresent(MenuBarStyle.self, forKey: .style) ?? .badge
         rowsPerColumn = try c.decodeIfPresent(Int.self, forKey: .rowsPerColumn) ?? 2
         layouts = try c.decodeIfPresent([MenuBarLayout].self, forKey: .layouts)
-        // The earlier all-or-nothing Compact switch becomes group 1 for everyone.
-        if try c.decodeIfPresent(Bool.self, forKey: .legacyCompact) == true {
-            for key in accounts.keys { accounts[key]?.group = 1 }
-        }
-        // Files from before the per-account main limit carried one shared choice.
-        if try c.decodeIfPresent(String.self, forKey: .legacyBarMetric) == "fiveHour" {
-            for key in accounts.keys { accounts[key]?.primary = "5h" }
-        }
     }
     private enum CodingKeys: String, CodingKey {
         case version, order, accounts, showBar, showPercent, style, rowsPerColumn, layouts
-        case legacyBarMetric = "barMetric"
-        case legacyCompact = "compact"
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)

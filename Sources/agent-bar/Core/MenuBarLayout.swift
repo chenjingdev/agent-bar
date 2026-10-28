@@ -11,20 +11,15 @@ struct MenuBarLine: Codable, Equatable, Identifiable {
 }
 
 enum BadgeDisplayMode: String, Codable, CaseIterable, Identifiable {
-    case none, common, individual, both
-    static let selectableCases: [Self] = [.none, .common]
+    case none, common
     var id: String { rawValue }
     var title: String {
         switch self {
         case .none: return "None"
         case .common: return "Common"
-        case .individual: return "Individual"
-        case .both: return "Both"
         }
     }
-    var includesCommon: Bool { self == .common || self == .both }
-    var includesIndividual: Bool { self == .individual || self == .both }
-    var withoutIndividual: Self { includesCommon ? .common : .none }
+    var includesCommon: Bool { self == .common }
 }
 
 struct MenuBarLayout: Codable, Equatable, Identifiable {
@@ -36,9 +31,7 @@ struct MenuBarLayout: Codable, Equatable, Identifiable {
     var badgeMode: BadgeDisplayMode? = nil
     var commonBadgeText: String? = nil
     var commonBadgeColor: AccountColor? = nil
-    // Individual/both remain decodable so existing settings migrate without
-    // failing. Tiny per-line badges are no longer rendered; both becomes common.
-    var effectiveBadgeMode: BadgeDisplayMode { (badgeMode ?? .none).withoutIndividual }
+    var effectiveBadgeMode: BadgeDisplayMode { badgeMode ?? .none }
     var commonBadgeLabel: String { commonBadgeText ?? name }
     var showBar = true
     var showPercent = true
