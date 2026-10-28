@@ -905,6 +905,12 @@ final class UsageStore: ObservableObject {
 
     func shownAccount(in group: UUID) -> UUID? { popoverShown[group] }
 
+    // A menu bar item made again for `group` starts a new window on its first account, so what an earlier one showed goes.
+    func popoverForget(group: UUID) {
+        popoverShown[group] = nil
+        popoverSeen[group] = nil
+    }
+
     // The popover of `group` closed: it counts for the accounts it showed since it opened.
     func popoverDidClose(group: UUID) {
         guard let seen = popoverSeen.removeValue(forKey: group) else { return }

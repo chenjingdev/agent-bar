@@ -43,6 +43,7 @@ struct AccountPopoverView: View {
         }.foregroundStyle(.white).frame(width: 392)
             .onAppear { reportShownAccount() }
             .onChange(of: account?.id) { reportShownAccount() }
+            .onChange(of: groupID) { reportShownAccount() }
     }
     // A group's popover shows one of its accounts at a time. A result line is cleared by the closing that follows seeing
     // it, so the store has to know which one is on screen.

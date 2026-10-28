@@ -157,6 +157,7 @@ final class StatusBarController {
         closeObserver = NotificationCenter.default.addObserver(forName: NSPopover.didCloseNotification, object: popover, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.popoverDidClose() }
         }
+        store.popoverForget(group: key)
     }
     private func popoverDidClose() { store.popoverDidClose(group: groupID) }
     // The popover is about to open (`toggle` calls this).

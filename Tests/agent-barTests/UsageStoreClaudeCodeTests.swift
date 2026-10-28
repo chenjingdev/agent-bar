@@ -319,6 +319,25 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.store.claudeCodeResults[b]?.closes == 1)
     }
 
+    @Test func aGroupMadeAgainStartsOnItsFirstTab() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
+        await f.start()
+        f.press("b")
+        await f.finish()
+        let a = f.account("a").id, b = f.account("b").id, group = UUID()
+
+        f.store.popoverWillOpen(group: group, accountIDs: [a, b])
+        f.store.popoverShows(b, group: group)
+        f.store.popoverDidClose(group: group)
+        #expect(f.store.claudeCodeResults[b]?.closes == 1)
+
+        // The group leaves the menu bar and comes back: its new window opens on a, so b's result was not seen again.
+        f.store.popoverForget(group: group)
+        f.store.popoverWillOpen(group: group, accountIDs: [a, b])
+        f.store.popoverDidClose(group: group)
+        #expect(f.store.claudeCodeResults[b]?.closes == 1 && f.result("b") != nil)
+    }
+
     @Test func aNewSwitchClearsWhatEarlierOnesSaid() async throws {
         let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
         await f.start()

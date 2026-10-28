@@ -224,7 +224,7 @@ struct LoginProgressView: View {
                      ? pending.account.identity!.description : "The provider did not return account details.")
                     .font(.headline).textSelection(.enabled)
                 if pending.replacing != nil {
-                    if store.reconnectLockedByClaudeCode {
+                    if store.reconnectLockedByClaudeCode && store.reconnectionComparison != .different {
                         Text("Claude Code is using this account right now. Reconnect is available when it finishes.")
                             .font(.caption).foregroundStyle(.orange)
                     }
