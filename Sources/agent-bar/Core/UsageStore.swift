@@ -110,8 +110,8 @@ final class UsageStore: ObservableObject {
     private let loadAccount: (@Sendable (UsageAccount, OperationControl) async -> ProviderSnapshot)?
     private let claudeCode: ClaudeCodeSwitcher?
     private let claudeCodeBrowser: BrowserLoginLauncher
-    // The engine removes one saved login at a time and sends a second request away as if a switch were running, so two
-    // deletions at once must take turns.
+    // The engine does one thing at a time and sends a second request away. A saved login is removed while this is held, so
+    // two deletions at once take turns, and a switch that is pressed meanwhile waits for the removal instead of being sent away.
     private let savedLoginLock = NSLock()
     private var refreshTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
@@ -613,7 +613,7 @@ final class UsageStore: ObservableObject {
                 if let engine { try turn.withLock { try engine.removeLendLogin(for: account.id) } }
                 return .removed
             } catch {
-                return Self.isClaudeCodeBusy(error) ? .waitsForClaudeCode : .failed(error.localizedDescription)
+                return error is ClaudeCodeBusyError ? .waitsForClaudeCode : .failed(error.localizedDescription)
             }
         }.value
         switch removal {
@@ -622,6 +622,15 @@ final class UsageStore: ObservableObject {
         case .waitsForClaudeCode:
             // A switch is using the saved logins' folders and the engine will not remove one meanwhile. That is no failure
             // to tell anybody about: the account stays out of sight and pending, and the end of the switch finishes it.
+            // If no switch is running by now, the one that turned this away ended while this deletion was still going: its
+            // clean-up went past without this account and no other end will come for it. Go on after a moment. The pause
+            // keeps an engine that is busy with something the store does not know of from being asked again and again at once.
+            if claudeCodeActivity == nil {
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(100))
+                    await self?.retryCleanup(allowUserInteraction: false)
+                }
+            }
             return
         }
         next = registry; next.accounts.removeAll { $0.id == account.id }; next.repairRepresentatives(); _ = commit(next)
@@ -633,14 +642,6 @@ final class UsageStore: ObservableObject {
         // The files are gone; the saved login is not, because a switch is running.
         case waitsForClaudeCode
         case failed(String)
-    }
-
-    // The engine turns a removal away, with nothing removed, while a switch or the recovery at launch uses its folders.
-    // It says so only in words (`ClaudeCodeSwitcher.removeLendLogin`); a test runs the real engine through a real switch
-    // so that new words there are noticed.
-    nonisolated private static func isClaudeCodeBusy(_ error: Error) -> Bool {
-        guard case AccountError.message(let text) = error else { return false }
-        return text.hasPrefix("A Claude Code switch is running.")
     }
 
     // MARK: Claude Code
@@ -767,10 +768,13 @@ final class UsageStore: ObservableObject {
         let id = activity.id
         claudeCodeActivity = activity
         let accounts = registry.accounts
+        let removing = savedLoginLock
         // The engine blocks, and tells its progress and the sign-in page from its own thread, in order.
         claudeCodeSwitchTask = Task { [weak self] in
             let outcome = await Task.detached(priority: .utility) {
-                claudeCode.switchAccount(
+                // A saved login that is being removed has the engine for a moment. Wait for it, or the engine sends this away.
+                removing.withLock {}
+                return claudeCode.switchAccount(
                     to: account, among: accounts, confirmedLosing: confirmed, control: control,
                     progress: { step in
                         DispatchQueue.main.async { MainActor.assumeIsolated { self?.claudeCodeProgress(step, activity: id) } }

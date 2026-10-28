@@ -793,7 +793,8 @@ struct ClaudeCodeSwitchTests {
         runOnNewThread { _ = f.switchTo(target); finished.signal() }
         #expect(hold.entered.wait(timeout: .now() + 20) == .success)
 
-        #expect(throws: AccountError.self) { try f.switcher.removeLendLogin(for: other.id) }
+        #expect(throws: ClaudeCodeBusyError()) { try f.switcher.removeLendLogin(for: other.id) }
+        #expect(ClaudeCodeBusyError().localizedDescription == "A Claude Code switch is running. Try again when it has finished.")
         #expect(f.world.hasItem(f.lendSlot(other)) && f.lendFolderExists(other))
         hold.release.signal()
         #expect(finished.wait(timeout: .now() + 20) == .success)

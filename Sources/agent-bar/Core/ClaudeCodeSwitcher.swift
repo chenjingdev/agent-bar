@@ -116,6 +116,12 @@ struct ClaudeCodeSwitchJournal: Codable, Equatable, Sendable {
     var startedAt: Date
 }
 
+// What `removeLendLogin` throws while a switch, the recovery at launch or another removal has the engine. Nothing was
+// removed; it can be asked again. A kind of its own, so that nobody has to read the words to tell it from a failure.
+struct ClaudeCodeBusyError: LocalizedError, Equatable, Sendable {
+    var errorDescription: String? { "A Claude Code switch is running. Try again when it has finished." }
+}
+
 final class ClaudeCodeSwitcher: @unchecked Sendable {
     static let loginTimeout: TimeInterval = 60
     // Pauses before the second and third try at lending the previous login back.
@@ -178,11 +184,9 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
     }
 
     // For deleting an account: its lend folder and Keychain item go, nothing else does. It waits for no switch: while
-    // one is running it throws.
+    // one is running it throws `ClaudeCodeBusyError`.
     func removeLendLogin(for accountID: UUID) throws {
-        guard beginOperation() else {
-            throw AccountError.message("A Claude Code switch is running. Try again when it has finished.")
-        }
+        guard beginOperation() else { throw ClaudeCodeBusyError() }
         defer { endOperation() }
         try dropLend(accountID)
     }

@@ -966,6 +966,7 @@ struct UsageStoreClaudeCodeTests {
     @Test func deletingAClaudeAccountRemovesTheLoginSavedForClaudeCodeAndNothingElse() async throws {
         let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b", "c"]); defer { f.close() }
         await f.start()
+        #expect(f.store.claudeCodeEnabled)
         let b = f.account("b"), c = f.account("c")
         let defaultToken = try #require(f.world.token(in: f.switching.defaultSlot))
         let defaultIdentity = try Data(contentsOf: f.switching.defaultSlot.identityFile)
@@ -1028,9 +1029,18 @@ struct UsageStoreClaudeCodeTests {
         #expect(waiting.deletionPending && f.panel("c") == .hidden, "gone from the windows, still to be finished")
         #expect(f.switching.lendFolderExists(c) && f.world.hasItem(f.switching.lendSlot(c)))
 
+        // Nothing tries again while the switch runs: a file put back where a try would remove it stays.
+        let marker = f.files.root.appendingPathComponent("usage/\(c.id.uuidString)/marker")
+        try f.files.createPrivateDirectory(marker.deletingLastPathComponent())
+        try Data("x".utf8).write(to: marker)
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+
         hold.release.signal()
         await f.finish()
 
+        // The clean-up the switch's end does is a whole deletion again: the file is gone too.
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
         #expect(f.store.accounts.map(\.name) == ["a", "b"] && f.store.errorMessage == nil)
         #expect(try f.files.load().accounts.map(\.name) == ["a", "b"])
         #expect(!f.switching.lendFolderExists(c) && !f.world.hasItem(f.switching.lendSlot(c)))
@@ -1062,6 +1072,57 @@ struct UsageStoreClaudeCodeTests {
         #expect(try f.files.load().accounts.map(\.name) == ["a"])
         #expect(!f.switching.lendFolderExists(b) && !f.switching.lendFolderExists(c))
         #expect(!f.world.hasItem(f.switching.lendSlot(b)) && !f.world.hasItem(f.switching.lendSlot(c)))
+    }
+
+    @Test func aDeletionTurnedAwayWhileNoSwitchIsRunningIsTriedAgainByItself() async throws {
+        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b", "c"]); defer { f.close() }
+        await f.start()
+        let c = f.account("c")
+        // The engine is held by somebody the store does not know of. That is how the store sees the moment in which a switch
+        // has just ended while the engine turned the removal away: the end of that switch cleaned up without this deletion,
+        // which was still running, and no later end of a switch will come for it.
+        let engine = f.engine
+        let hold = f.gates.holdKeychain()
+        let finished = DispatchSemaphore(value: 0)
+        runOnNewThread { _ = try? engine.removeLendLogin(for: UUID()); finished.signal() }
+        try await waitFor("the engine to be held") { hold.entered.wait(timeout: .now()) == .success }
+
+        await f.store.delete(c)
+
+        #expect(f.store.errorMessage == nil && f.store.claudeCodeActivity == nil)
+        #expect(f.store.accounts.first { $0.id == c.id }?.deletionPending == true && f.switching.lendFolderExists(c))
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(f.store.accounts.contains { $0.id == c.id }, "turned away again while the engine is still held")
+
+        hold.release.signal()
+        try await waitFor("the deletion to go on by itself", timeout: 5) { !f.store.accounts.contains { $0.id == c.id } }
+        try await waitFor("the other removal to end") { finished.wait(timeout: .now()) == .success }
+        #expect(!f.switching.lendFolderExists(c) && !f.world.hasItem(f.switching.lendSlot(c)) && f.store.errorMessage == nil)
+        #expect(try f.files.load().accounts.map(\.name) == ["a", "b"])
+    }
+
+    @Test func aSwitchPressedWhileASavedLoginIsBeingRemovedWaitsForItInsteadOfBeingTurnedAway() async throws {
+        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b", "c"]); defer { f.close() }
+        await f.start()
+        let hold = f.gates.holdKeychain()
+        // b's saved login is being removed: the engine is inside, waiting for the Keychain.
+        let deleting = Task { await f.store.delete(f.account("b")) }
+        try await waitFor("the removal") { hold.entered.wait(timeout: .now()) == .success }
+
+        #expect(f.enabled("c"))
+        f.press("c")
+        try await Task.sleep(for: .milliseconds(300))
+        // Not sent away with "Another Claude Code switch is still running.": the switch is still there, waiting its turn.
+        #expect(f.store.claudeCodeActivity?.targetID == f.account("c").id && f.result("c") == nil)
+
+        hold.release.signal()
+        await deleting.value
+        await f.finish()
+
+        #expect(f.result("c")?.succeeded == true && f.switching.defaultEmail == "c@example.test")
+        #expect(f.switching.lendEmail(f.account("a")) == "a@example.test", "a's login was lent back to its own folder")
+        #expect(f.store.accounts.map(\.name) == ["a", "c"] && f.store.errorMessage == nil)
+        #expect(!f.switching.lendFolderExists(f.account("b")) && !f.world.hasItem(f.switching.lendSlot(f.account("b"))))
     }
 
     @Test func aSavedLoginThatCannotBeRemovedIsReportedLikeAnyOtherFailedDeletion() async throws {
@@ -1105,11 +1166,14 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.switching.defaultEmail == "a@example.test")
     }
 
-    @Test func theDeleteQuestionTellsAboutTheSavedClaudeCodeLoginOnlyForAClaudeAccount() {
-        // A Codex account is asked about with the words the question always had.
-        #expect(AccountManagementView.deleteMessage(for: .codex)
-                == "This removes only the selected account’s AgentBar credentials and usage cache. External CLI sign-ins are preserved.")
-        #expect(AccountManagementView.deleteMessage(for: .claude)
+    @Test func theDeleteQuestionTellsAboutTheSavedClaudeCodeLoginOnlyWhereOneCanBeSaved() {
+        let always = "This removes only the selected account’s AgentBar credentials and usage cache. External CLI sign-ins are preserved."
+        // A Codex account is asked about with the words the question always had, whether or not Use in Claude Code is on.
+        #expect(AccountManagementView.deleteMessage(for: .codex, claudeCodeEnabled: true) == always)
+        #expect(AccountManagementView.deleteMessage(for: .codex, claudeCodeEnabled: false) == always)
+        // So is a Claude account in a run without Use in Claude Code, which saves no sign-in and removes none.
+        #expect(AccountManagementView.deleteMessage(for: .claude, claudeCodeEnabled: false) == always)
+        #expect(AccountManagementView.deleteMessage(for: .claude, claudeCodeEnabled: true)
                 == "This removes only the selected account’s AgentBar credentials and usage cache, plus any sign-in AgentBar saved on this Mac "
                 + "for Use in Claude Code. If Claude Code is using this account now, Claude Code stays signed in. External CLI sign-ins are preserved.")
     }
@@ -1139,6 +1203,10 @@ struct UsageStoreClaudeCodeTests {
         #expect(!FileManager.default.fileExists(atPath: login.path) && !FileManager.default.fileExists(atPath: files.cache(account).path))
         #expect(!FileManager.default.fileExists(atPath: files.lendRoot.path), "no switcher, no saved logins to look for")
         #expect(try files.load().accounts.map(\.name) == ["b"])
+        // Nothing is saved or removed in such a run, so the question for a Claude account does not say it is.
+        #expect(!store.claudeCodeEnabled)
+        #expect(AccountManagementView.deleteMessage(for: .claude, claudeCodeEnabled: store.claudeCodeEnabled)
+                == AccountManagementView.deleteMessage(for: .codex, claudeCodeEnabled: store.claudeCodeEnabled))
     }
 
     // MARK: Nothing without a switcher

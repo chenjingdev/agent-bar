@@ -62,15 +62,18 @@ struct AccountManagementView: View {
             Button("Delete", role: .destructive) {
                 Task { await store.delete(account) }; deleting = nil
             }
-        } message: { account in Text(Self.deleteMessage(for: account.provider)) }
+        } message: { account in
+            Text(Self.deleteMessage(for: account.provider, claudeCodeEnabled: store.claudeCodeEnabled))
+        }
     }
 
     // What the Delete confirmation says. A Claude account also has a sign-in AgentBar saved for Claude Code, and that goes
-    // too; Claude Code's own login is left alone even when it belongs to this account.
-    nonisolated static func deleteMessage(for provider: ProviderKind) -> String {
+    // too; Claude Code's own login is left alone even when it belongs to this account. A run without "Use in Claude Code"
+    // (a development run) saves and removes nothing of the kind, so it says nothing about it.
+    nonisolated static func deleteMessage(for provider: ProviderKind, claudeCodeEnabled: Bool) -> String {
         let removes = "This removes only the selected account’s AgentBar credentials and usage cache"
         let preserved = "External CLI sign-ins are preserved."
-        guard provider == .claude else { return "\(removes). \(preserved)" }
+        guard provider == .claude, claudeCodeEnabled else { return "\(removes). \(preserved)" }
         return "\(removes), plus any sign-in AgentBar saved on this Mac for Use in Claude Code. "
             + "If Claude Code is using this account now, Claude Code stays signed in. \(preserved)"
     }

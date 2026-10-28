@@ -140,6 +140,8 @@ final class StoreFixture {
     let plan: SnapshotPlan
     let opened: Recorder<URL>
     let store: UsageStore
+    // The engine the store works through; a test can use it beside the store, as somebody else who has the engine busy.
+    let engine: ClaudeCodeSwitcher
     let accounts: [UsageAccount]
     // The hold on the first Keychain question, when the fixture was made with `holdingKeychain`.
     let launchHold: FakeClaudeWorld.Hold?
@@ -175,6 +177,7 @@ final class StoreFixture {
         self.gates = gates
         self.plan = plan
         self.opened = opened
+        self.engine = switcher
         self.accounts = made
         self.suite = suite
         self.defaults = defaults
