@@ -31,6 +31,7 @@ final class StatusBarCoordinator {
     func positionID(for id: UUID) -> UUID? { controllers[id]?.positionID }
     func popoverAppearanceName(for id: UUID) -> NSAppearance.Name? { controllers[id]?.popoverAppearanceName }
     func popover(for id: UUID) -> NSPopover? { controllers[id]?.popoverObject }
+    func willOpenPopover(for id: UUID) { controllers[id]?.willOpenPopover() }
     func statusItemAppearanceName(for id: UUID) -> NSAppearance.Name? { controllers[id]?.statusItemAppearanceName }
     var groupOrderOnScreen: [UUID] { controllersFromLeftToRight().map(\.popoverGroupID) }
     func removeAll() { controllers.values.forEach { $0.remove() }; controllers.removeAll() }
@@ -151,12 +152,15 @@ final class StatusBarController {
         }
         popover.behavior = .transient
         popover.contentViewController = host
-        // Closing counts for the accounts it showed: a result line outlives the first close and is cleared by the next.
+        // Closing counts for the accounts the popover showed while it was open: a result line outlives the first close and
+        // is cleared by the next.
         closeObserver = NotificationCenter.default.addObserver(forName: NSPopover.didCloseNotification, object: popover, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.popoverDidClose() }
         }
     }
-    private func popoverDidClose() { store.popoverDidClose(accountIDs: popoverAccountIDs) }
+    private func popoverDidClose() { store.popoverDidClose(group: groupID) }
+    // The popover is about to open (`toggle` calls this).
+    func willOpenPopover() { store.popoverWillOpen(group: groupID, accountIDs: popoverAccountIDs) }
     func represent(_ id: UUID) {
         guard groupID != id else { return }
         popover.close()
@@ -193,7 +197,7 @@ final class StatusBarController {
         if popover.isShown { popover.performClose(sender) }
         else {
             // The login Claude Code uses may have been changed in a terminal since it was last read.
-            store.popoverWillOpen()
+            willOpenPopover()
             // Size to the tallest account's cards instead of leaving a fixed blank area.
             let wanted = entries.map { entry -> CGFloat in
                 let cards = entry.metrics.filter { $0.window?.utilization != nil }.count

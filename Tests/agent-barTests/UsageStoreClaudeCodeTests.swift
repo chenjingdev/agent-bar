@@ -202,6 +202,30 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.panel("x") == .hidden)
     }
 
+    @Test func theHeaderIsTallerByTheEstimateWhenTheControlIsThere() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
+        await f.start()
+        await f.refresh()
+        // The same account and usage in a store that has no Claude Code.
+        let suite = "claude-code-height-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let plain = UsageStore(settings: AppSettings(defaults: defaults), files: f.files, autoRefresh: false,
+                               loadAccount: { account, _ in SnapshotPlan.usage(for: account.provider) })
+        defer { plain.shutdown() }
+        await plain.refresh()
+        let b = f.account("b")
+        func height(of store: UsageStore) -> CGFloat {
+            let host = NSHostingView(rootView: AccountPopoverView(accountID: b.id).environmentObject(store))
+            host.frame = NSRect(x: 0, y: 0, width: 392, height: 800)
+            host.layoutSubtreeIfNeeded()
+            return host.fittingSize.height
+        }
+
+        #expect(f.store.claudeCodePanel(for: b).control != .hidden && plain.claudeCodePanel(for: b) == .hidden)
+        let growth = height(of: f.store) - height(of: plain)
+        #expect(abs(growth - CGFloat(ClaudeCodePanel.headerGrowth)) < 1, "the popover grew by \(growth)")
+    }
+
     // MARK: Using an account
 
     @Test func pressingTheButtonSwitchesClaudeCodeAndLeavesAResultLine() async throws {
@@ -242,6 +266,57 @@ struct UsageStoreClaudeCodeTests {
         f.store.popoverDidClose(accountIDs: [b])
         #expect(f.result("b") == nil, "closing it once more clears it")
         #expect(f.store.claudeCodeResults.isEmpty)
+    }
+
+    @Test func aResultOnATabThatWasNotShownIsNotClearedByClosings() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
+        await f.start()
+        f.press("b")
+        await f.finish()
+        let a = f.account("a").id, b = f.account("b").id, group = UUID()
+
+        // A popover with a tab for each account opens on the first one, a, and is closed twice: nobody saw b's result.
+        for _ in 0..<2 {
+            f.store.popoverWillOpen(group: group, accountIDs: [a, b])
+            f.store.popoverDidClose(group: group)
+        }
+        #expect(f.store.claudeCodeResults[b]?.closes == 0 && f.result("b") != nil)
+
+        // The person flips to b's tab and closes: the first closing that b's result was seen through.
+        f.store.popoverWillOpen(group: group, accountIDs: [a, b])
+        f.store.popoverShows(b, group: group)
+        f.store.popoverDidClose(group: group)
+        #expect(f.store.claudeCodeResults[b]?.closes == 1)
+
+        // It opens on the tab it showed last, b's, and the next closing clears the result.
+        f.store.popoverWillOpen(group: group, accountIDs: [a, b])
+        f.store.popoverDidClose(group: group)
+        #expect(f.result("b") == nil)
+    }
+
+    @Test func whatAPopoverShowedWhileClosedOrInAnotherGroupDoesNotCount() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
+        await f.start()
+        f.press("b")
+        await f.finish()
+        let a = f.account("a").id, b = f.account("b").id, group = UUID(), other = UUID()
+
+        f.store.popoverShows(b, group: group)            // a tab shown while the popover is closed
+        f.store.popoverDidClose(group: group)
+        #expect(f.store.claudeCodeResults[b]?.closes == 0)
+
+        f.store.popoverWillOpen(group: other, accountIDs: [a])
+        f.store.popoverDidClose(group: other)            // another group's popover
+        #expect(f.store.claudeCodeResults[b]?.closes == 0)
+
+        // It opens on b, the tab it showed last.
+        f.store.popoverWillOpen(group: group, accountIDs: [a, b])
+        f.store.popoverDidClose(group: group)
+        #expect(f.store.claudeCodeResults[b]?.closes == 1 && f.store.shownAccount(in: group) == b)
+        // A tab that is gone is not what it starts on, and b is not among what it can show now.
+        f.store.popoverWillOpen(group: group, accountIDs: [a])
+        f.store.popoverDidClose(group: group)
+        #expect(f.store.claudeCodeResults[b]?.closes == 1)
     }
 
     @Test func aNewSwitchClearsWhatEarlierOnesSaid() async throws {
@@ -292,7 +367,7 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.panel("b").control == .inClaudeCode)
     }
 
-    @Test func aFailureThatMayHaveChangedTheLoginSaysSoAndNamesWhoNeedsTheBrowser() async throws {
+    @Test func aFailureThatChangedTheLoginIsNotToldTwiceAndNamesWhoNeedsTheBrowser() async throws {
         let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
         f.world.script("default", .writesAnotherAccount("other@example.test"))
         await f.start()
@@ -302,9 +377,40 @@ struct UsageStoreClaudeCodeTests {
 
         let result = try #require(f.result("b"))
         #expect(!result.succeeded)
-        #expect(result.message == "Claude Code is signed in to a different account than expected. Claude Code's login may have changed. b needs a browser sign-in next time.")
+        #expect(result.message == "Claude Code is signed in to a different account than expected. b needs a browser sign-in next time.")
         // The marker is read again from the real login: nobody registered is signed in now.
         #expect(f.store.claudeCodeAccountID == nil)
+    }
+
+    @Test func aFailureGetsTheWarningThatTheLoginMayHaveChangedOnlyWhenItsReasonDoesNotSayThat() {
+        func message(_ reason: String, nothingChanged: Bool) -> String {
+            UsageStore.claudeCodeFailureMessage(ClaudeCodeSwitchFailure(reason: reason, nothingChanged: nothingChanged))
+        }
+        // Nothing was touched: the reason stands alone.
+        #expect(message("Claude rejected the sign-in. Try again.", nothingChanged: true) == "Claude rejected the sign-in. Try again.")
+        // Something may have changed and the reason does not say it.
+        #expect(message("Claude Code is not signed in after switching.", nothingChanged: false)
+                == "Claude Code is not signed in after switching. Claude Code's login may have changed.")
+        #expect(message("Could not confirm which account Claude Code uses now.", nothingChanged: false)
+                == "Could not confirm which account Claude Code uses now. Claude Code's login may have changed.")
+        // The reason already says it.
+        for reason in ["Claude Code's login changed unexpectedly. Check it in Claude Code.", "Claude Code's login changed while switching. Try again.",
+                       "Claude Code is signed in to a different account than expected."] {
+            #expect(message(reason, nothingChanged: false) == reason)
+        }
+    }
+
+    @Test func aLoginRenewedByAnOpenSessionIsReportedOnceWithWhoNeedsTheBrowser() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
+        f.world.script("default", .openSessionRenewsPreviousInstead)
+        await f.start()
+
+        f.press("b")
+        await f.finish()
+
+        let result = try #require(f.result("b"))
+        #expect(!result.succeeded)
+        #expect(result.message == "Claude Code's login changed while switching. Try again. b needs a browser sign-in next time.")
     }
 
     // MARK: While a switch runs
@@ -334,6 +440,12 @@ struct UsageStoreClaudeCodeTests {
         await f.store.delete(f.account("a"))
         await f.store.delete(f.account("b"))
         #expect(f.store.accounts.map(\.name) == ["a", "b", "c"] && !f.store.accounts.contains(where: \.deletionPending))
+        // Somebody who confirmed the deletion is told why nothing happened; a leftover deletion retried by itself is not.
+        #expect(f.store.errorMessage == "Claude Code is switching accounts. Delete this account after it finishes.")
+        f.store.errorMessage = nil
+        await f.store.delete(f.account("a"), allowUserInteraction: false)
+        await f.store.retryCleanup(allowUserInteraction: false)
+        #expect(f.store.errorMessage == nil && f.store.accounts.count == 3)
         // `startLogin` begins with this question; it is asked here instead of starting a real sign-in.
         #expect(!f.store.canStartLogin(replacing: f.account("a")) && !f.store.canStartLogin(replacing: f.account("b")))
         #expect(f.store.canStartLogin(replacing: f.account("c")) && f.store.canStartLogin(), "other accounts and a new one are not held back")
@@ -346,6 +458,41 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.enabled("a") && f.enabled("c") && f.panel("b").control == .inClaudeCode)
         // One switch ran, not three.
         #expect(f.gates.calls.filter { $0 == "login" }.count == 2, "one login into the default slot and one lending a's back")
+    }
+
+    @Test func aReconnectUnderReviewIsNotRegisteredWhileTheSwitchUsesItsAccount() async throws {
+        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b"]); defer { f.close() }
+        await f.start()
+        let b = f.account("b"), c = f.account("c")
+        func signedInAgain(_ account: UsageAccount, as identity: AccountIdentity? = nil) -> PendingAccountLogin {
+            PendingAccountLogin(account: UsageAccount(id: UUID(), provider: .claude, name: account.name,
+                                                      identity: identity ?? account.identity, credentialID: UUID()), replacing: account.id)
+        }
+        let hold = f.world.hold(login: "default")
+
+        f.press("b")
+        try await waitFor("the login command") { hold.entered.wait(timeout: .now()) == .success }
+
+        // A reconnect of b, started before the switch, is confirmed while the switch runs: it waits.
+        f.store.reviewSignedIn(signedInAgain(b))
+        #expect(f.store.reconnectLockedByClaudeCode)
+        f.store.confirmLogin()
+        #expect(f.store.accounts.first { $0.id == b.id }?.credentialID == b.credentialID, "b stays registered as it was")
+        #expect(f.store.pendingLogin != nil, "the sign-in stays under review")
+        #expect(f.store.errorMessage == "Claude Code is switching accounts. Press Reconnect again after it finishes.")
+
+        // A reconnect of an account the switch does not use is not held back, and neither is adding the sign-in as a new account.
+        f.store.reviewSignedIn(signedInAgain(c))
+        #expect(!f.store.reconnectLockedByClaudeCode)
+        f.store.errorMessage = nil
+        f.store.reviewSignedIn(signedInAgain(b, as: AccountIdentity(email: "new@example.test", organization: "new", organizationID: "org-new")))
+        f.store.confirmLogin(addAsNew: true)
+        #expect(f.store.accounts.count == 4 && f.store.pendingLogin == nil && f.store.errorMessage == nil)
+
+        hold.release.signal()
+        await f.finish()
+        f.store.reviewSignedIn(signedInAgain(b))
+        #expect(!f.store.reconnectLockedByClaudeCode, "when the switch is over the reconnect can be confirmed")
     }
 
     // MARK: The question
@@ -439,7 +586,7 @@ struct UsageStoreClaudeCodeTests {
 
         // The page was opened by the store's own browser, once, and the first line says to sign in once.
         #expect(f.opened.values == [FakeClaudeWorld.browserURL])
-        #expect(f.panel("b").lines == [.progress(ClaudeCodeBrowserReason.noSavedLogin.message, cancellable: true)])
+        #expect(f.panel("b").lines == [.progress("Sign in as b@example.test in the browser once so Claude Code can use this account.", cancellable: true)])
         // Another account's window shows that a switch is running, without a Cancel of its own.
         #expect(f.panel("c").lines == [.progress("Switching Claude Code to b…", cancellable: false)])
 
@@ -452,6 +599,30 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.switching.defaultEmail == "a@example.test" && f.world.token(in: f.switching.defaultSlot) == token)
         #expect(!f.switching.lendFolderExists(f.account("b")) && !f.gates.calls.contains("login"))
         #expect(f.panel("a").control == .inClaudeCode && f.enabled("b"))
+    }
+
+    @Test func aSavedLoginThatExpiredAsksForTheSameAccountInTheBrowser() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
+        // b's saved login was used up elsewhere, so the handover is refused and the browser is needed.
+        f.world.revoke(try #require(f.world.token(in: f.switching.lendSlot(f.account("b")))))
+        f.world.plan(.signIn("b@example.test"))
+        let hold = f.gates.holdBrowser()
+        await f.start()
+
+        f.press("b")
+        try await waitFor("the browser page") { hold.entered.wait(timeout: .now()) == .success }
+        try await waitFor("the cancel button") { f.store.claudeCodeActivity?.canCancel == true }
+
+        #expect(f.panel("b").lines == [.progress("The saved sign-in expired. Sign in as b@example.test in the browser again.", cancellable: true)])
+        f.store.cancelClaudeCodeSwitch()
+        await f.finish()
+    }
+
+    @Test func theBrowserLineFallsBackToItsPlainWordsWithoutAnAddress() {
+        for reason in [ClaudeCodeBrowserReason.noSavedLogin, .savedLoginExpired] {
+            #expect(reason.message(signingInAs: nil) == reason.message && reason.message(signingInAs: "") == reason.message)
+            #expect(reason.message(signingInAs: "x@example.test").contains("x@example.test"))
+        }
     }
 
     @Test func cancelOnlyWorksWhileTheBrowserIsWaited() async throws {
@@ -595,6 +766,7 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.store.claudeCodeLockNote(for: f.account("prev")) == "Checking Claude Code")
         await f.store.delete(f.account("prev"))
         #expect(f.store.accounts.count == 3 && !f.store.accounts.contains(where: \.deletionPending))
+        #expect(f.store.errorMessage == "AgentBar is still checking Claude Code. Delete this account in a moment.")
 
         hold.release.signal()
         await launching.value
@@ -825,13 +997,48 @@ struct UsageStoreClaudeCodeTests {
         let popover = try #require(coordinator.popover(for: b))
         #expect(coordinator.popoverAccountIDs(for: b) == [b])
 
+        coordinator.willOpenPopover(for: b)
         NotificationCenter.default.post(name: NSPopover.didCloseNotification, object: popover)
-        try await waitFor("the first close") { f.store.claudeCodeResults[b]?.closes == 1 }
+        try await waitFor("the first closing") { f.store.claudeCodeResults[b]?.closes == 1 }
         #expect(f.result("b") != nil)
 
+        // A closing that no opening came before has nothing to count.
         NotificationCenter.default.post(name: NSPopover.didCloseNotification, object: popover)
-        try await waitFor("the second close") { f.store.claudeCodeResults[b] == nil }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(f.store.claudeCodeResults[b]?.closes == 1)
+
+        coordinator.willOpenPopover(for: b)
+        NotificationCenter.default.post(name: NSPopover.didCloseNotification, object: popover)
+        try await waitFor("the second closing") { f.store.claudeCodeResults[b] == nil }
         #expect(f.result("b") == nil)
+    }
+
+    @Test func aGroupPopoverCountsClosingsOnlyForTheAccountItShowed() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
+        await f.start()
+        f.press("b")
+        await f.finish()
+        let a = f.account("a").id, b = f.account("b").id
+        f.store.updateDisplay { $0.update(a) { $0.group = 1 }; $0.update(b) { $0.group = 1 } }
+        let coordinator = StatusBarCoordinator(store: f.store, providers: [.claude])
+        defer { coordinator.removeAll() }
+        let group = DisplayConfiguration.groupKey(1)
+        try await waitFor("the group's popover") { coordinator.popoverAccountIDs(for: group) == [a, b] }
+        let popover = try #require(coordinator.popover(for: group))
+
+        // The popover opens on its first tab, a, and closes twice; b's result was never in front of anybody.
+        for _ in 0..<2 {
+            coordinator.willOpenPopover(for: group)
+            NotificationCenter.default.post(name: NSPopover.didCloseNotification, object: popover)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(f.store.claudeCodeResults[b]?.closes == 0 && f.result("b") != nil)
+
+        // The person flips to b's tab, and the popover closes.
+        coordinator.willOpenPopover(for: group)
+        f.store.popoverShows(b, group: group)
+        NotificationCenter.default.post(name: NSPopover.didCloseNotification, object: popover)
+        try await waitFor("the closing that b was shown through") { f.store.claudeCodeResults[b]?.closes == 1 }
     }
 }
 

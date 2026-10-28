@@ -22,6 +22,8 @@ enum ClaudeCodeAvailability: Equatable {
 struct ClaudeCodeActivity {
     let id = UUID()
     let targetID: UUID
+    // The address the target is registered with: the browser has to be signed in to it.
+    let targetEmail: String?
     // The account Claude Code was signed in to when the button was pressed, if AgentBar has it.
     let previousID: UUID?
     let control: OperationControl
@@ -78,6 +80,9 @@ final class UsageStore: ObservableObject {
     private(set) var claudeCodeSwitchTask: Task<Void, Never>?
     private(set) var claudeCodeReading: Task<Void, Never>?
     private var claudeCodeEpoch = 0
+    // The account each menu bar group's popover shows, and the accounts it has shown since it last opened.
+    private var popoverShown: [UUID: UUID] = [:]
+    private var popoverSeen: [UUID: Set<UUID>] = [:]
     private var claudeCodeReadAgain = false
     private var claudeCodeVersionDue = false
 
@@ -462,8 +467,7 @@ final class UsageStore: ObservableObject {
             if !control.cancelled, case .success(let identity) = result {
                 var completed = candidate; completed.identity = identity
                 completed.name = identity.email ?? "\(provider.displayName) account"
-                pendingLogin = PendingAccountLogin(account: completed, replacing: replacing?.id)
-                loginMessage = "Review the signed-in account, then register it."
+                reviewSignedIn(PendingAccountLogin(account: completed, replacing: replacing?.id))
             } else {
                 loginMessage = nil
                 if !control.cancelled, case .failure(let error) = result { errorMessage = error.localizedDescription }
@@ -492,6 +496,12 @@ final class UsageStore: ObservableObject {
         }, cancelled: { [weak self] in self?.cancelLogin() })
     }
 
+    // The sign-in finished: the account it signed in to is shown for review before it is registered.
+    func reviewSignedIn(_ pending: PendingAccountLogin) {
+        pendingLogin = pending
+        loginMessage = "Review the signed-in account, then register it."
+    }
+
     func openPrivateLogin() {
         guard canOpenPrivateLogin, isLoggingIn, let url = loginAuthorizationURL, let control = loginControl else { return }
         presentLogin(url, mode: .privateWindow, control: control)
@@ -504,6 +514,12 @@ final class UsageStore: ObservableObject {
     }
     func confirmLogin(replaceUnverified: Bool = false, addAsNew: Bool = false) {
         guard let pending = pendingLogin else { return }
+        // Registering over an account a switch is using would change its identity under the switch. The sign-in stays under
+        // review, so it can be registered once the switch is over.
+        if pending.replacing != nil, !addAsNew, reconnectLockedByClaudeCode {
+            errorMessage = claudeCodeBusyMessage("Press Reconnect again")
+            return
+        }
         var next = registry
         var incoming = pending.account
         if let duplicate = next.accounts.first(where: {
@@ -567,9 +583,13 @@ final class UsageStore: ObservableObject {
         for account in accounts where account.deletionPending { await delete(account, allowUserInteraction: allowUserInteraction) }
     }
     func delete(_ account: UsageAccount, allowUserInteraction: Bool = true) async {
-        // A leftover deletion of an account a switch is using is picked up by a later retry.
-        guard !deletingIDs.contains(account.id), !isClaudeCodeLocked(account),
-              let index = registry.accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        guard !deletingIDs.contains(account.id), let index = registry.accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        // A switch is using this account's logins. A person who asked for the deletion is told; a leftover deletion that
+        // is retried by itself waits for a later retry.
+        guard !isClaudeCodeLocked(account) else {
+            if allowUserInteraction { errorMessage = claudeCodeBusyMessage("Delete this account") }
+            return
+        }
         let account = registry.accounts[index]
         deletingIDs.insert(account.id)
         defer { deletingIDs.remove(account.id) }
@@ -590,6 +610,8 @@ final class UsageStore: ObservableObject {
     // MARK: Claude Code
 
     var claudeCodeLogURL: URL { LimitResetLog.claudeCodeSwitchURL(root: files.root) }
+    // Whether "Use in Claude Code" exists at all in this run.
+    var claudeCodeEnabled: Bool { claudeCode != nil }
 
     // The accounts whose Delete and Reconnect must wait: the two a running switch involves, or every Claude account
     // while a switch cut short last time is being finished (the journal says which, but only the engine reads it).
@@ -603,6 +625,16 @@ final class UsageStore: ObservableObject {
         return ids
     }
     func isClaudeCodeLocked(_ account: UsageAccount) -> Bool { claudeCodeLockedIDs.contains(account.id) }
+    // Whether the sign-in under review would replace an account a Claude Code switch is using.
+    var reconnectLockedByClaudeCode: Bool {
+        guard let id = pendingLogin?.replacing, let account = registry.accounts.first(where: { $0.id == id }) else { return false }
+        return isClaudeCodeLocked(account)
+    }
+    // Why an account cannot be changed now, and when it can: `action` is what the person asked for.
+    private func claudeCodeBusyMessage(_ action: String) -> String {
+        claudeCodeActivity == nil ? "AgentBar is still checking Claude Code. \(action) in a moment."
+                                  : "Claude Code is switching accounts. \(action) after it finishes."
+    }
     // Why the account is locked, for the Accounts list; nil when it is not.
     func claudeCodeLockNote(for account: UsageAccount) -> String? {
         guard isClaudeCodeLocked(account) else { return nil }
@@ -694,8 +726,8 @@ final class UsageStore: ObservableObject {
         claudeCodeResults.removeAll()
         claudeCodeEpoch += 1
         let control = OperationControl()
-        let activity = ClaudeCodeActivity(targetID: account.id, previousID: claudeCodeAccountID, control: control,
-                                          message: ClaudeCodeSwitchStep.checkingVersion.message)
+        let activity = ClaudeCodeActivity(targetID: account.id, targetEmail: account.identity?.email, previousID: claudeCodeAccountID,
+                                          control: control, message: ClaudeCodeSwitchStep.checkingVersion.message)
         let id = activity.id
         claudeCodeActivity = activity
         let accounts = registry.accounts
@@ -717,10 +749,10 @@ final class UsageStore: ObservableObject {
 
     private func claudeCodeProgress(_ step: ClaudeCodeSwitchStep, activity id: UUID) {
         guard var activity = claudeCodeActivity, activity.id == id else { return }
-        if case .waitingForBrowser = step {
+        if case .waitingForBrowser(let reason) = step {
             // A cancel that is already on its way keeps its words.
             activity.canCancel = !activity.control.cancelled
-            activity.message = activity.control.cancelled ? "Cancelling…" : step.message
+            activity.message = activity.control.cancelled ? "Cancelling…" : reason.message(signingInAs: activity.targetEmail)
         } else {
             activity.canCancel = false
             activity.message = step.message
@@ -755,10 +787,17 @@ final class UsageStore: ObservableObject {
         case .cancelled:
             if let failure = activity.failure { claudeCodeResults[target.id] = ClaudeCodeResult(succeeded: false, message: failure) }
         case .failed(let failure):
-            let message = failure.reason + (failure.nothingChanged ? "" : " Claude Code's login may have changed.")
+            let message = Self.claudeCodeFailureMessage(failure)
             claudeCodeResults[target.id] = ClaudeCodeResult(succeeded: false, message: claudeCodeNotes(message, needsLogin: failure.needsLogin))
         }
         refreshClaudeCodeState(checkVersion: false)
+    }
+
+    // The engine's one-line reason, with a warning that the login may have changed unless the reason already says so.
+    nonisolated static func claudeCodeFailureMessage(_ failure: ClaudeCodeSwitchFailure) -> String {
+        let reason = failure.reason.lowercased()
+        let saysSo = ["login changed", "different account"].contains { reason.contains($0) }
+        return failure.reason + (failure.nothingChanged || saysSo ? "" : " Claude Code's login may have changed.")
     }
 
     // The accounts whose saved login could not be kept sign in with the browser the next time.
@@ -846,8 +885,31 @@ final class UsageStore: ObservableObject {
         return ClaudeCodeReading(availability: availability, accountID: claudeCode.currentAccountID(among: accounts))
     }
 
-    // The popover is about to open: the login may have been changed in a terminal since it last did.
-    func popoverWillOpen() { refreshClaudeCodeState(checkVersion: false) }
+    // The popover of menu bar group `group` is about to open. The login may have been changed in a terminal since it last
+    // did. The popover starts on the account it showed last, or the first one it can show; closing counts only for the
+    // accounts it shows while it is open.
+    func popoverWillOpen(group: UUID? = nil, accountIDs: [UUID] = []) {
+        refreshClaudeCodeState(checkVersion: false)
+        guard let group else { return }
+        let live = Set(liveAccounts.map(\.id))
+        let candidates = accountIDs.filter(live.contains)
+        let start = popoverShown[group].flatMap { candidates.contains($0) ? $0 : nil } ?? candidates.first
+        popoverSeen[group] = start.map { [$0] } ?? []
+    }
+
+    // The window says which of its accounts it shows now (a group's popover shows one at a time, chosen by tabs).
+    func popoverShows(_ accountID: UUID, group: UUID) {
+        popoverShown[group] = accountID
+        popoverSeen[group]?.insert(accountID)
+    }
+
+    func shownAccount(in group: UUID) -> UUID? { popoverShown[group] }
+
+    // The popover of `group` closed: it counts for the accounts it showed since it opened.
+    func popoverDidClose(group: UUID) {
+        guard let seen = popoverSeen.removeValue(forKey: group) else { return }
+        popoverDidClose(accountIDs: Array(seen))
+    }
 
     // Result lines outlive one closing of the popover that shows them, because the browser closes it too; the next
     // closing clears them. A question that was left open is dropped, as a coupon's confirmation is.

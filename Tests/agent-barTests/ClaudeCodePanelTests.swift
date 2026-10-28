@@ -13,7 +13,7 @@ struct ClaudeCodePanelTests {
                 == "Claude Code is signed in to an account that isn't in AgentBar. Switching removes that login from Claude Code.")
     }
 
-    @Test func theLinesTakeRoomInThePopoverOnlyWhenThereAreSome() {
+    @Test func theControlAndTheLinesTakeRoomInThePopover() {
         let none = ClaudeCodePanel(control: .inClaudeCode, lines: [])
         let progress = ClaudeCodePanel(control: .use(enabled: false, help: ""), lines: [.progress("Switching Claude Code…", cancellable: false)])
         let question = ClaudeCodePanel(control: .use(enabled: true, help: ""), lines: [.confirmation(email: "stranger@example.test")])
@@ -21,13 +21,14 @@ struct ClaudeCodePanelTests {
         let result = ClaudeCodePanel(control: .inClaudeCode, lines: [.result(succeeded: true, message: long, finishedAt: .now)])
         let short = ClaudeCodePanel(control: .inClaudeCode, lines: [.result(succeeded: true, message: "Done.", finishedAt: .now)])
 
-        #expect(none.estimatedHeight == 0 && ClaudeCodePanel.hidden.estimatedHeight == 0)
-        #expect(progress.estimatedHeight > 0)
+        #expect(ClaudeCodePanel.hidden.estimatedHeight == 0, "nothing is drawn")
+        #expect(none.estimatedHeight == ClaudeCodePanel.headerGrowth, "a control with no line under it still makes the header taller")
+        #expect(progress.estimatedHeight > ClaudeCodePanel.headerGrowth)
         #expect(question.estimatedHeight > progress.estimatedHeight, "the question has buttons and wraps")
         #expect(result.estimatedHeight > short.estimatedHeight, "a longer result wraps onto more lines")
     }
 
-    @Test func theResultLineOffersOpenLogOnlyWhenThereIsALogToOpen() throws {
+    @Test func theResultLineDrawsAnOpenLogButtonOnlyWhenItIsGivenAnActionForIt() throws {
         let at = Date(timeIntervalSince1970: 1_800_000_000)
         func picture(_ openLog: (() -> Void)?) throws -> Data {
             let lines: [ClaudeCodePanel.Line] = [.result(succeeded: true, message: "Claude Code now uses work.", finishedAt: at)]
@@ -39,7 +40,32 @@ struct ClaudeCodePanelTests {
             host.cacheDisplay(in: host.bounds, to: bitmap)
             return try #require(bitmap.representation(using: .png, properties: [:]))
         }
-        #expect(try picture({}) != picture(nil), "the button is drawn beside the result")
+        #expect(try picture({}) != picture(nil), "the button is drawn beside the result when there is an action to run")
+    }
+
+    @Test func aGroupPopoverTellsTheStoreWhichAccountItShows() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("claude-code-tabs-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = AccountFiles(root: root)
+        let first = UsageAccount(id: UUID(), provider: .codex, name: "first", credentialID: UUID())
+        let second = UsageAccount(id: UUID(), provider: .codex, name: "second", credentialID: UUID())
+        var registry = AccountRegistry(accounts: [first, second]); registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        let suite = "claude-code-tabs-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
+        defer { store.shutdown() }
+        let group = UUID()
+        // A window that is never shown still puts the popover's view on screen.
+        let host = NSHostingView(rootView: AccountPopoverView(accountIDs: [first.id, second.id], groupID: group).environmentObject(store))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 392, height: 500), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+
+        try await waitFor("the first tab") { store.shownAccount(in: group) == first.id }
+        // The tab it is on goes away (the way a tab changes without a click): it moves to the other one and says so.
+        await store.delete(first)
+        try await waitFor("the other tab") { store.shownAccount(in: group) == second.id }
     }
 
     @Test func everyControlAndLineDrawsAtThePopoverWidth() throws {

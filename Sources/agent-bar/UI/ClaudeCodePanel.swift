@@ -35,11 +35,15 @@ struct ClaudeCodePanel: Equatable {
         return "Claude Code is \(signedIn) in AgentBar. Switching removes that login from Claude Code."
     }
 
-    // Rough height of the lines under the header, for sizing the popover.
+    // How much taller the header is with the control beside the provider name (measured on the drawn popover).
+    static let headerGrowth = 12
+
+    // Rough height this adds to the popover: the taller header, and the lines under it.
     var estimatedHeight: Int {
-        guard !lines.isEmpty else { return 0 }
+        let header = control == .hidden ? 0 : Self.headerGrowth
+        guard !lines.isEmpty else { return header }
         func wrapped(_ text: String) -> Int { 15 * max(1, (text.count + 52) / 53) }
-        return lines.reduce(10) { total, line in
+        return header + lines.reduce(10) { total, line in
             switch line {
             case .progress(let message, _): return total + wrapped(message) + 6
             case .confirmation(let email): return total + wrapped(Self.confirmationText(email: email)) + 40

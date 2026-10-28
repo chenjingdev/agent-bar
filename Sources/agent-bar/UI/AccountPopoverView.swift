@@ -41,6 +41,13 @@ struct AccountPopoverView: View {
                 footer
             }
         }.foregroundStyle(.white).frame(width: 392)
+            .onAppear { reportShownAccount() }
+            .onChange(of: account?.id) { reportShownAccount() }
+    }
+    // A group's popover shows one of its accounts at a time. A result line is cleared by the closing that follows seeing
+    // it, so the store has to know which one is on screen.
+    private func reportShownAccount() {
+        if let groupID, let id = account?.id { store.popoverShows(id, group: groupID) }
     }
     private func header(_ account: UsageAccount, claudeCode: ClaudeCodePanel) -> some View {
         let display = store.displayConfiguration.display(account)

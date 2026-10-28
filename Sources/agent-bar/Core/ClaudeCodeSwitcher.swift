@@ -21,6 +21,15 @@ enum ClaudeCodeBrowserReason: Equatable, Sendable {
         case .savedLoginExpired: return "The saved sign-in expired. Sign in again in the browser."
         }
     }
+
+    // The same, naming the account the browser has to be signed in to when its address is known.
+    func message(signingInAs email: String?) -> String {
+        guard let email, !email.isEmpty else { return message }
+        switch self {
+        case .noSavedLogin: return "Sign in as \(email) in the browser once so Claude Code can use this account."
+        case .savedLoginExpired: return "The saved sign-in expired. Sign in as \(email) in the browser again."
+        }
+    }
 }
 
 enum ClaudeCodeSwitchStep: Equatable, Sendable {

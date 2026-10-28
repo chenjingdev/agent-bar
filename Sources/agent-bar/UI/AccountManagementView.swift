@@ -224,6 +224,10 @@ struct LoginProgressView: View {
                      ? pending.account.identity!.description : "The provider did not return account details.")
                     .font(.headline).textSelection(.enabled)
                 if pending.replacing != nil {
+                    if store.reconnectLockedByClaudeCode {
+                        Text("Claude Code is using this account right now. Reconnect is available when it finishes.")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     if store.reconnectionComparison == .different {
                         Text("This is a different account from the one being reconnected. It can only be added as a new account.")
                         Button("Add Account") { store.confirmLogin(addAsNew: true) }.buttonStyle(.borderedProminent)
@@ -231,9 +235,13 @@ struct LoginProgressView: View {
                         Text("The account identity could not be verified automatically. Reconnect only if this is the same account.")
                         HStack {
                             Button("Reconnect") { store.confirmLogin(replaceUnverified: true) }.buttonStyle(.borderedProminent)
+                                .disabled(store.reconnectLockedByClaudeCode)
                             Button("Add Account") { store.confirmLogin(addAsNew: true) }
                         }
-                    } else { Button("Reconnect") { store.confirmLogin() }.buttonStyle(.borderedProminent) }
+                    } else {
+                        Button("Reconnect") { store.confirmLogin() }.buttonStyle(.borderedProminent)
+                            .disabled(store.reconnectLockedByClaudeCode)
+                    }
                 } else { Button("Add Account") { store.confirmLogin() }.buttonStyle(.borderedProminent) }
             }
             Button("Cancel", role: .cancel) { store.cancelLogin() }
