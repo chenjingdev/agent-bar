@@ -280,6 +280,13 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
             run.slotTouched = verdict.changed
             // Its saved copy is gone and the slot does not hold its login.
             if after != nil { needsLogin.insert(target.id, at: 0) }
+            // An unreadable slot after a handover that reported success most likely holds the target now. The previous
+            // token is not lent back because it may still be there, so that account signs in with the browser next time
+            // unless a login of its own already waits in its folder.
+            if after == nil, current.credential != nil, let id = current.accountID,
+               let account = run.accounts.first(where: { $0.id == id }), !hasLendLogin(for: account) {
+                needsLogin.append(id)
+            }
             throw Abort(reason, needsLogin: needsLogin)
         }
         return .switched(ClaudeCodeSwitched(accountID: target.id, previousAccountID: current.accountID, needsLogin: needsLogin))

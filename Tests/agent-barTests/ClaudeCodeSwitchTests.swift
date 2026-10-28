@@ -613,12 +613,29 @@ struct ClaudeCodeSwitchTests {
 
             let result = f.switchTo(target)
 
+            // After a handover that reported success the previous token is kept out of use, so that account needs the
+            // browser next time; after a failed one the target's used-up copy is gone instead.
             let handoverWorked = failure == nil
             #expect(result.outcome == .failed(.init(reason: "Could not confirm which account Claude Code uses now.", nothingChanged: false,
-                                                    needsLogin: handoverWorked ? [] : [target.id])))
+                                                    needsLogin: handoverWorked ? [prev.id] : [target.id])))
             #expect(!f.world.events.contains { $0.hasPrefix("login lend(") })
             #expect(!f.world.hasItem(f.lendSlot(target)))
         }
+    }
+
+    @Test func aPreviousAccountWithItsOwnLendLoginIsNotAskedToSignInWhenTheSlotCannotBeRead() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        try f.saveLogin(for: prev)
+        try f.saveLogin(for: target)
+        f.world.failReads("default", afterSuccessfulReads: 1)
+
+        let result = f.switchTo(target)
+
+        #expect(result.outcome == .failed(.init(reason: "Could not confirm which account Claude Code uses now.", nothingChanged: false,
+                                                needsLogin: [])))
+        #expect(!f.world.events.contains { $0.hasPrefix("login lend(") })
     }
 
     @Test func aLendingBackThatSavedAndTimedOutIsNotRepeated() throws {
