@@ -56,12 +56,23 @@ struct AccountManagementView: View {
         .sheet(isPresented: $choosingProvider) {
             AddAccountProviderSheet { provider in store.startLogin(provider) }
         }
-        .alert("Delete this account from AgentBar?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+        .alert("Delete this account from AgentBar?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+               presenting: deleting) { account in
             Button("Cancel", role: .cancel) { deleting = nil }
             Button("Delete", role: .destructive) {
-                if let account = deleting { Task { await store.delete(account) } }; deleting = nil
+                Task { await store.delete(account) }; deleting = nil
             }
-        } message: { Text("This removes only the selected account’s AgentBar credentials and usage cache. External CLI sign-ins are preserved.") }
+        } message: { account in Text(Self.deleteMessage(for: account.provider)) }
+    }
+
+    // What the Delete confirmation says. A Claude account also has a sign-in AgentBar saved for Claude Code, and that goes
+    // too; Claude Code's own login is left alone even when it belongs to this account.
+    nonisolated static func deleteMessage(for provider: ProviderKind) -> String {
+        let removes = "This removes only the selected account’s AgentBar credentials and usage cache"
+        let preserved = "External CLI sign-ins are preserved."
+        guard provider == .claude else { return "\(removes). \(preserved)" }
+        return "\(removes), plus any sign-in AgentBar saved on this Mac for Use in Claude Code. "
+            + "If Claude Code is using this account now, Claude Code stays signed in. \(preserved)"
     }
     private func row(_ account: UsageAccount, preview: Bool = false) -> some View {
         HStack(spacing: 10) {

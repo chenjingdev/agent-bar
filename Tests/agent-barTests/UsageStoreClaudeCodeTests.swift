@@ -961,6 +961,186 @@ struct UsageStoreClaudeCodeTests {
         #expect(sameAccountNewEmail.comparison(to: after) == .same && sameAccountNewEmail.comparison(to: before) == .different)
     }
 
+    // MARK: Deleting an account
+
+    @Test func deletingAClaudeAccountRemovesTheLoginSavedForClaudeCodeAndNothingElse() async throws {
+        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b", "c"]); defer { f.close() }
+        await f.start()
+        let b = f.account("b"), c = f.account("c")
+        let defaultToken = try #require(f.world.token(in: f.switching.defaultSlot))
+        let defaultIdentity = try Data(contentsOf: f.switching.defaultSlot.identityFile)
+        let before = f.gates.calls
+
+        await f.store.delete(b)
+
+        #expect(f.store.accounts.map(\.name) == ["a", "c"] && f.store.errorMessage == nil)
+        #expect(try f.files.load().accounts.map(\.name) == ["a", "c"], "the deletion is saved")
+        // The folder and the Keychain item are gone, and the Keychain was asked again to be sure.
+        #expect(!f.switching.lendFolderExists(b) && !f.world.hasItem(f.switching.lendSlot(b)))
+        let asked = Array(f.gates.calls.dropFirst(before.count))
+        #expect(asked.contains("delete lend") && asked.last == "contains lend")
+        // Another account's saved login stays, and Claude Code's own login was not even looked at.
+        #expect(f.switching.lendFolderExists(c) && f.switching.lendEmail(c) == "c@example.test")
+        #expect(!asked.contains { $0.hasSuffix("default") } && !asked.contains("login"))
+        #expect(f.switching.defaultEmail == "a@example.test" && f.world.token(in: f.switching.defaultSlot) == defaultToken)
+        #expect(try Data(contentsOf: f.switching.defaultSlot.identityFile) == defaultIdentity)
+        #expect(f.world.problems.isEmpty)
+    }
+
+    @Test func deletingTheAccountClaudeCodeUsesLeavesClaudeCodeSignedIn() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["a"]); defer { f.close() }
+        await f.start()
+        let a = f.account("a")
+        #expect(f.panel("a").control == .inClaudeCode)
+        let defaultToken = try #require(f.world.token(in: f.switching.defaultSlot))
+        let defaultIdentity = try Data(contentsOf: f.switching.defaultSlot.identityFile)
+        let loginCommands = f.world.calls.filter { $0.arguments.first == "auth" }.count
+
+        await f.store.delete(a)
+
+        #expect(f.store.accounts.map(\.name) == ["b"] && f.store.errorMessage == nil)
+        #expect(!f.switching.lendFolderExists(a) && !f.world.hasItem(f.switching.lendSlot(a)))
+        // Claude Code keeps the very login it had: same item, same token, same identity file. Nobody was signed out.
+        #expect(f.world.hasItem(f.switching.defaultSlot) && f.switching.defaultEmail == "a@example.test")
+        #expect(f.world.token(in: f.switching.defaultSlot) == defaultToken && f.world.isLive(defaultToken))
+        #expect(try Data(contentsOf: f.switching.defaultSlot.identityFile) == defaultIdentity)
+        #expect(f.world.calls.filter { $0.arguments.first == "auth" }.count == loginCommands && f.world.problems.isEmpty)
+
+        // AgentBar no longer has that account, so no window says Claude Code uses it.
+        await f.refresh()
+        #expect(f.store.claudeCodeAccountID == nil && f.enabled("b"))
+    }
+
+    @Test func anAccountDeletedWhileASwitchRunsGoesWhenTheSwitchEndsAndSoDoesItsSavedLogin() async throws {
+        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b", "c"]); defer { f.close() }
+        await f.start()
+        let c = f.account("c")
+        let hold = f.world.hold(login: "default")
+        f.press("b")
+        try await waitFor("the login command") { hold.entered.wait(timeout: .now()) == .success }
+
+        // c is not one of the two accounts the switch uses, so it can be deleted. The engine will not remove a saved login
+        // meanwhile; that is not a failure to tell anyone about.
+        await f.store.delete(c)
+
+        #expect(f.store.errorMessage == nil)
+        let waiting = try #require(f.store.accounts.first { $0.id == c.id })
+        #expect(waiting.deletionPending && f.panel("c") == .hidden, "gone from the windows, still to be finished")
+        #expect(f.switching.lendFolderExists(c) && f.world.hasItem(f.switching.lendSlot(c)))
+
+        hold.release.signal()
+        await f.finish()
+
+        #expect(f.store.accounts.map(\.name) == ["a", "b"] && f.store.errorMessage == nil)
+        #expect(try f.files.load().accounts.map(\.name) == ["a", "b"])
+        #expect(!f.switching.lendFolderExists(c) && !f.world.hasItem(f.switching.lendSlot(c)))
+        // The switch itself went through: b is in Claude Code and a's login was lent back to its own folder.
+        #expect(f.switching.defaultEmail == "b@example.test" && f.switching.lendEmail(f.account("a")) == "a@example.test")
+        #expect(f.result("b")?.succeeded == true && f.world.problems.isEmpty)
+    }
+
+    @Test func twoDeletionsAtOnceAreBothFinishedInsteadOfTheSecondBeingTurnedAway() async throws {
+        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b", "c"]); defer { f.close() }
+        await f.start()
+        let b = f.account("b"), c = f.account("c")
+        let hold = f.gates.holdKeychain()
+
+        // b's saved login is being removed: the engine is inside, waiting for the Keychain.
+        let first = Task { await f.store.delete(b) }
+        try await waitFor("the first removal") { hold.entered.wait(timeout: .now()) == .success }
+        let second = Task { await f.store.delete(c) }
+        try await waitFor("the second deletion to start") { f.store.accounts.first { $0.id == c.id }?.deletionPending == true }
+        try await Task.sleep(for: .milliseconds(300))
+        // No switch is running, so the second one waits its turn; it is not sent away as if one were.
+        #expect(f.store.errorMessage == nil && f.switching.lendFolderExists(c))
+
+        hold.release.signal()
+        await first.value
+        await second.value
+
+        #expect(f.store.accounts.map(\.name) == ["a"] && f.store.errorMessage == nil)
+        #expect(try f.files.load().accounts.map(\.name) == ["a"])
+        #expect(!f.switching.lendFolderExists(b) && !f.switching.lendFolderExists(c))
+        #expect(!f.world.hasItem(f.switching.lendSlot(b)) && !f.world.hasItem(f.switching.lendSlot(c)))
+    }
+
+    @Test func aSavedLoginThatCannotBeRemovedIsReportedLikeAnyOtherFailedDeletion() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
+        await f.start()
+        f.world.keepItem("lend(b)")
+
+        await f.store.delete(f.account("b"))
+
+        #expect(f.store.errorMessage == "Keychain cleanup is required for the saved Claude Code sign-in.")
+        let kept = try #require(f.store.accounts.first { $0.name == "b" })
+        #expect(kept.deletionPending, "it stays hidden, and a later clean-up tries again")
+        #expect(f.store.accounts.map(\.name) == ["a", "b"])
+        #expect(f.switching.defaultEmail == "a@example.test")
+    }
+
+    @Test func deletingACodexAccountNeverAsksClaudeCode() async throws {
+        let codex = UsageAccount(id: UUID(), provider: .codex, name: "x", credentialID: UUID())
+        let f = try StoreFixture(["a"], extra: [codex], signedIn: "a"); defer { f.close() }
+        await f.start()
+        // A folder under the Codex account's id that only the engine would remove.
+        try f.files.createPrivateDirectory(f.files.lendRoot)
+        try f.files.createPrivateDirectory(f.files.lend(codex.id))
+        let asked = f.gates.calls, events = f.world.events
+
+        await f.store.delete(codex)
+
+        #expect(f.store.accounts.map(\.name) == ["a"] && f.store.errorMessage == nil)
+        #expect(f.gates.calls == asked && f.world.events == events, "neither the Keychain nor Claude Code was asked anything")
+        #expect(FileManager.default.fileExists(atPath: f.files.lend(codex.id).path))
+    }
+
+    @Test func aDeletionCutShortIsFinishedAtLaunchAndTakesTheSavedLoginWithIt() async throws {
+        let leftover = UsageAccount(id: UUID(), provider: .claude, name: "old", credentialID: UUID(), deletionPending: true)
+        let f = try StoreFixture(["a"], extra: [leftover], signedIn: "a", saved: ["old"], autoRefresh: true); defer { f.close() }
+
+        try await waitFor("the leftover deletion") { !f.store.accounts.contains { $0.id == leftover.id } }
+
+        #expect(f.store.errorMessage == nil)
+        #expect(!f.switching.lendFolderExists(leftover) && !f.world.hasItem(f.switching.lendSlot(leftover)))
+        #expect(f.switching.defaultEmail == "a@example.test")
+    }
+
+    @Test func theDeleteQuestionTellsAboutTheSavedClaudeCodeLoginOnlyForAClaudeAccount() {
+        // A Codex account is asked about with the words the question always had.
+        #expect(AccountManagementView.deleteMessage(for: .codex)
+                == "This removes only the selected account’s AgentBar credentials and usage cache. External CLI sign-ins are preserved.")
+        #expect(AccountManagementView.deleteMessage(for: .claude)
+                == "This removes only the selected account’s AgentBar credentials and usage cache, plus any sign-in AgentBar saved on this Mac "
+                + "for Use in Claude Code. If Claude Code is using this account now, Claude Code stays signed in. External CLI sign-ins are preserved.")
+    }
+
+    @Test func withoutASwitcherDeletingAClaudeAccountWorksAsItAlwaysDid() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("claude-code-delete-off-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = AccountFiles(root: root)
+        let suite = "claude-code-delete-off-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func claude(_ name: String) -> UsageAccount {
+            UsageAccount(id: UUID(), provider: .claude, name: name,
+                         identity: AccountIdentity(email: "\(name)@example.test", organizationID: "org-1"), credentialID: UUID())
+        }
+        let account = claude("a"), other = claude("b")
+        var registry = AccountRegistry(accounts: [account, other]); registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        let login = files.credentials(try #require(account.credentialID))
+        try files.createPrivateDirectory(login)
+        try files.write(ProviderSnapshot.placeholder(for: .claude), to: files.cache(account))
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
+        defer { store.shutdown() }
+
+        await store.delete(account)
+
+        #expect(store.accounts.map(\.name) == ["b"] && store.errorMessage == nil)
+        #expect(!FileManager.default.fileExists(atPath: login.path) && !FileManager.default.fileExists(atPath: files.cache(account).path))
+        #expect(!FileManager.default.fileExists(atPath: files.lendRoot.path), "no switcher, no saved logins to look for")
+        #expect(try files.load().accounts.map(\.name) == ["b"])
+    }
+
     // MARK: Nothing without a switcher
 
     @Test func withoutASwitcherNothingIsOfferedOrCalledOrWritten() async throws {

@@ -110,6 +110,9 @@ final class UsageStore: ObservableObject {
     private let loadAccount: (@Sendable (UsageAccount, OperationControl) async -> ProviderSnapshot)?
     private let claudeCode: ClaudeCodeSwitcher?
     private let claudeCodeBrowser: BrowserLoginLauncher
+    // The engine removes one saved login at a time and sends a second request away as if a switch were running, so two
+    // deletions at once must take turns.
+    private let savedLoginLock = NSLock()
     private var refreshTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
 
@@ -599,12 +602,45 @@ final class UsageStore: ObservableObject {
         // Wait for this account's in-flight request before removing its cache directory.
         while refreshingAccounts.contains(account.id) { try? await Task.sleep(for: .milliseconds(100)) }
         let files = files
-        let error: String? = await Task.detached {
-            do { try files.removeCredentials(account, allowUserInteraction: allowUserInteraction); try files.removeUsage(account); return nil }
-            catch { return error.localizedDescription }
+        // A Claude account may also have a login saved for "Use in Claude Code". The engine removes it with the rest, and
+        // only the engine does: Claude Code's own login is never touched, even when it belongs to this account.
+        let engine = account.provider == .claude ? claudeCode : nil
+        let turn = savedLoginLock
+        let removal: AccountRemoval = await Task.detached {
+            do {
+                try files.removeCredentials(account, allowUserInteraction: allowUserInteraction)
+                try files.removeUsage(account)
+                if let engine { try turn.withLock { try engine.removeLendLogin(for: account.id) } }
+                return .removed
+            } catch {
+                return Self.isClaudeCodeBusy(error) ? .waitsForClaudeCode : .failed(error.localizedDescription)
+            }
         }.value
-        if let error { errorMessage = error; return }
+        switch removal {
+        case .removed: break
+        case .failed(let message): errorMessage = message; return
+        case .waitsForClaudeCode:
+            // A switch is using the saved logins' folders and the engine will not remove one meanwhile. That is no failure
+            // to tell anybody about: the account stays out of sight and pending, and the end of the switch finishes it.
+            return
+        }
         next = registry; next.accounts.removeAll { $0.id == account.id }; next.repairRepresentatives(); _ = commit(next)
+    }
+
+    // What removing an account's files and its saved login came to.
+    private enum AccountRemoval: Sendable {
+        case removed
+        // The files are gone; the saved login is not, because a switch is running.
+        case waitsForClaudeCode
+        case failed(String)
+    }
+
+    // The engine turns a removal away, with nothing removed, while a switch or the recovery at launch uses its folders.
+    // It says so only in words (`ClaudeCodeSwitcher.removeLendLogin`); a test runs the real engine through a real switch
+    // so that new words there are noticed.
+    nonisolated private static func isClaudeCodeBusy(_ error: Error) -> Bool {
+        guard case AccountError.message(let text) = error else { return false }
+        return text.hasPrefix("A Claude Code switch is running.")
     }
 
     // MARK: Claude Code
@@ -744,6 +780,8 @@ final class UsageStore: ObservableObject {
                     })
             }.value
             self?.finishClaudeCodeSwitch(outcome, target: account, activity: id)
+            // Deletions that had to wait for this switch go on now. A person is not asked anything again, so no Keychain window.
+            await self?.retryCleanup(allowUserInteraction: false)
         }
     }
 
