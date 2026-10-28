@@ -20,8 +20,12 @@ final class ProcessSession: @unchecked Sendable {
     private var ended = false
     private var overflow = false
     private var stopped = false
+    private var inputClosed = false
 
-    init(executable: URL, arguments: [String], environment: [String: String], directory: URL) throws {
+    // `mergeStandardError` sends stderr into the same pipe so a caller that classifies a failure
+    // sees what the CLI said; it must scrub the text before keeping it.
+    init(executable: URL, arguments: [String], environment: [String: String], directory: URL,
+         mergeStandardError: Bool = false) throws {
         // A CLI may exit between receiving a response and our next write.
         // Report EPIPE through FileHandle instead of terminating the whole app.
         guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
@@ -35,7 +39,7 @@ final class ProcessSession: @unchecked Sendable {
         process.currentDirectoryURL = directory
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
+        process.standardError = mergeStandardError ? output : FileHandle.nullDevice
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard let self else { return }
@@ -57,6 +61,14 @@ final class ProcessSession: @unchecked Sendable {
         Self.registryLock.unlock()
         do { try process.run() }
         catch { output.fileHandleForReading.readabilityHandler = nil; throw error }
+    }
+
+    // For a CLI that must see end-of-input instead of waiting for a person to type.
+    func closeInput() {
+        stopLock.lock(); defer { stopLock.unlock() }
+        guard !inputClosed else { return }
+        inputClosed = true
+        try? input.fileHandleForWriting.close()
     }
 
     func send(_ value: [String: Any]) throws {
@@ -117,7 +129,7 @@ final class ProcessSession: @unchecked Sendable {
         if pid > 0 { kill(-pid, SIGKILL) }
         output.fileHandleForReading.readabilityHandler = nil
         condition.lock(); ended = true; condition.broadcast(); condition.unlock()
-        try? input.fileHandleForWriting.close()
+        if !inputClosed { inputClosed = true; try? input.fileHandleForWriting.close() }
         try? output.fileHandleForReading.close()
     }
     deinit { stop() }

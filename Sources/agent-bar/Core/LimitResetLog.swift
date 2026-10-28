@@ -3,7 +3,7 @@ import Foundation
 // Appends one JSON object per line to logs/limit-resets.log in the AgentBar data directory.
 // Every line of one reset attempt shares an attempt ID. Provider replies are kept after
 // redaction so a failed reset can be diagnosed later; tokens and Authorization headers are
-// never written.
+// never written. Another log in the same directory (claude-code-switch.log) can use it by name.
 struct LimitResetLog: Sendable {
     private static let maximumSize = 1_000_000
     private static let maximumText = 20_000
@@ -17,21 +17,23 @@ struct LimitResetLog: Sendable {
         #"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}"#,
     ]
 
+    static let defaultFileName = "limit-resets.log"
+
     let url: URL
     let provider: ProviderKind
     let accountID: UUID
     let accountName: String
     var attempt: UUID?
 
-    init(root: URL, account: UsageAccount, attempt: UUID? = nil) {
-        url = Self.url(root: root)
+    init(root: URL, account: UsageAccount, attempt: UUID? = nil, fileName: String = defaultFileName) {
+        url = Self.url(root: root, fileName: fileName)
         provider = account.provider
         accountID = account.id
         accountName = account.name
         self.attempt = attempt
     }
 
-    static func url(root: URL) -> URL { root.appendingPathComponent("logs/limit-resets.log") }
+    static func url(root: URL, fileName: String = defaultFileName) -> URL { root.appendingPathComponent("logs/\(fileName)") }
 
     func record(_ event: String, _ details: [String: Any] = [:]) {
         var entry = details.mapValues(Self.sanitized)
@@ -108,7 +110,7 @@ struct LimitResetLog: Sendable {
         }
     }
 
-    private static func redacted(_ string: String) -> String {
+    static func redacted(_ string: String) -> String {
         var result = string
         for pattern in secretPatterns {
             result = result.replacingOccurrences(of: pattern, with: "[redacted]", options: .regularExpression)
