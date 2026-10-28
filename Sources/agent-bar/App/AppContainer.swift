@@ -16,6 +16,7 @@ final class AppContainer {
         let availableProviders = ProviderAvailability.availableProviders()
         self.settings = settings
         self.availableProviders = availableProviders
-        self.store = UsageStore(settings: settings, files: files)
+        // The one place that can change Claude Code's own login. Tests build a store without it, or with a stand-in.
+        self.store = UsageStore(settings: settings, files: files, claudeCode: .system(files: files))
     }
 }

@@ -139,6 +139,9 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
 
     // MARK: Reading
 
+    // Whether Claude Code is on this Mac at all. The popover hides its button when it is not.
+    func isInstalled() -> Bool { cli.isInstalled() }
+
     func checkVersion() -> ClaudeCodeVersionCheck {
         let output: ClaudeCLIOutput
         do {

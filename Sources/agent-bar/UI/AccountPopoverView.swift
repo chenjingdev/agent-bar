@@ -22,7 +22,11 @@ struct AccountPopoverView: View {
                     }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 16).padding(.top, 14)
                 }
                 if let account {
-                    header(account)
+                    let claudeCode = store.claudeCodePanel(for: account)
+                    header(account, claudeCode: claudeCode)
+                    ClaudeCodeLinesView(lines: claudeCode.lines, cancel: { store.cancelClaudeCodeSwitch() },
+                                        confirm: { store.confirmClaudeCodeSwitch() }, decline: { store.cancelClaudeCodeConfirmation() },
+                                        openLog: { NSWorkspace.shared.open(store.claudeCodeLogURL) })
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
                             if let error = store.displayError { Text(error).font(.caption).foregroundStyle(.orange) }
@@ -38,14 +42,20 @@ struct AccountPopoverView: View {
             }
         }.foregroundStyle(.white).frame(width: 392)
     }
-    private func header(_ account: UsageAccount) -> some View {
+    private func header(_ account: UsageAccount, claudeCode: ClaudeCodePanel) -> some View {
         let display = store.displayConfiguration.display(account)
         return HStack(spacing: 10) {
             AccountBadge(text: display.badge, color: display.color)
             VStack(alignment: .leading, spacing: 1) {
                 Text(account.title).font(.system(size: 18, weight: .heavy, design: .rounded)).lineLimit(1).textSelection(.enabled)
-                Text(account.provider.displayName)
-                    .font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(AppTheme.muted)
+                // "Use in Claude Code" sits by the provider, not beside the icons: a long name (an e-mail address is the
+                // default) would have no room left.
+                HStack(spacing: 8) {
+                    Text(account.provider.displayName)
+                        .font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(AppTheme.muted)
+                    ClaudeCodeControlView(control: claudeCode.control, use: { store.useInClaudeCode(account) })
+                }
+                .padding(.top, claudeCode.control == .hidden ? 0 : 3)
             }
             Spacer(minLength: 8)
             Button { store.refreshNow() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
@@ -75,9 +85,11 @@ struct AccountPopoverView: View {
                 .id(account.id)
         }
     }
+    // The status line of an account whose sign-in has to be redone. A blocked "Use in Claude Code" button gives it as its reason.
+    static let signInRequiredLine = "Sign-in required · reconnect in Settings › Accounts"
     private func statusLine(_ snapshot: ProviderSnapshot) -> String {
         let updated = "Updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))"
-        if snapshot.requiresLogin { return "Sign-in required · reconnect in Settings › Accounts" }
+        if snapshot.requiresLogin { return Self.signInRequiredLine }
         if snapshot.isStale { return (snapshot.note ?? "Cached usage.") + " · " + updated }
         return updated + (snapshot.planName.map { " · " + $0 } ?? "")
     }

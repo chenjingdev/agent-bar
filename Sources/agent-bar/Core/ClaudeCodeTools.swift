@@ -18,6 +18,12 @@ protocol ClaudeCLI: Sendable {
     func run(_ arguments: [String], environment: [String: String], directory: URL, timeout: TimeInterval) throws -> ClaudeCLIOutput
     // Runs the browser sign-in into `directory`: opens the validated URL, waits for the CLI, honors `control`.
     func browserLogin(directory: URL, control: OperationControl, openURL: @Sendable (URL) -> Void) throws
+    // Whether a `claude` program can be found at all. A stand-in that is always there need not say so.
+    func isInstalled() -> Bool
+}
+
+extension ClaudeCLI {
+    func isInstalled() -> Bool { true }
 }
 
 protocol ClaudeKeychain: Sendable {
@@ -47,6 +53,8 @@ struct SystemClaudeCLI: ClaudeCLI {
         try ClaudeOAuthLauncher.browserSignIn(directory: directory, executable: executable(), urlTimeout: urlTimeout,
                                               timeout: loginTimeout, control: control, openURL: openURL) {}
     }
+
+    func isInstalled() -> Bool { (try? executable()) != nil }
 }
 
 struct SecurityCommandKeychain: ClaudeKeychain {

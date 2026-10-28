@@ -94,6 +94,9 @@ struct AccountManagementView: View {
             Spacer()
             if account.deletionPending {
                 Text("Deletion pending").font(.caption).foregroundStyle(.orange)
+            } else if let note = store.claudeCodeLockNote(for: account) {
+                Text(note).font(.caption).foregroundStyle(.orange)
+                    .help("This account's logins are in use until Claude Code has finished.")
             } else if store.snapshot(for: account).requiresLogin {
                 Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).help("Sign-in required")
             }
@@ -101,9 +104,11 @@ struct AccountManagementView: View {
                 Button("Rename") { editing = account }
                     .disabled(account.deletionPending || store.storageUnavailable)
                 Button("Reconnect") { store.startLogin(account.provider, replacing: account) }
-                    .disabled(store.isLoggingIn || store.pendingLogin != nil || account.deletionPending || store.storageUnavailable)
+                    .disabled(store.isLoggingIn || store.pendingLogin != nil || account.deletionPending || store.storageUnavailable
+                              || store.isClaudeCodeLocked(account))
                 Button("Delete", role: .destructive) { deleting = account }
-                    .disabled(store.isLoggingIn || store.pendingLogin != nil || store.storageUnavailable)
+                    .disabled(store.isLoggingIn || store.pendingLogin != nil || store.storageUnavailable
+                              || store.isClaudeCodeLocked(account))
             } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help("Account options")
