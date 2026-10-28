@@ -81,6 +81,13 @@ struct ClaudeSlotIdentity: Equatable, Sendable {
         return Self.same(organizationUUID, organizationID) && Self.same(email, registeredEmail)
     }
 
+    // The same login as another reading of a slot: signed in, with the same account UUID, organization and email.
+    func sameLogin(as other: Self) -> Bool {
+        func same(_ value: String?, _ other: String?) -> Bool { value?.lowercased() == other?.lowercased() }
+        return hasLogin && other.hasLogin && same(accountUUID, other.accountUUID)
+            && same(organizationUUID, other.organizationUUID) && same(email, other.email)
+    }
+
     // Whether an account has enough identity to tell its login from another.
     static func canVerify(_ account: UsageAccount) -> Bool {
         guard account.provider == .claude, let identity = account.identity, identity.organizationID != nil else { return false }

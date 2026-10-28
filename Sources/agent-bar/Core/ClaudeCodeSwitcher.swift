@@ -57,15 +57,24 @@ struct ClaudeCodeSwitchFailure: Equatable, Sendable {
     var reason: String
     // False when the default login may have been touched.
     var nothingChanged: Bool
+    // Accounts whose saved login is gone: their next use needs a browser sign-in.
     var needsLogin: [UUID] = []
+}
+
+// The login of an account AgentBar does not have, as it was shown to the person who was asked about losing it.
+struct ClaudeCodeUnknownLogin: Equatable, Sendable {
+    var email: String?
+    var accountUUID: String?
+    var organizationUUID: String?
 }
 
 enum ClaudeCodeSwitchOutcome: Equatable, Sendable {
     case switched(ClaudeCodeSwitched)
     case alreadyInUse
     // Claude Code holds a login of an account AgentBar does not have. Nothing was changed; ask, then call again
-    // with `confirmedLosingCurrentLogin: true`.
-    case needsConfirmation(email: String?)
+    // with `confirmedLosing:` set to this login. A yes belongs to the login that was asked about: if the default
+    // login is a different unknown one by then, this comes back again.
+    case needsConfirmation(ClaudeCodeUnknownLogin)
     // Only while waiting for the browser. Nothing was changed.
     case cancelled
     case failed(ClaudeCodeSwitchFailure)
@@ -156,15 +165,20 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         return readIdentity(of: slot, hasLogin: true).matches(account)
     }
 
-    // For deleting an account: its lend folder and Keychain item go, nothing else does.
+    // For deleting an account: its lend folder and Keychain item go, nothing else does. It waits for no switch: while
+    // one is running it throws.
     func removeLendLogin(for accountID: UUID) throws {
+        guard beginOperation() else {
+            throw AccountError.message("A Claude Code switch is running. Try again when it has finished.")
+        }
+        defer { endOperation() }
         try dropLend(accountID)
     }
 
     // MARK: Switching
 
     func switchAccount(
-        to target: UsageAccount, among accounts: [UsageAccount], confirmedLosingCurrentLogin confirmed: Bool = false,
+        to target: UsageAccount, among accounts: [UsageAccount], confirmedLosing: ClaudeCodeUnknownLogin? = nil,
         control: OperationControl = OperationControl(),
         progress: @escaping @Sendable (ClaudeCodeSwitchStep) -> Void = { _ in },
         openURL: @escaping @Sendable (URL) -> Void
@@ -174,7 +188,7 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         }
         defer { endOperation() }
         let run = Run(target: target, accounts: accounts.filter { $0.provider == .claude && !$0.deletionPending },
-                      confirmed: confirmed, control: control, progress: progress, openURL: openURL,
+                      confirmedLosing: confirmedLosing, control: control, progress: progress, openURL: openURL,
                       log: LimitResetLog(root: files.root, account: target, attempt: UUID(), fileName: LimitResetLog.claudeCodeSwitchFileName),
                       startedAt: now())
         run.log.record("start", [:])
@@ -216,19 +230,28 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         }
 
         try writeJournal(.started, previousID: current.accountID, run)
-        var signedIn = false
+        var handedOver = false
         for round in 0..<2 {
             guard let login = credential else { break }
             run.progress(.signingIn)
             run.slotTouched = true
             let result = putLogin(login, into: defaultSlot, run, step: "signIn")
-            if result == .ok { signedIn = true; break }
-            // A refused login leaves the slot as it was. If it did not, or if the login went through anyway, say so.
-            let after = (try? keychain.contains(service: defaultSlot.service, account: defaultSlot.account))
-                .map { readIdentity(of: defaultSlot, hasLogin: $0) }
-            if let after, after.hasLogin, after.matches(target) { run.step("signIn", "finishedDespiteError"); signedIn = true; break }
-            if let after, after == current.identity { run.slotTouched = false }
+            if result == .ok { handedOver = true; break }
+            // The command says it failed. The slot tells more: a login may have been written all the same, or the slot
+            // may have moved without one.
+            let after = snapshotDefault(run)
+            if let after, after.identity.hasLogin, after.identity.matches(target), after.token != current.token {
+                run.step("signIn", "finishedDespiteError")
+                handedOver = true
+                break
+            }
+            guard let after, after.identity == current.identity, after.token == current.token else {
+                throw abandon(after: after, before: current, run)
+            }
+            run.slotTouched = false
             guard result == .invalid, round == 0, !run.freshLogin else {
+                // A login that was refused is dead and its copy goes; a failure that may pass keeps it for the next try.
+                if result == .invalid { try? dropLend(target.id) }
                 throw Abort(result == .invalid ? "Claude rejected the sign-in. Try again."
                                                : "Claude Code could not sign in. Check the connection and try again.")
             }
@@ -239,27 +262,51 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
             if let early = gate(current, run) { return early }
             try writeJournal(.started, previousID: current.accountID, run)
         }
-        guard signedIn else { throw Abort("Claude Code could not sign in. Try again.") }
+        guard handedOver else { throw Abort("Claude Code could not sign in. Try again.") }
 
         // The copy of the new login that stayed in its own folder was used up.
         removeUsedUpLend(target.id, run)
         try? writeJournal(.slotSwitched, previousID: current.accountID, run)
 
+        // Read the slot again before anything is lent back: the previous login may only be lent once its refresh
+        // token has left the slot, or the same token would be used twice.
         run.progress(.verifying)
-        let verification = verifyDefault(run)
-        run.step("verify", verification.ok ? "ok" : "failed")
-        // The previous login is lent back even when the check failed: it is in memory only, and it is no longer in the slot.
+        let after = snapshotDefault(run)
+        let verdict = judge(after, before: current, target: target)
+        run.step("verify", verdict.reason == nil ? "ok" : "failed", ["reason": verdict.reason as Any])
         run.progress(.returningPreviousLogin)
-        let needsLogin = giveBack(current, run)
-        if let reason = verification.reason { throw Abort(reason, needsLogin: needsLogin) }
+        var needsLogin: [UUID] = verdict.mayLendBack ? giveBack(current, run) : []
+        if let reason = verdict.reason {
+            run.slotTouched = verdict.changed
+            // Its saved copy is gone and the slot does not hold its login.
+            if after != nil { needsLogin.insert(target.id, at: 0) }
+            throw Abort(reason, needsLogin: needsLogin)
+        }
         return .switched(ClaudeCodeSwitched(accountID: target.id, previousAccountID: current.accountID, needsLogin: needsLogin))
+    }
+
+    // After a failed handover the slot is not as it was read, or cannot be read. The new login may have been used up, so
+    // its saved copy goes; the previous login is lent back if its token has left the slot.
+    private func abandon(after: DefaultLogin?, before: DefaultLogin, _ run: Run) -> Abort {
+        removeUsedUpLend(run.target.id, run)
+        let needsLogin = [run.target.id]
+        guard let after else {
+            run.step("slotAfterFailure", "unreadable")
+            return Abort("Could not confirm which account Claude Code uses now.", needsLogin: needsLogin)
+        }
+        let previous = previousToken(in: after, before: before)
+        run.step("slotAfterFailure", "changed", ["previousToken": String(describing: previous)])
+        let lent = previous == .left || previous == .notLent ? giveBack(before, run) : []
+        return Abort("Claude Code's login changed unexpectedly. Check it in Claude Code.", needsLogin: needsLogin + lent)
     }
 
     // Already there, or a login of someone AgentBar does not know would disappear without a yes.
     private func gate(_ current: DefaultLogin, _ run: Run) -> ClaudeCodeSwitchOutcome? {
         if current.identity.hasLogin, current.identity.matches(run.target) { return .alreadyInUse }
-        if current.identity.hasLogin, current.accountID == nil, !run.confirmed {
-            return .needsConfirmation(email: current.identity.email)
+        if current.identity.hasLogin, current.accountID == nil {
+            let login = ClaudeCodeUnknownLogin(email: current.identity.email, accountUUID: current.identity.accountUUID,
+                                               organizationUUID: current.identity.organizationUUID)
+            if run.confirmedLosing != login { return .needsConfirmation(login) }
         }
         return nil
     }
@@ -272,33 +319,79 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         var credential: ClaudeLoginCredential?
         // The registered account the login belongs to.
         var accountID: UUID?
+        // The refresh token the slot holds.
+        var token: String? { credential?.refreshToken }
     }
 
-    private func readDefault(_ run: Run) throws -> DefaultLogin {
+    // The default slot as it is right now; nil when its Keychain item cannot be read.
+    private func snapshotDefault(_ run: Run) -> DefaultLogin? {
         let secret: Data?
         do { secret = try keychain.readSecret(service: defaultSlot.service, account: defaultSlot.account) }
-        catch {
-            run.step("readCurrentLogin", "failed")
-            throw Abort("Could not read the current Claude Code login.")
-        }
+        catch { return nil }
         let identity = readIdentity(of: defaultSlot, hasLogin: secret != nil)
         let owner = identity.hasLogin ? run.accounts.first(where: identity.matches) : nil
-        run.step("readCurrentLogin", identity.hasLogin ? "signedIn" : "signedOut",
-                 ["previousAccount": owner?.name ?? (identity.hasLogin ? "unregistered login" : "none"),
-                  "unregisteredEmail": owner == nil && identity.hasLogin ? identity.email as Any : NSNull()])
         return DefaultLogin(identity: identity, credential: secret.flatMap(ClaudeLoginCredential.init(keychainData:)),
                             accountID: owner?.id)
     }
 
-    private func verifyDefault(_ run: Run) -> (ok: Bool, reason: String?) {
-        do {
-            let hasLogin = try keychain.contains(service: defaultSlot.service, account: defaultSlot.account)
-            let identity = readIdentity(of: defaultSlot, hasLogin: hasLogin)
-            if hasLogin, identity.matches(run.target) { return (true, nil) }
-            return (false, "Claude Code is signed in to a different account than expected.")
-        } catch {
-            return (false, "Could not confirm which account Claude Code uses now.")
+    private func readDefault(_ run: Run) throws -> DefaultLogin {
+        guard let login = snapshotDefault(run) else {
+            run.step("readCurrentLogin", "failed")
+            throw Abort("Could not read the current Claude Code login.")
         }
+        let owner = run.accounts.first { $0.id == login.accountID }
+        run.step("readCurrentLogin", login.identity.hasLogin ? "signedIn" : "signedOut",
+                 ["previousAccount": owner?.name ?? (login.identity.hasLogin ? "unregistered login" : "none"),
+                  "unregisteredEmail": owner == nil && login.identity.hasLogin ? login.identity.email as Any : NSNull()])
+        return login
+    }
+
+    // Where the previous login's refresh token is, judged from the slot after something may have changed it.
+    private enum PreviousToken {
+        // There was no refresh token to protect.
+        case notLent
+        // The slot still holds that very token.
+        case stillInSlot
+        // The slot holds the same login under a newer token: an open session renewed it, and the old token is spent.
+        case renewedByOpenSession
+        // The slot no longer holds it: signed out, or another login.
+        case left
+    }
+
+    private func previousToken(in now: DefaultLogin, before: DefaultLogin) -> PreviousToken {
+        guard let token = before.token else { return .notLent }
+        guard now.identity.hasLogin else { return .left }
+        if now.token == token { return .stillInSlot }
+        return now.identity.sameLogin(as: before.identity) ? .renewedByOpenSession : .left
+    }
+
+    private struct Verdict {
+        // Why the slot does not hold the target's login; nil when it does.
+        var reason: String?
+        // The previous login's token is no longer in the slot, so it can be lent back.
+        var mayLendBack: Bool
+        // The slot is not as it was read.
+        var changed: Bool
+    }
+
+    // R9, and whether it is safe to lend the previous login back. The target's login counts only if the slot's
+    // refresh token moved: an identity file that changed beside the same token is not a switch.
+    private func judge(_ now: DefaultLogin?, before: DefaultLogin, target: UsageAccount) -> Verdict {
+        guard let now else {
+            return Verdict(reason: "Could not confirm which account Claude Code uses now.", mayLendBack: false, changed: true)
+        }
+        let previous = previousToken(in: now, before: before)
+        let mayLendBack = previous == .left || previous == .notLent
+        let changed = now.identity != before.identity || now.token != before.token
+        if now.identity.hasLogin, now.identity.matches(target), now.token != before.token {
+            return Verdict(reason: nil, mayLendBack: mayLendBack, changed: changed)
+        }
+        let reason: String
+        if !now.identity.hasLogin { reason = "Claude Code is not signed in after switching." }
+        else if previous == .stillInSlot || now.identity.matches(target) { reason = "Claude Code did not switch accounts." }
+        else if previous == .renewedByOpenSession { reason = "Claude Code's login changed while switching. Try again." }
+        else { reason = "Claude Code is signed in to a different account than expected." }
+        return Verdict(reason: reason, mayLendBack: mayLendBack, changed: changed)
     }
 
     // MARK: Lend folders
@@ -380,8 +473,8 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         return credential
     }
 
-    // Removes the copy a handover used up. If that fails the copy stays and is refused the next time it is
-    // used; the record of the failure is in the log.
+    // Removes the copy a handover used up. If the Keychain item cannot be deleted it stays, but it no longer passes
+    // for a login (see dropLend), so it is cleared the next time instead of being used; the log records the failure.
     private func removeUsedUpLend(_ accountID: UUID, _ run: Run) {
         for attempt in 0..<2 {
             do { try dropLend(accountID); run.step("removeUsedUpCopy", "ok"); return }
@@ -389,9 +482,12 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         }
     }
 
-    // Removes an account's Keychain item first and checks it is gone, then its folder. Only a lend folder can be named.
+    // Removes an account's Keychain item and checks it is gone, then its folder. Only a lend folder can be named.
+    // The identity file goes before either: without it the folder can no longer pass for that account's login, so
+    // even an item that refuses to be deleted is never handed over again.
     private func dropLend(_ accountID: UUID) throws {
         let slot = lendSlot(accountID)
+        try? FileManager.default.removeItem(at: slot.identityFile)
         try keychain.delete(service: slot.service, account: slot.account)
         guard try !keychain.contains(service: slot.service, account: slot.account) else {
             throw AccountError.message("Keychain cleanup is required for the saved Claude Code sign-in.")
@@ -402,36 +498,52 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
     }
 
     // Lends the login that was in the default slot to its own account. A login that cannot be saved
-    // means that account signs in with the browser next time.
+    // means that account signs in with the browser next time. The same token is never used twice: before it is
+    // tried again the folder is looked at, because a command that timed out may already have saved the login.
     private func giveBack(_ previous: DefaultLogin, _ run: Run) -> [UUID] {
         guard previous.identity.hasLogin, let id = previous.accountID, let account = run.accounts.first(where: { $0.id == id }) else {
             run.step("giveBack", "skipped", ["why": previous.identity.hasLogin ? "unregistered login" : "signed out"])
             return []
         }
+        // A login of its own that already waits in that folder is enough for the next switch to that account.
+        func lost() -> [UUID] { hasLendLogin(for: account) ? [] : [id] }
         guard let credential = previous.credential else {
             run.step("giveBack", "nothingToLend")
-            return [id]
+            return lost()
         }
         let slot = lendSlot(id)
         let existed = slot.directory.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        guard let before = lendLogin(slot) else {
+            run.step("giveBack", "unreadable")
+            return lost()
+        }
+        var unreadable = false
         for delay in [0] + Self.giveBackRetryDelays {
             if delay > 0 { pause(delay) }
-            switch putLogin(credential, into: slot, run, step: "giveBack") {
-            case .ok:
-                let hasLogin = (try? keychain.contains(service: slot.service, account: slot.account)) ?? false
-                if hasLogin, readIdentity(of: slot, hasLogin: true).matches(account) { return [] }
+            let result = putLogin(credential, into: slot, run, step: "giveBack")
+            guard let now = lendLogin(slot) else { unreadable = true; break }
+            if now.identity.hasLogin, now.token != before.token {
+                if now.identity.matches(account) {
+                    if result != .ok { run.step("giveBack", "finishedDespiteError") }
+                    return []
+                }
                 run.step("giveBack", "wrongAccount")
                 try? dropLend(id)
                 return [id]
-            case .invalid:
-                if !existed { try? dropLend(id) }
-                return [id]
-            case .transient:
-                continue
             }
+            if result != .transient { break }
         }
-        if !existed { try? dropLend(id) }
-        return [id]
+        // What an attempt left behind goes, unless the folder could not be looked at: a login may be in it.
+        if !existed && !unreadable { try? dropLend(id) }
+        return lost()
+    }
+
+    // What a lend folder holds right now; nil when its Keychain item cannot be read.
+    private func lendLogin(_ slot: ClaudeSlot) -> (identity: ClaudeSlotIdentity, token: String?)? {
+        let secret: Data?
+        do { secret = try keychain.readSecret(service: slot.service, account: slot.account) }
+        catch { return nil }
+        return (readIdentity(of: slot, hasLogin: secret != nil), secret.flatMap(ClaudeLoginCredential.init(keychainData:))?.refreshToken)
     }
 
     // MARK: Claude Code
@@ -460,9 +572,9 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
             return .transient
         }
         if output.status == 0 { run.step(step, "ok"); return .ok }
-        if output.timedOut { run.step(step, "timedOut"); return .transient }
+        // A command that ran out of time may already have said why it failed.
         let failure = ClaudeCodeOutput.classify(output.text)
-        run.step(step, failure == .invalid ? "invalid" : "transient",
+        run.step(step, failure == .invalid ? "invalid" : (output.timedOut ? "timedOut" : "transient"),
                  ["exitStatus": output.status as Any, "output": ClaudeCodeOutput.scrubbed(output.text, secrets: [credential.refreshToken])])
         return failure == .invalid ? .invalid : .transient
     }
@@ -541,7 +653,7 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         let target: UsageAccount
         // Claude accounts that are still alive.
         let accounts: [UsageAccount]
-        let confirmed: Bool
+        let confirmedLosing: ClaudeCodeUnknownLogin?
         let control: OperationControl
         let progress: @Sendable (ClaudeCodeSwitchStep) -> Void
         let openURL: @Sendable (URL) -> Void
@@ -552,10 +664,10 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         // A browser sign-in happened in this run.
         var freshLogin = false
 
-        init(target: UsageAccount, accounts: [UsageAccount], confirmed: Bool, control: OperationControl,
+        init(target: UsageAccount, accounts: [UsageAccount], confirmedLosing: ClaudeCodeUnknownLogin?, control: OperationControl,
              progress: @escaping @Sendable (ClaudeCodeSwitchStep) -> Void, openURL: @escaping @Sendable (URL) -> Void,
              log: LimitResetLog, startedAt: Date) {
-            self.target = target; self.accounts = accounts; self.confirmed = confirmed; self.control = control
+            self.target = target; self.accounts = accounts; self.confirmedLosing = confirmedLosing; self.control = control
             self.progress = progress; self.openURL = openURL; self.log = log; self.startedAt = startedAt
         }
 
@@ -573,7 +685,7 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
             return ["outcome": "switched", "previousAccountID": switched.previousAccountID as Any,
                     "needsLogin": switched.needsLogin.map(\.uuidString)]
         case .alreadyInUse: return ["outcome": "alreadyInUse"]
-        case .needsConfirmation(let email): return ["outcome": "needsConfirmation", "unregisteredEmail": email as Any]
+        case .needsConfirmation(let login): return ["outcome": "needsConfirmation", "unregisteredEmail": login.email as Any]
         case .cancelled: return ["outcome": "cancelled", "nothingChanged": true]
         case .failed(let failure):
             return ["outcome": "failed", "message": failure.reason, "nothingChanged": failure.nothingChanged,

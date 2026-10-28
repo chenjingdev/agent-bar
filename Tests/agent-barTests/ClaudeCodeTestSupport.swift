@@ -6,14 +6,30 @@ import Testing
 // Keychain item plus an identity file, a refresh token works once, and `claude auth login` fed a token
 // replaces whatever the slot held. Nothing here runs a real program or touches a real login.
 final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
+    // What the next login command does instead of working. The failure texts are the ones Claude Code 2.1.312 prints.
     enum Script {
+        // Nothing happens and nothing is printed.
         case timeout
+        // Prints what it printed before it hung; "{token}" stands for the refresh token it was given.
+        case timeoutAfterOutput(String)
+        // "Login failed: connect ECONNREFUSED 127.0.0.1:9", exit 1.
         case networkError
+        // "Login failed: Request failed with status code 400", exit 1, optionally naming the token.
         case invalidGrant(echoToken: Bool)
         // Succeeds, but the slot ends up holding this other person's identity.
         case writesAnotherAccount(String)
         // Does the work, then does not report in time.
         case writesThenTimeout
+        // Exit code 0, the token is used up, and nothing is written.
+        case exitsZeroWithoutWriting
+        // Exit code 0 and nothing written, while an open session renews the login that is in the slot.
+        case openSessionRenewsPreviousInstead
+        // The slot's Keychain item is gone and the command does not report in time.
+        case emptiesSlotThenTimeout
+        // The slot's Keychain item is gone and the command says its token was refused.
+        case emptiesSlotThenRefuses
+        // A new login lands in the Keychain item but not in the identity file, then the command does not report in time.
+        case writesKeychainOnlyThenTimeout
     }
     enum Browser {
         case signIn(String)
@@ -48,7 +64,7 @@ final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
     private var browserPlan: [Browser] = []
     private var labels: [String: String] = [:]
     private var stuck: Set<String> = []
-    private var unreadable: Set<String> = []
+    private var readBudget: [String: Int] = [:]
     private var holds: [String: Hold] = [:]
     private var counter = 0
 
@@ -101,7 +117,8 @@ final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
     func script(_ label: String, _ items: Script...) { locked { scripts[label, default: []].append(contentsOf: items) } }
     func plan(_ items: Browser...) { locked { browserPlan.append(contentsOf: items) } }
     func keepItem(_ label: String) { locked { _ = stuck.insert(label) } }
-    func failReads(_ label: String) { locked { _ = unreadable.insert(label) } }
+    // Reading that Keychain item throws, after this many reads have worked.
+    func failReads(_ label: String, afterSuccessfulReads count: Int = 0) { locked { readBudget[label] = count } }
     func hold(login label: String) -> Hold {
         let hold = Hold()
         locked { holds[label] = hold }
@@ -158,7 +175,10 @@ final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
         try locked {
             let name = labels[service] ?? service
             recordedEvents.append("read \(name)")
-            if unreadable.contains(name) { throw AccountError.message("The Keychain is locked.") }
+            if let budget = readBudget[name] {
+                guard budget > 0 else { throw AccountError.message("The Keychain is locked.") }
+                readBudget[name] = budget - 1
+            }
             return secrets[service]
         }
     }
@@ -217,9 +237,29 @@ final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
             scripts[name] = queue
             switch next {
             case .timeout: return ClaudeCLIOutput(status: nil, text: "")
-            case .networkError: return ClaudeCLIOutput(status: 1, text: "Login failed: ECONNRESET socket hang up")
+            case .timeoutAfterOutput(let text):
+                return ClaudeCLIOutput(status: nil, text: text.replacingOccurrences(of: "{token}", with: token))
+            case .networkError: return ClaudeCLIOutput(status: 1, text: "Login failed: connect ECONNREFUSED 127.0.0.1:9")
             case .invalidGrant(let echo):
-                return ClaudeCLIOutput(status: 1, text: "Login failed: invalid_grant" + (echo ? " for refresh token \(token)" : ""))
+                return ClaudeCLIOutput(status: 1, text: "Login failed: Request failed with status code 400" + (echo ? " (refresh token \(token))" : ""))
+            case .exitsZeroWithoutWriting:
+                live.remove(token)
+                return ClaudeCLIOutput(status: 0, text: "Login successful.")
+            case .openSessionRenewsPreviousInstead:
+                live.remove(token)
+                renewLogin(in: slot)
+                return ClaudeCLIOutput(status: 0, text: "Login successful.")
+            case .emptiesSlotThenTimeout:
+                live.remove(token)
+                secrets.removeValue(forKey: slot.service)
+                return ClaudeCLIOutput(status: nil, text: "")
+            case .emptiesSlotThenRefuses:
+                secrets.removeValue(forKey: slot.service)
+                return ClaudeCLIOutput(status: 1, text: "Login failed: Request failed with status code 400")
+            case .writesKeychainOnlyThenTimeout:
+                live.remove(token)
+                _ = writeSecret(slot, owner: owner, scopes: Self.scopes(environment))
+                return ClaudeCLIOutput(status: nil, text: "")
             case .writesAnotherAccount(let other):
                 live.remove(token)
                 _ = writeLogin(slot, owner: owner, identity: other, scopes: Self.scopes(environment))
@@ -231,7 +271,7 @@ final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
             }
         }
         guard live.contains(token) else {
-            return ClaudeCLIOutput(status: 1, text: "Login failed: invalid_grant: refresh token \(token) is not valid")
+            return ClaudeCLIOutput(status: 1, text: "Login failed: Request failed with status code 400")
         }
         live.remove(token)
         _ = writeLogin(slot, owner: owner, identity: owner, scopes: Self.scopes(environment))
@@ -244,6 +284,20 @@ final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
 
     // A fresh login: a new refresh token in the Keychain item and the identity file of `identity`.
     private func writeLogin(_ slot: ClaudeSlot, owner: String, identity: String, scopes: [String]) -> String {
+        let token = writeSecret(slot, owner: owner, scopes: scopes)
+        writeIdentity(slot, identity: identity)
+        return token
+    }
+
+    // What an open session does to the login in a slot: uses its refresh token once and saves the next one.
+    private func renewLogin(in slot: ClaudeSlot) {
+        guard let data = secrets[slot.service], let old = ClaudeLoginCredential(keychainData: data), let owner = owners[old.refreshToken] else { return }
+        live.remove(old.refreshToken)
+        let identity = (try? Data(contentsOf: slot.identityFile)).flatMap(ClaudeOAuthAccount.init(claudeJSON:))?.email ?? owner
+        _ = writeLogin(slot, owner: owner, identity: identity, scopes: old.scopes)
+    }
+
+    private func writeSecret(_ slot: ClaudeSlot, owner: String, scopes: [String]) -> String {
         counter += 1
         let token = "FAKE-REFRESH-\(counter)-\(owner)"
         live.insert(token)
@@ -251,14 +305,23 @@ final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
         let credential: [String: Any] = ["claudeAiOauth": ["accessToken": "FAKE-ACCESS-\(counter)", "refreshToken": token,
                                                            "expiresAt": 1_900_000_000_000, "scopes": scopes, "subscriptionType": "max"]]
         secrets[slot.service] = try? JSONSerialization.data(withJSONObject: credential)
+        return token
+    }
+
+    private func writeIdentity(_ slot: ClaudeSlot, identity: String) {
         let person = personLocked(identity)
         let file: [String: Any] = ["numStartups": 3, "projects": [:],
                                    "oauthAccount": ["accountUuid": person.accountUUID, "emailAddress": identity,
                                                     "organizationUuid": person.organizationUUID]]
         try? FileManager.default.createDirectory(at: slot.identityFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? JSONSerialization.data(withJSONObject: file).write(to: slot.identityFile)
-        return token
     }
+}
+
+// Runs `body` on a thread of its own, so a test that waits for it never depends on a free thread in a shared pool.
+func runOnNewThread(_ body: @escaping @Sendable () -> Void) {
+    let thread = Thread(block: body)
+    thread.start()
 }
 
 final class Recorder<Value: Sendable>: @unchecked Sendable {
@@ -328,10 +391,10 @@ final class SwitchFixture: @unchecked Sendable {
         var steps: [ClaudeCodeSwitchStep]
     }
 
-    func switchTo(_ target: UsageAccount, confirmed: Bool = false, control: OperationControl = OperationControl(),
+    func switchTo(_ target: UsageAccount, confirmedLosing: ClaudeCodeUnknownLogin? = nil, control: OperationControl = OperationControl(),
                   openURL: @escaping @Sendable (URL) -> Void = { _ in }) -> Switch {
         let steps = Recorder<ClaudeCodeSwitchStep>()
-        let outcome = switcher.switchAccount(to: target, among: accounts, confirmedLosingCurrentLogin: confirmed, control: control,
+        let outcome = switcher.switchAccount(to: target, among: accounts, confirmedLosing: confirmedLosing, control: control,
                                              progress: { steps.add($0) }, openURL: openURL)
         return Switch(outcome: outcome, steps: steps.values)
     }

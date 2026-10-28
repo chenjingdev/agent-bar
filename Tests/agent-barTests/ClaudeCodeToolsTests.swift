@@ -4,6 +4,9 @@ import Testing
 
 // The real wrappers around `claude` and `/usr/bin/security`, run against small shell scripts that stand in for
 // them. No real Claude Code, Keychain item or login is involved.
+// These tests block their thread while a child process runs, some for seconds. They run one at a time, so they
+// never hold several of the test runner's shared threads at once and starve the asynchronous tests beside them.
+@Suite(.serialized)
 struct ClaudeCodeToolsTests {
     // MARK: claude
 
@@ -44,7 +47,7 @@ struct ClaudeCodeToolsTests {
         let directory = try workDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
         let marker = directory.appendingPathComponent("still-running")
         let claude = try script(in: directory, """
-        sleep 1; echo alive > "\(marker.path)"; sleep 30
+        sleep 0.7; echo alive > "\(marker.path)"; sleep 30
         """)
         let started = Date()
 
@@ -54,7 +57,7 @@ struct ClaudeCodeToolsTests {
         #expect(result.timedOut && result.status == nil)
         #expect(Date().timeIntervalSince(started) < 10)
         // It was stopped, not left to finish in the background.
-        Thread.sleep(forTimeInterval: 1.5)
+        Thread.sleep(forTimeInterval: 1.2)
         #expect(!FileManager.default.fileExists(atPath: marker.path))
     }
 
@@ -66,7 +69,7 @@ struct ClaudeCodeToolsTests {
         """)
 
         let result = try SystemClaudeCLI(executable: { claude }).run(["auth", "login"], environment: ["PATH": "/usr/bin:/bin"],
-                                                                      directory: directory, timeout: 3)
+                                                                      directory: directory, timeout: 1.5)
 
         #expect(result.timedOut && result.status == nil)
         #expect(result.text.contains("Login failed: Request failed with status code 400"))
@@ -96,7 +99,7 @@ struct ClaudeCodeToolsTests {
         let talking = try ProcessSession(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "echo first; sleep 30"],
                                          environment: environment, directory: directory)
         defer { talking.stop() }
-        let (data, timedOut) = try talking.collectPartial(until: Date().addingTimeInterval(3), control: OperationControl())
+        let (data, timedOut) = try talking.collectPartial(until: Date().addingTimeInterval(1.5), control: OperationControl())
         #expect(timedOut && String(decoding: data, as: UTF8.self) == "first\n")
 
         let finished = try ProcessSession(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "echo done"],

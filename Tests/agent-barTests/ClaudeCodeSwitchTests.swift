@@ -15,15 +15,19 @@ struct ClaudeCodeSwitchTests {
         let result = f.switchTo(target)
 
         #expect(result.outcome == .switched(ClaudeCodeSwitched(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
-        // R5: read the previous login, hand the new one over, remove its used-up copy, then lend the previous one back.
-        // The journal says "started" before the default login is touched and "slotSwitched" before the lending back.
+        // R5: read the previous login, hand the new one over, remove its used-up copy, read the slot again, then lend the
+        // previous one back. The journal says "started" before the default login is touched and "slotSwitched" before
+        // the lending back, and the lend folder is looked at before and after so that no token is used twice.
         #expect(f.world.events == [
             "version",
             "read default",
             "read lend(target)",
             "login default <- target [journal started]",
             "delete lend(target)",
+            "read default",
+            "read lend(prev)",
             "login lend(prev) <- prev [journal slotSwitched]",
+            "read lend(prev)",
         ])
         #expect(result.steps == [.checkingVersion, .readingCurrentLogin, .signingIn, .verifying, .returningPreviousLogin])
         #expect(f.defaultEmail == "target@example.test")
@@ -106,7 +110,7 @@ struct ClaudeCodeSwitchTests {
 
             #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: nil, needsLogin: [])))
             #expect(f.world.events == ["version", "read default", "read lend(target)", "login default <- target [journal started]",
-                                       "delete lend(target)"])
+                                       "delete lend(target)", "read default"])
             #expect(f.defaultEmail == "target@example.test")
         }
     }
@@ -121,14 +125,15 @@ struct ClaudeCodeSwitchTests {
 
         let asked = f.switchTo(target)
 
-        #expect(asked.outcome == .needsConfirmation(email: "stranger@example.test"))
+        guard case .needsConfirmation(let login) = asked.outcome else { Issue.record("expected a question"); return }
+        #expect(login.email == "stranger@example.test" && login.accountUUID != nil && login.organizationUUID != nil)
         #expect(f.world.events == ["version", "read default"])
         #expect(f.world.isLive(strangerToken) && f.defaultEmail == "stranger@example.test")
         #expect(f.world.hasItem(f.lendSlot(target)))
         #expect(f.journal == nil)
         #expect(f.logLines.last?["outcome"] as? String == "needsConfirmation")
 
-        let confirmed = f.switchTo(target, confirmed: true)
+        let confirmed = f.switchTo(target, confirmedLosing: login)
 
         #expect(confirmed.outcome == .switched(.init(accountID: target.id, previousAccountID: nil, needsLogin: [])))
         #expect(f.defaultEmail == "target@example.test")
@@ -144,8 +149,9 @@ struct ClaudeCodeSwitchTests {
         f.world.setSecret(f.defaultSlot, Data(#"{"claudeAiOauth":{"refreshToken":"FAKE-REFRESH-X"}}"#.utf8))
         try f.saveLogin(for: target)
 
-        #expect(f.switchTo(target).outcome == .needsConfirmation(email: nil))
-        #expect(f.switchTo(target, confirmed: true).outcome == .switched(.init(accountID: target.id, previousAccountID: nil, needsLogin: [])))
+        let nobody = ClaudeCodeUnknownLogin(email: nil, accountUUID: nil, organizationUUID: nil)
+        #expect(f.switchTo(target).outcome == .needsConfirmation(nobody))
+        #expect(f.switchTo(target, confirmedLosing: nobody).outcome == .switched(.init(accountID: target.id, previousAccountID: nil, needsLogin: [])))
     }
 
     // MARK: The first time: the browser
@@ -167,8 +173,8 @@ struct ClaudeCodeSwitchTests {
         #expect(f.world.events == [
             "version", "read default", "read lend(target)",
             "browser lend(target)", "read lend(target)", "read default",
-            "login default <- target [journal started]", "delete lend(target)",
-            "login lend(prev) <- prev [journal slotSwitched]",
+            "login default <- target [journal started]", "delete lend(target)", "read default",
+            "read lend(prev)", "login lend(prev) <- prev [journal slotSwitched]", "read lend(prev)",
         ])
         #expect(f.defaultEmail == "target@example.test" && f.lendEmail(prev) == "prev@example.test")
         #expect(f.world.problems.isEmpty)
@@ -206,10 +212,10 @@ struct ClaudeCodeSwitchTests {
                                  .signingIn, .verifying, .returningPreviousLogin])
         #expect(f.world.events == [
             "version", "read default", "read lend(target)",
-            "login default <- target (spent) [journal started]", "delete lend(target)",
+            "login default <- target (spent) [journal started]", "read default", "delete lend(target)",
             "browser lend(target)", "read lend(target)", "read default",
-            "login default <- target [journal started]", "delete lend(target)",
-            "login lend(prev) <- prev [journal slotSwitched]",
+            "login default <- target [journal started]", "delete lend(target)", "read default",
+            "read lend(prev)", "login lend(prev) <- prev [journal slotSwitched]", "read lend(prev)",
         ])
         #expect(f.defaultEmail == "target@example.test")
     }
@@ -248,6 +254,8 @@ struct ClaudeCodeSwitchTests {
         #expect(f.world.events.filter { $0.hasPrefix("login default") }.count == 2)
         #expect(f.defaultEmail == "prev@example.test" && f.world.isLive(prevToken))
         #expect(!f.world.events.contains { $0.hasPrefix("login lend(prev)") })
+        // The login the browser just made was refused too: its copy is not kept, and the browser is not opened again.
+        #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(target))
         #expect(f.journal == nil)
     }
 
@@ -313,7 +321,8 @@ struct ClaudeCodeSwitchTests {
 
             #expect(result.outcome == .failed(.init(reason: "Claude Code could not sign in. Check the connection and try again.",
                                                     nothingChanged: true)))
-            #expect(f.world.events == ["version", "read default", "read lend(target)", "login default <- target [journal started]"])
+            #expect(f.world.events == ["version", "read default", "read lend(target)", "login default <- target [journal started]",
+                                       "read default"])
             #expect(f.defaultEmail == "prev@example.test" && f.world.isLive(prevToken))
             // The saved login was not used up, so the next try needs no browser.
             #expect(f.world.hasItem(f.lendSlot(target)) && f.world.isLive(targetToken))
@@ -344,7 +353,7 @@ struct ClaudeCodeSwitchTests {
         let result = f.switchTo(target)
 
         #expect(result.outcome == .failed(.init(reason: "Claude Code is signed in to a different account than expected.",
-                                                nothingChanged: false)))
+                                                nothingChanged: false, needsLogin: [target.id])))
         #expect(f.lendEmail(prev) == "prev@example.test")
         #expect(f.journal == nil)
     }
@@ -389,6 +398,15 @@ struct ClaudeCodeSwitchTests {
         #expect(f.world.events.filter { $0 == "delete lend(target)" }.count == 2)
         let removal = f.logLines.first { $0["step"] as? String == "removeUsedUpCopy" }
         #expect(removal?["outcome"] as? String == "failed")
+
+        // The item that stayed no longer passes for the account's login, so asking for that account again cannot hand its
+        // spent token over: it is cleared first, and while the Keychain refuses to clear it nothing is handed over.
+        #expect(!f.switcher.hasLendLogin(for: target))
+        f.signInDefault(prev)
+        let loginsBefore = f.world.events.filter { $0.hasPrefix("login default") }.count
+        let again = f.switchTo(target)
+        #expect(again.outcome == .failed(.init(reason: "Could not clear an old sign-in for this account.", nothingChanged: true)))
+        #expect(f.world.events.filter { $0.hasPrefix("login default") }.count == loginsBefore)
     }
 
     @Test func accountsThatCannotBeToldApartOrAreNotClaudeAreRefused() throws {
@@ -480,6 +498,291 @@ struct ClaudeCodeSwitchTests {
 
         #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [prev.id])))
         #expect(!f.world.events.contains { $0.hasPrefix("login lend(") })
+    }
+
+    // MARK: Never the same refresh token twice
+
+    @Test func aCommandThatSucceedsWithoutSwitchingNeverHasThePreviousTokenLentOut() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        let prevToken = f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        f.world.script("default", .exitsZeroWithoutWriting)
+
+        let result = f.switchTo(target)
+
+        // The slot still holds the previous login's token: lending it back would use that token a second time and the
+        // next renewal could end both logins. That login is still in Claude Code, so it is not reported as lost.
+        #expect(result.outcome == .failed(.init(reason: "Claude Code did not switch accounts.", nothingChanged: true, needsLogin: [target.id])))
+        #expect(!f.world.events.contains { $0.hasPrefix("login lend(") })
+        #expect(f.world.token(in: f.defaultSlot) == prevToken && f.world.isLive(prevToken))
+        #expect(f.defaultEmail == "prev@example.test" && !f.lendFolderExists(prev))
+        // The token of the new login was given to the command, so its saved copy is gone.
+        #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(target))
+        #expect(f.journal == nil)
+    }
+
+    @Test func aPreviousLoginRenewedByAnOpenSessionIsNotLentBackStale() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        let prevToken = f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        f.world.script("default", .openSessionRenewsPreviousInstead)
+
+        let result = f.switchTo(target)
+
+        // An open session renewed the previous login while the command ran: the token read earlier is spent.
+        #expect(result.outcome == .failed(.init(reason: "Claude Code's login changed while switching. Try again.", nothingChanged: false,
+                                                needsLogin: [target.id])))
+        #expect(!f.world.events.contains { $0.hasPrefix("login lend(") })
+        #expect(!f.world.isLive(prevToken))
+        let kept = try #require(f.world.token(in: f.defaultSlot))
+        #expect(kept != prevToken && f.world.isLive(kept) && f.defaultEmail == "prev@example.test")
+        #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(prev))
+    }
+
+    @Test func aSlotLeftEmptyByAFailedHandoverGetsThePreviousLoginBack() throws {
+        for lendingBackWorks in [true, false] {
+            let f = try SwitchFixture()
+            let prev = f.addAccount("prev"), target = f.addAccount("target")
+            f.signInDefault(prev)
+            try f.saveLogin(for: target)
+            f.world.script("default", .emptiesSlotThenTimeout)
+            if !lendingBackWorks { f.world.script("lend(prev)", .invalidGrant(echoToken: false)) }
+
+            let result = f.switchTo(target)
+
+            // The previous login's token left the slot, so it is lent back; if that cannot be done, that account is reported.
+            let lost = lendingBackWorks ? [target.id] : [target.id, prev.id]
+            #expect(result.outcome == .failed(.init(reason: "Claude Code's login changed unexpectedly. Check it in Claude Code.",
+                                                    nothingChanged: false, needsLogin: lost)))
+            #expect(f.world.events.filter { $0.hasPrefix("login lend(prev)") }.count == 1)
+            #expect(lendingBackWorks ? f.lendEmail(prev) == "prev@example.test" : !f.lendFolderExists(prev))
+            // Whatever the command did with the new login, its saved copy is not kept.
+            #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(target))
+            #expect(!f.world.events.contains { $0.hasPrefix("browser") })
+            #expect(f.journal == nil)
+        }
+    }
+
+    @Test func aFailedHandoverThatMovedTheSlotEndsTheSwitchInsteadOfGoingOnToTheBrowser() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        f.world.plan(.signIn("target@example.test"))
+        f.world.script("default", .emptiesSlotThenRefuses)
+
+        let result = f.switchTo(target)
+
+        // The previous login must not vanish from the result just because a second round could have worked.
+        #expect(result.outcome == .failed(.init(reason: "Claude Code's login changed unexpectedly. Check it in Claude Code.",
+                                                nothingChanged: false, needsLogin: [target.id])))
+        #expect(!f.world.events.contains { $0.hasPrefix("browser") })
+        #expect(f.lendEmail(prev) == "prev@example.test")
+        #expect(!f.world.hasItem(f.lendSlot(target)))
+    }
+
+    @Test func aNewLoginInTheKeychainAloneIsNotMistakenForNoChange() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        let targetToken = try f.saveLogin(for: target)
+        f.world.script("default", .writesKeychainOnlyThenTimeout)
+
+        let result = f.switchTo(target)
+
+        // The identity file still names the previous account, but the Keychain item holds a new login: the saved copy
+        // of the target was used up and must not stay for the next click.
+        #expect(result.outcome == .failed(.init(reason: "Claude Code's login changed unexpectedly. Check it in Claude Code.",
+                                                nothingChanged: false, needsLogin: [target.id])))
+        #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(target) && !f.world.isLive(targetToken))
+        #expect(!f.world.events.contains { $0.hasPrefix("login lend(") })
+        #expect(f.journal == nil)
+    }
+
+    @Test func aSlotThatCannotBeReadAfterwardsIsNeitherTrustedNorLentFrom() throws {
+        for failure in [FakeClaudeWorld.Script?.none, .some(.timeout)] {
+            let f = try SwitchFixture()
+            let prev = f.addAccount("prev"), target = f.addAccount("target")
+            f.signInDefault(prev)
+            try f.saveLogin(for: target)
+            // The first read (before the handover) works; the one after it does not.
+            f.world.failReads("default", afterSuccessfulReads: 1)
+            if let failure { f.world.script("default", failure) }
+
+            let result = f.switchTo(target)
+
+            let handoverWorked = failure == nil
+            #expect(result.outcome == .failed(.init(reason: "Could not confirm which account Claude Code uses now.", nothingChanged: false,
+                                                    needsLogin: handoverWorked ? [] : [target.id])))
+            #expect(!f.world.events.contains { $0.hasPrefix("login lend(") })
+            #expect(!f.world.hasItem(f.lendSlot(target)))
+        }
+    }
+
+    @Test func aLendingBackThatSavedAndTimedOutIsNotRepeated() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        f.world.script("lend(prev)", .writesThenTimeout)
+
+        let result = f.switchTo(target)
+
+        // The first try saved the login and then did not report in time. Trying the same token again would use it twice,
+        // and a refusal of that second try must never remove the login the first one saved.
+        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
+        #expect(f.world.events.filter { $0.hasPrefix("login lend(prev)") }.count == 1)
+        #expect(f.world.pauses.isEmpty)
+        #expect(f.lendEmail(prev) == "prev@example.test" && f.world.token(in: f.lendSlot(prev)).map(f.world.isLive) == true)
+    }
+
+    @Test func aFolderThatCannotBeLookedAtAfterLendingBackIsNotTouchedAndNotTriedAgain() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        f.world.script("lend(prev)", .writesThenTimeout)
+        // The first look at the folder works; the one after the attempt does not.
+        f.world.failReads("lend(prev)", afterSuccessfulReads: 1)
+
+        let result = f.switchTo(target)
+
+        // It cannot be told whether the login was saved: the token is not used again and what may be there is not removed.
+        // The folder does hold a login of that account, so the account is not reported as lost.
+        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
+        #expect(f.world.events.filter { $0.hasPrefix("login lend(prev)") }.count == 1)
+        #expect(!f.world.events.contains("delete lend(prev)"))
+        #expect(f.world.hasItem(f.lendSlot(prev)))
+    }
+
+    @Test func aLendingBackThatSavedNothingIsTriedAgainAndReplacesTheOlderLogin() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        let older = try f.saveLogin(for: prev)
+        f.world.script("lend(prev)", .timeout)
+
+        let result = f.switchTo(target)
+
+        // A login that was already in the folder is not mistaken for the one that was just lent.
+        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
+        #expect(f.world.events.filter { $0.hasPrefix("login lend(prev)") }.count == 2)
+        #expect(f.world.pauses == Array(ClaudeCodeSwitcher.giveBackRetryDelays.prefix(1)))
+        let lent = try #require(f.world.token(in: f.lendSlot(prev)))
+        #expect(lent != older && f.world.isLive(lent))
+    }
+
+    @Test func aPreviousLoginThatAlreadyHasASavedLoginIsNotReportedAsLost() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        let older = try f.saveLogin(for: prev)
+        f.world.script("lend(prev)", .invalidGrant(echoToken: false))
+
+        let result = f.switchTo(target)
+
+        // Lending the current login back was refused, but the account's folder holds a login of its own, which stays.
+        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
+        #expect(f.world.token(in: f.lendSlot(prev)) == older && f.lendFolderExists(prev))
+    }
+
+    @Test func aTimeoutThatAlreadyPrintedARefusalIsARefusal() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        f.world.plan(.signIn("target@example.test"))
+        f.world.script("default", .timeoutAfterOutput("Login failed: Request failed with status code 400 for {token}"))
+
+        let result = f.switchTo(target)
+
+        // The command printed why it failed and then hung: that is the saved login being refused, not a network problem.
+        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
+        #expect(result.steps.contains(.waitingForBrowser(.savedLoginExpired)))
+        let refusal = try #require(f.logLines.first { $0["step"] as? String == "signIn" })
+        #expect(refusal["outcome"] as? String == "invalid")
+        let output = try #require(refusal["output"] as? String)
+        #expect(output.contains("status code 400") && output.contains("[redacted]"))
+        for token in f.world.allTokens { #expect(!f.logText.contains(token)) }
+    }
+
+    @Test func aTimeoutWithNothingPrintedIsStillAPassingFailureAndItsOutputIsLogged() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        let targetToken = try f.saveLogin(for: target)
+        f.world.script("default", .timeoutAfterOutput("Opening the browser for {token}"))
+
+        let result = f.switchTo(target)
+
+        #expect(result.outcome == .failed(.init(reason: "Claude Code could not sign in. Check the connection and try again.", nothingChanged: true)))
+        #expect(f.world.hasItem(f.lendSlot(target)) && f.world.isLive(targetToken))
+        let step = try #require(f.logLines.first { $0["step"] as? String == "signIn" })
+        #expect(step["outcome"] as? String == "timedOut")
+        #expect((step["output"] as? String)?.contains("Opening the browser for [redacted]") == true)
+        #expect(!f.logText.contains(targetToken))
+    }
+
+    // MARK: A yes belongs to the login that was asked about
+
+    @Test func aConfirmationBelongsToTheLoginThatWasAskedAbout() throws {
+        let f = try SwitchFixture()
+        let target = f.addAccount("target")
+        try f.saveLogin(for: target)
+        f.signInDefault(email: "first@example.test")
+        guard case .needsConfirmation(let first) = f.switchTo(target).outcome else { Issue.record("expected a question"); return }
+        #expect(first.email == "first@example.test")
+
+        // By the time the yes arrives the default login is another one that AgentBar does not know either.
+        f.signInDefault(email: "second@example.test")
+        let again = f.switchTo(target, confirmedLosing: first)
+
+        guard case .needsConfirmation(let second) = again.outcome else { Issue.record("a yes for another login must ask again"); return }
+        #expect(second.email == "second@example.test" && second != first)
+        #expect(f.defaultEmail == "second@example.test" && !f.world.events.contains { $0.hasPrefix("login") })
+        #expect(f.switchTo(target, confirmedLosing: second).outcome == .switched(.init(accountID: target.id, previousAccountID: nil, needsLogin: [])))
+    }
+
+    @Test func aLoginThatChangesWhileTheBrowserIsOpenIsAskedAboutAgain() throws {
+        let f = try SwitchFixture()
+        let target = f.addAccount("target")
+        f.signInDefault(email: "first@example.test")
+        f.world.plan(.signIn("target@example.test"))
+        guard case .needsConfirmation(let first) = f.switchTo(target).outcome else { Issue.record("expected a question"); return }
+
+        let result = f.switchTo(target, confirmedLosing: first, openURL: { _ in f.signInDefault(email: "second@example.test") })
+
+        guard case .needsConfirmation(let second) = result.outcome else { Issue.record("expected a second question"); return }
+        #expect(second.email == "second@example.test")
+        // Nothing was changed, and the sign-in the person just did is kept for the next try.
+        #expect(f.defaultEmail == "second@example.test" && !f.world.events.contains { $0.hasPrefix("login") })
+        #expect(f.world.hasItem(f.lendSlot(target)) && f.lendEmail(target) == "target@example.test")
+    }
+
+    // MARK: Removing a lend login
+
+    @Test func removingALendLoginWhileASwitchRunsIsRefused() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target"), other = f.addAccount("other")
+        f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        try f.saveLogin(for: other)
+        let hold = f.world.hold(login: "default")
+        let finished = DispatchSemaphore(value: 0)
+        runOnNewThread { _ = f.switchTo(target); finished.signal() }
+        #expect(hold.entered.wait(timeout: .now() + 20) == .success)
+
+        #expect(throws: AccountError.self) { try f.switcher.removeLendLogin(for: other.id) }
+        #expect(f.world.hasItem(f.lendSlot(other)) && f.lendFolderExists(other))
+        hold.release.signal()
+        #expect(finished.wait(timeout: .now() + 20) == .success)
+
+        try f.switcher.removeLendLogin(for: other.id)
+        #expect(!f.world.hasItem(f.lendSlot(other)) && !f.lendFolderExists(other))
     }
 
     // MARK: Version
@@ -647,7 +950,7 @@ struct ClaudeCodeSwitchTests {
         let hold = f.world.hold(login: "default")
         let finished = DispatchSemaphore(value: 0)
         let first = Recorder<ClaudeCodeSwitchOutcome>()
-        DispatchQueue.global().async {
+        runOnNewThread {
             first.add(f.switchTo(target).outcome)
             finished.signal()
         }
@@ -740,7 +1043,7 @@ struct ClaudeCodeSwitchTests {
         try f.saveLogin(for: target)
         let hold = f.world.hold(login: "default")
         let finished = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async { _ = f.switchTo(target); finished.signal() }
+        runOnNewThread { _ = f.switchTo(target); finished.signal() }
         #expect(hold.entered.wait(timeout: .now() + 20) == .success)
 
         // The default login is being changed right now: this is what a crash would leave behind.
@@ -760,10 +1063,10 @@ struct ClaudeCodeSwitchTests {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")
         f.signInDefault(prev)
-        let spent = try f.saveLogin(for: target)
-        f.world.revoke(spent)
+        try f.saveLogin(for: target)
         f.world.plan(.signIn("target@example.test"))
         // Claude Code echoes the token it was given in two of its error messages.
+        f.world.script("default", .invalidGrant(echoToken: true))
         f.world.script("lend(prev)", .invalidGrant(echoToken: true))
 
         let result = f.switchTo(target)
@@ -779,7 +1082,7 @@ struct ClaudeCodeSwitchTests {
         #expect(lines.last?["outcome"] as? String == "switched")
         // The refusal is kept, the token inside it is not.
         let refusal = try #require(lines.first { $0["step"] as? String == "giveBack" })
-        #expect((refusal["output"] as? String)?.contains("invalid_grant") == true)
+        #expect((refusal["output"] as? String)?.contains("status code 400") == true && (refusal["output"] as? String)?.contains("[redacted]") == true)
         let text = f.logText
         for token in f.world.allTokens { #expect(!text.contains(token)) }
         #expect(!text.contains("FAKE-REFRESH") && !text.contains("FAKE-ACCESS"))
