@@ -101,7 +101,17 @@ if [[ "$should_install" -eq 1 ]]; then
   fi
   defaults export dev.chenjing.agent-bar "$backup_dir/settings.plist" >/dev/null 2>&1 || true
   if [[ -d "$HOME/.agentbar/multi-account-v1" ]]; then
-    ditto "$HOME/.agentbar/multi-account-v1" "$backup_dir/multi-account-v1"
+    # A locked Mac cannot read files under complete data protection. ditto still
+    # copies the rest, so go on when unreadable files are the only failures.
+    if ! data_errors=$(ditto "$HOME/.agentbar/multi-account-v1" "$backup_dir/multi-account-v1" 2>&1); then
+      if grep -qv -e 'Operation not permitted$' -e 'Permission denied$' <<<"$data_errors"; then
+        echo "$data_errors" >&2
+        echo "Data backup failed; installation stopped. Backup: $backup_dir" >&2
+        exit 1
+      fi
+      echo "Not in the backup because they could not be read:" >&2
+      echo "$data_errors" >&2
+    fi
   fi
   staging_dir=$(mktemp -d "$install_dir/.AgentBar-install.XXXXXX")
   ditto "$bundle_path" "$staging_dir/new.app"

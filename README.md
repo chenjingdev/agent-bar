@@ -92,7 +92,7 @@ The installer copies the previous app, its preferences, and existing multi-accou
 
 `~/Library/Application Support/AgentBar/Backups/<timestamp>/`
 
-It verifies the staged app's signature before replacement and refuses to replace a running app. For stable macOS Keychain authorization across local rebuilds, the script uses `AGENTBAR_CODE_SIGN_IDENTITY` when set, otherwise a recognized local code-signing identity already installed on this Mac, with ad-hoc signing only as a fallback. The local bundle is not notarized for public distribution.
+Data files a locked Mac cannot read are left out of that backup and listed; any other backup error stops the installation. It verifies the staged app's signature before replacement and refuses to replace a running app. For stable macOS Keychain authorization across local rebuilds, the script uses `AGENTBAR_CODE_SIGN_IDENTITY` when set, otherwise a recognized local code-signing identity already installed on this Mac, with ad-hoc signing only as a fallback. The local bundle is not notarized for public distribution.
 
 To roll back, quit AgentBar, restore `AgentBar.app` from the selected backup, and restore the corresponding AgentBar preferences if needed. Preserve the newer multi-account data separately before restoring its backup. Never restore over external `~/.codex`, `~/.claude`, or unrelated Keychain entries.
 
