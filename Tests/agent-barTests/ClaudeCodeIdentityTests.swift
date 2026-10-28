@@ -59,6 +59,26 @@ struct ClaudeCodeIdentityTests {
                 == FileManager.default.homeDirectoryForCurrentUser.path)
     }
 
+    @Test func theDefaultLoginIgnoresWhateverAgentBarWasStartedWith() {
+        let started = ["CLAUDE_CONFIG_DIR": "/elsewhere", "CLAUDE_SECURESTORAGE_CONFIG_DIR": "/elsewhere", "CODEX_HOME": "/codex",
+                       "ANTHROPIC_API_KEY": "FAKE-KEY", "CLAUDE_CODE_OAUTH_TOKEN": "FAKE-TOKEN",
+                       "USER": "person", "LOGNAME": "person", "TMPDIR": "/tmp/started"]
+        let standIn = ClaudeSlot.defaultLogin(identityFile: URL(fileURLWithPath: "/tmp/agentbar-slot-test/.claude.json"), service: "fake-service")
+
+        let asDefault = standIn.makeEnvironment(from: started)
+
+        for name in ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] {
+            #expect(asDefault[name] == nil, "\(name)")
+        }
+        #expect(asDefault["USER"] == "person" && asDefault["LOGNAME"] == "person" && asDefault["TMPDIR"] == "/tmp/started")
+        #expect(Set(asDefault.keys) == Set(ProviderCLI.processEnvironment(from: [:]).keys).union(["USER", "LOGNAME", "TMPDIR"]))
+        // A folder gets its own two variables, not the inherited ones.
+        let asFolder = ClaudeSlot.folder(URL(fileURLWithPath: "/tmp/agentbar-slot-test/lend/one")).makeEnvironment(from: started)
+        #expect(asFolder["CLAUDE_CONFIG_DIR"] == "/tmp/agentbar-slot-test/lend/one")
+        #expect(asFolder["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == "/tmp/agentbar-slot-test/lend/one")
+        #expect(asFolder["ANTHROPIC_API_KEY"] == nil && asFolder["CLAUDE_CODE_OAUTH_TOKEN"] == nil && asFolder["CODEX_HOME"] == nil)
+    }
+
     // MARK: Identity
 
     @Test func identityComparesTheAccountUUIDAndTheOrganizationTogether() {
@@ -145,14 +165,19 @@ struct ClaudeCodeIdentityTests {
     @Test func onlyInvalidGrantAndFourHundredOrFourHundredOneMeanTheLoginIsDead() {
         for text in ["Login failed: invalid_grant",
                      #"{"error":"invalid_grant","error_description":"Refresh token not found or invalid"}"#,
+                     // What Claude Code 2.1.312 really prints for a refresh token the server refuses.
+                     "Login failed: Request failed with status code 400",
                      "Request failed with status code 400", "Request failed with status code 401", "HTTP 401 Unauthorized",
-                     "status: 400", "HTTP/1.1 400 Bad Request", "400 Bad Request", "401 Unauthorized", "Error: 401",
-                     "OAuth error: the refresh token expired", "Refresh token has been revoked", "Unauthorized"] {
+                     "status: 400", "HTTP/1.1 400 Bad Request", "400 Bad Request", "401 Unauthorized", "Error: 401"] {
             #expect(ClaudeCodeOutput.classify(text) == .invalid, "\(text)")
         }
         for text in ["", "ECONNRESET socket hang up", "getaddrinfo ENOTFOUND platform.claude.com", "fetch failed", "Request timed out",
+                     // What Claude Code 2.1.312 really prints when the network is blocked (HTTPS_PROXY=127.0.0.1:9).
+                     "Login failed: connect ECONNREFUSED 127.0.0.1:9",
                      "Request failed with status code 403", "Request failed with status code 429", "Request failed with status code 503",
-                     "HTTP 500 Internal Server Error", "listening on port 40001", "took 4000ms", "id 14015", "Login failed: unknown error"] {
+                     "HTTP 500 Internal Server Error", "listening on port 40001", "took 4000ms", "id 14015", "Login failed: unknown error",
+                     // The specification names 400, 401 and invalid_grant only: a bare word or a sentence does not count.
+                     "Unauthorized", "Bad Request", "OAuth error: the refresh token expired", "Refresh token has been revoked"] {
             #expect(ClaudeCodeOutput.classify(text) == .transient, "\(text)")
         }
     }

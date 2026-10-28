@@ -27,9 +27,12 @@ struct ClaudeSlot: Equatable, Sendable {
                           service: AccountFiles.claudeService(directory), account: account)
     }
 
-    // The minimal environment, plus both folder variables for a folder. The default login never gets them.
-    var environment: [String: String] {
-        directory.map { ProviderCLI.environment(provider: .claude, directory: $0) } ?? ProviderCLI.processEnvironment()
+    // The minimal environment, plus both folder variables for a folder. The default login never gets them,
+    // whatever the environment AgentBar itself was started with.
+    var environment: [String: String] { makeEnvironment(from: ProcessInfo.processInfo.environment) }
+    func makeEnvironment(from source: [String: String]) -> [String: String] {
+        directory.map { ProviderCLI.environment(provider: .claude, directory: $0, from: source) }
+            ?? ProviderCLI.processEnvironment(from: source)
     }
     var workingDirectory: URL { directory ?? FileManager.default.homeDirectoryForCurrentUser }
 }

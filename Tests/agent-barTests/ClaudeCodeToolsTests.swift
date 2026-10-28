@@ -58,6 +58,60 @@ struct ClaudeCodeToolsTests {
         #expect(!FileManager.default.fileExists(atPath: marker.path))
     }
 
+    @Test func aCommandThatRanOutOfTimeStillReportsWhatItPrinted() throws {
+        let directory = try workDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let claude = try script(in: directory, """
+        echo "Login failed: Request failed with status code 400" >&2
+        sleep 30
+        """)
+
+        let result = try SystemClaudeCLI(executable: { claude }).run(["auth", "login"], environment: ["PATH": "/usr/bin:/bin"],
+                                                                      directory: directory, timeout: 3)
+
+        #expect(result.timedOut && result.status == nil)
+        #expect(result.text.contains("Login failed: Request failed with status code 400"))
+        // So a refusal that was printed before the command hung is still a refusal.
+        #expect(ClaudeCodeOutput.classify(result.text) == .invalid)
+    }
+
+    // The two failures Claude Code 2.1.312 gives for `claude auth login --claudeai` with a refresh token, as they were
+    // seen with throwaway tokens in a throwaway folder: nothing on stdout, one line on stderr, exit code 1, no browser.
+    @Test func theRealFailureTextsComeBackAsTheyWereAndAreClassified() throws {
+        let directory = try workDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let refused = try script(in: directory, "echo 'Login failed: Request failed with status code 400' >&2\nexit 1")
+        let offline = try script(in: directory, "echo 'Login failed: connect ECONNREFUSED 127.0.0.1:9' >&2\nexit 1")
+        let environment = ["PATH": "/usr/bin:/bin"]
+
+        let first = try SystemClaudeCLI(executable: { refused }).run(["auth", "login", "--claudeai"], environment: environment, directory: directory, timeout: 20)
+        let second = try SystemClaudeCLI(executable: { offline }).run(["auth", "login", "--claudeai"], environment: environment, directory: directory, timeout: 20)
+
+        #expect(first.status == 1 && first.text == "Login failed: Request failed with status code 400\n")
+        #expect(ClaudeCodeOutput.classify(first.text) == .invalid)
+        #expect(second.status == 1 && second.text == "Login failed: connect ECONNREFUSED 127.0.0.1:9\n")
+        #expect(ClaudeCodeOutput.classify(second.text) == .transient)
+    }
+
+    @Test func collectPartialReturnsWhatArrivedAndCollectStillThrowsOnTimeout() throws {
+        let environment = ["PATH": "/usr/bin:/bin"], directory = FileManager.default.temporaryDirectory
+        let talking = try ProcessSession(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "echo first; sleep 30"],
+                                         environment: environment, directory: directory)
+        defer { talking.stop() }
+        let (data, timedOut) = try talking.collectPartial(until: Date().addingTimeInterval(3), control: OperationControl())
+        #expect(timedOut && String(decoding: data, as: UTF8.self) == "first\n")
+
+        let finished = try ProcessSession(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "echo done"],
+                                          environment: environment, directory: directory)
+        defer { finished.stop() }
+        let (all, late) = try finished.collectPartial(until: Date().addingTimeInterval(20), control: OperationControl())
+        #expect(!late && String(decoding: all, as: UTF8.self) == "done\n" && finished.exitStatus == 0)
+
+        let silent = try ProcessSession(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"], environment: environment, directory: directory)
+        defer { silent.stop() }
+        #expect(throws: AccountError.self) { try silent.collect(until: Date().addingTimeInterval(0.3), control: OperationControl()) }
+        let cancelled = OperationControl(); cancelled.cancel()
+        #expect(throws: AccountError.self) { try silent.collectPartial(until: Date().addingTimeInterval(20), control: cancelled) }
+    }
+
     @Test func aMissingClaudeIsAnError() throws {
         let cli = SystemClaudeCLI(executable: { throw AccountError.message("Could not find the Claude CLI.") })
         #expect(throws: AccountError.self) {
@@ -129,6 +183,7 @@ struct ClaudeCodeToolsTests {
 
     // MARK: security
 
+    // `security` exits 44 for an item that does not exist, which was also seen on the real tool.
     @Test func securityIsAskedForAttributesSecretsAndRemovalsWithExactArguments() throws {
         let directory = try workDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
         let calls = directory.appendingPathComponent("calls.log")

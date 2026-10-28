@@ -7,7 +7,8 @@ import Foundation
 struct ClaudeCLIOutput: Sendable {
     // nil when the command did not finish in time.
     var status: Int32?
-    // stdout and stderr together. It may hold a secret until `ClaudeCodeOutput.scrubbed` has run.
+    // stdout and stderr together, including what a command that ran out of time had printed. It may hold
+    // a secret until `ClaudeCodeOutput.scrubbed` has run.
     var text: String
     var timedOut: Bool { status == nil }
 }
@@ -38,12 +39,8 @@ struct SystemClaudeCLI: ClaudeCLI {
                                          directory: directory, mergeStandardError: true)
         defer { session.stop() }
         session.closeInput()
-        do {
-            let data = try session.collect(until: Date().addingTimeInterval(timeout), control: OperationControl())
-            return ClaudeCLIOutput(status: session.exitStatus, text: String(decoding: data, as: UTF8.self))
-        } catch AccountError.timeout {
-            return ClaudeCLIOutput(status: nil, text: "")
-        }
+        let (data, timedOut) = try session.collectPartial(until: Date().addingTimeInterval(timeout), control: OperationControl())
+        return ClaudeCLIOutput(status: timedOut ? nil : session.exitStatus, text: String(decoding: data, as: UTF8.self))
     }
 
     func browserLogin(directory: URL, control: OperationControl, openURL: @Sendable (URL) -> Void) throws {
@@ -98,17 +95,17 @@ enum ClaudeLoginFailure: Equatable, Sendable {
 }
 
 enum ClaudeCodeOutput {
+    // Claude Code 2.1.312 answers a refresh token the server refuses with exit code 1 and, on stderr,
+    // "Login failed: Request failed with status code 400". It does not say invalid_grant.
     private static let invalidPatterns = [
         "invalid_grant",
-        #"(?i)refresh[ _-]?token[^\n]{0,60}(expired|revoked|invalid|not found)"#,
         #"(?i)(status( code)?|http|error|response)[ :=(]*(400|401)(?![0-9])"#,
         #"(?i)http/[0-9.]+[ ]+(400|401)(?![0-9])"#,
         #"(?i)(?<![0-9])(400|401)[ :)]+(bad request|unauthorized)"#,
-        #"(?i)\b(unauthorized|bad request)\b"#,
     ]
 
     // invalid_grant, or a 400 or 401 reply, means the saved login is dead. A 403, a 429, a 5xx, a
-    // network error and anything unrecognised may pass.
+    // network error ("Login failed: connect ECONNREFUSED 127.0.0.1:9") and anything unrecognised may pass.
     static func classify(_ text: String) -> ClaudeLoginFailure {
         invalidPatterns.contains { text.range(of: $0, options: .regularExpression) != nil } ? .invalid : .transient
     }
