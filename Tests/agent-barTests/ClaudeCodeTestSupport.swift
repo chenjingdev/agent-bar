@@ -33,6 +33,8 @@ final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
     }
     enum Browser {
         case signIn(String)
+        // The browser signs this person in, but what Claude Code stores has no refresh token to hand over later.
+        case signInWithoutRefreshToken(String)
         case timeout
         case failure
     }
@@ -162,6 +164,12 @@ final class FakeClaudeWorld: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
         if control.cancelled { throw AccountError.cancelled }
         switch next {
         case .signIn(let email): locked { _ = writeLogin(.folder(directory), owner: email, identity: email, scopes: ClaudeLoginCredential.defaultScopes) }
+        case .signInWithoutRefreshToken(let email):
+            locked {
+                let slot = ClaudeSlot.folder(directory)
+                secrets[slot.service] = Data(#"{"claudeAiOauth":{"accessToken":"FAKE-ACCESS-ONLY"}}"#.utf8)
+                writeIdentity(slot, identity: email)
+            }
         case .timeout: throw AccountError.timeout
         case .failure: throw AccountError.message("Claude sign-in did not complete.")
         }
@@ -391,12 +399,23 @@ final class SwitchFixture: @unchecked Sendable {
         var steps: [ClaudeCodeSwitchStep]
     }
 
-    func switchTo(_ target: UsageAccount, confirmedLosing: ClaudeCodeUnknownLogin? = nil, control: OperationControl = OperationControl(),
-                  openURL: @escaping @Sendable (URL) -> Void = { _ in }) -> Switch {
+    func switchTo(_ target: UsageAccount, confirmedLosing: ClaudeCodeUnknownLogin? = nil) -> Switch {
         let steps = Recorder<ClaudeCodeSwitchStep>()
-        let outcome = switcher.switchAccount(to: target, among: accounts, confirmedLosing: confirmedLosing, control: control,
-                                             progress: { steps.add($0) }, openURL: openURL)
+        let outcome = switcher.switchAccount(to: target, among: accounts, confirmedLosing: confirmedLosing, progress: { steps.add($0) })
         return Switch(outcome: outcome, steps: steps.values)
+    }
+
+    struct Preparation {
+        var outcome: ClaudeCodePrepareOutcome
+        var steps: [ClaudeCodePrepareStep]
+    }
+
+    // Signs the account in once, in the browser, the way Settings does.
+    func prepare(_ target: UsageAccount, control: OperationControl = OperationControl(),
+                 openURL: @escaping @Sendable (URL) -> Void = { _ in }) -> Preparation {
+        let steps = Recorder<ClaudeCodePrepareStep>()
+        let outcome = switcher.prepareLendLogin(for: target, control: control, progress: { steps.add($0) }, openURL: openURL)
+        return Preparation(outcome: outcome, steps: steps.values)
     }
 
     var journal: ClaudeCodeSwitchJournal? { try? files.read(ClaudeCodeSwitchJournal.self, at: files.claudeCodeSwitchJournalURL) }

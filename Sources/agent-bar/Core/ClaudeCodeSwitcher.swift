@@ -4,39 +4,15 @@ import Foundation
 // there back into that account's own folder. Everything here blocks: call it from a background task.
 //
 // Each account has one "lend" folder (lend/<account id>/) where Claude Code keeps a login that
-// AgentBar may hand to the default slot. Handing a login over uses it up (its refresh token rotates),
-// so the copy left behind is removed, and the login that was in the default slot is lent back to its
-// own account. Only Claude Code writes a login (`claude auth login` fed a refresh token) and only
-// /usr/bin/security reads or removes a Keychain item.
-
-enum ClaudeCodeBrowserReason: Equatable, Sendable {
-    // No usable login for this account has been saved on this Mac.
-    case noSavedLogin
-    // The saved login was refused when it was handed over.
-    case savedLoginExpired
-
-    var message: String {
-        switch self {
-        case .noSavedLogin: return "Sign in once in the browser so Claude Code can use this account."
-        case .savedLoginExpired: return "The saved sign-in expired. Sign in again in the browser."
-        }
-    }
-
-    // The same, naming the account the browser has to be signed in to when its address is known.
-    func message(signingInAs email: String?) -> String {
-        guard let email, !email.isEmpty else { return message }
-        switch self {
-        case .noSavedLogin: return "Sign in as \(email) in the browser once so Claude Code can use this account."
-        case .savedLoginExpired: return "The saved sign-in expired. Sign in as \(email) in the browser again."
-        }
-    }
-}
+// AgentBar may hand to the default slot. The browser sign-in that makes that login is done once per account,
+// in Settings (`prepareLendLogin`); a switch never opens a browser. Handing a login over uses it up (its
+// refresh token rotates), so the copy left behind is removed, and the login that was in the default slot is
+// lent back to its own account. Only Claude Code writes a login (`claude auth login`, fed a refresh token or
+// signed in through the browser) and only /usr/bin/security reads or removes a Keychain item.
 
 enum ClaudeCodeSwitchStep: Equatable, Sendable {
     case checkingVersion
     case readingCurrentLogin
-    // The only step that can be cancelled.
-    case waitingForBrowser(ClaudeCodeBrowserReason)
     case signingIn
     case verifying
     case returningPreviousLogin
@@ -45,7 +21,6 @@ enum ClaudeCodeSwitchStep: Equatable, Sendable {
         switch self {
         case .checkingVersion: return "Checking Claude Code…"
         case .readingCurrentLogin: return "Reading the current Claude Code login…"
-        case .waitingForBrowser(let reason): return reason.message
         case .signingIn: return "Switching Claude Code…"
         case .verifying: return "Checking the new login…"
         case .returningPreviousLogin: return "Saving the previous login…"
@@ -53,11 +28,31 @@ enum ClaudeCodeSwitchStep: Equatable, Sendable {
     }
 }
 
+// The steps of signing an account in for Claude Code, once, in Settings.
+enum ClaudeCodePrepareStep: Equatable, Sendable {
+    case checkingVersion
+    // The only step that can be cancelled.
+    case waitingForBrowser
+
+    var message: String {
+        switch self {
+        case .checkingVersion: return "Checking Claude Code…"
+        case .waitingForBrowser: return "Sign in once in the browser so Claude Code can use this account."
+        }
+    }
+
+    // The same, naming the account the browser has to be signed in to when its address is known.
+    func message(signingInAs email: String?) -> String {
+        guard case .waitingForBrowser = self, let email, !email.isEmpty else { return message }
+        return "Sign in as \(email) in the browser once so Claude Code can use this account."
+    }
+}
+
 struct ClaudeCodeSwitched: Equatable, Sendable {
     var accountID: UUID
     // The registered account whose login was in the default slot; nil when there was none or it was not registered.
     var previousAccountID: UUID?
-    // Accounts whose login could not be saved: their next use needs a browser sign-in.
+    // Accounts whose login could not be saved: they have to sign in again in Settings before their next use.
     var needsLogin: [UUID]
 }
 
@@ -66,7 +61,7 @@ struct ClaudeCodeSwitchFailure: Equatable, Sendable {
     var reason: String
     // False when the default login may have been touched.
     var nothingChanged: Bool
-    // Accounts whose saved login is gone: their next use needs a browser sign-in.
+    // Accounts whose saved login is gone: they have to sign in again in Settings before their next use.
     var needsLogin: [UUID] = []
 }
 
@@ -84,9 +79,23 @@ enum ClaudeCodeSwitchOutcome: Equatable, Sendable {
     // with `confirmedLosing:` set to this login. A yes belongs to the login that was asked about: if the default
     // login is a different unknown one by then, this comes back again.
     case needsConfirmation(ClaudeCodeUnknownLogin)
-    // Only while waiting for the browser. Nothing was changed.
-    case cancelled
+    // The account has no login saved for Claude Code (`expired: false`), or the one saved was refused and is removed
+    // (`expired: true`). Nothing was changed and no browser was opened: the account signs in once in Settings
+    // (`prepareLendLogin`).
+    case needsSetup(expired: Bool)
     case failed(ClaudeCodeSwitchFailure)
+}
+
+// How signing an account in for Claude Code ended. Whatever the end, the default login was not read or written.
+enum ClaudeCodePrepareOutcome: Equatable, Sendable {
+    // The browser signed the account in and its login waits in the account's own folder.
+    case prepared
+    // A login that can be handed over waited there already; no browser was opened.
+    case alreadyPrepared
+    // Only while waiting for the browser. Nothing was left behind.
+    case cancelled
+    // One English line the settings window can show as it is. Nothing was left behind.
+    case failed(String)
 }
 
 // What finishing an interrupted switch found.
@@ -193,26 +202,25 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
 
     // MARK: Switching
 
+    // No step of a switch can be cancelled and none opens a browser. An account that has no login saved to hand over is
+    // reported as `.needsSetup` before the default login is touched.
     func switchAccount(
         to target: UsageAccount, among accounts: [UsageAccount], confirmedLosing: ClaudeCodeUnknownLogin? = nil,
-        control: OperationControl = OperationControl(),
-        progress: @escaping @Sendable (ClaudeCodeSwitchStep) -> Void = { _ in },
-        openURL: @escaping @Sendable (URL) -> Void
+        progress: @escaping @Sendable (ClaudeCodeSwitchStep) -> Void = { _ in }
     ) -> ClaudeCodeSwitchOutcome {
         guard beginOperation() else {
             return .failed(ClaudeCodeSwitchFailure(reason: "Another Claude Code switch is still running.", nothingChanged: true))
         }
         defer { endOperation() }
         let run = Run(target: target, accounts: accounts.filter { $0.provider == .claude && !$0.deletionPending },
-                      confirmedLosing: confirmedLosing, control: control, progress: progress, openURL: openURL,
+                      confirmedLosing: confirmedLosing, progress: progress,
                       log: LimitResetLog(root: files.root, account: target, attempt: UUID(), fileName: LimitResetLog.claudeCodeSwitchFileName),
                       startedAt: now())
         run.log.record("start", [:])
         let outcome: ClaudeCodeSwitchOutcome
         do { outcome = try perform(run) }
         catch let abort as Abort {
-            outcome = abort.cancelled ? .cancelled
-                : .failed(ClaudeCodeSwitchFailure(reason: abort.reason, nothingChanged: !run.slotTouched, needsLogin: abort.needsLogin))
+            outcome = .failed(ClaudeCodeSwitchFailure(reason: abort.reason, nothingChanged: !run.slotTouched, needsLogin: abort.needsLogin))
         } catch {
             outcome = .failed(ClaudeCodeSwitchFailure(reason: "Could not switch Claude Code.", nothingChanged: !run.slotTouched))
         }
@@ -234,51 +242,34 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
 
         // The login in the default slot, read now so nothing is changed for a person who has to confirm first.
         run.progress(.readingCurrentLogin)
-        var current = try readDefault(run)
+        let current = try readDefault(run)
         if let early = gate(current, run) { return early }
 
-        var credential = try savedLogin(for: target, run)
-        if credential == nil {
-            credential = try browserSignIn(for: target, reason: .noSavedLogin, run)
-            // Minutes may have passed: the previous login is read again so its token is as fresh as it can be.
-            current = try readDefault(run)
-            if let early = gate(current, run) { return early }
-        }
+        // The browser sign-in that makes a login to hand over is done once, in Settings. Without one nothing is changed.
+        guard let credential = try savedLogin(for: target, run) else { return .needsSetup(expired: false) }
 
         try writeJournal(.started, previousID: current.accountID, run)
-        var handedOver = false
-        for round in 0..<2 {
-            guard let login = credential else { break }
-            run.progress(.signingIn)
-            run.slotTouched = true
-            let result = putLogin(login, into: defaultSlot, run, step: "signIn")
-            if result == .ok { handedOver = true; break }
+        run.progress(.signingIn)
+        run.slotTouched = true
+        let result = putLogin(credential, into: defaultSlot, run, step: "signIn")
+        if result != .ok {
             // The command says it failed. The slot tells more: a login may have been written all the same, or the slot
             // may have moved without one.
             let after = snapshotDefault(run)
             if let after, after.identity.hasLogin, after.identity.matches(target), after.token != current.token {
                 run.step("signIn", "finishedDespiteError")
-                handedOver = true
-                break
+            } else {
+                guard let after, after.identity == current.identity, after.token == current.token else {
+                    throw abandon(after: after, before: current, run)
+                }
+                run.slotTouched = false
+                // A failure that may pass keeps the saved login for the next try.
+                guard result == .invalid else { throw Abort("Claude Code could not sign in. Check the connection and try again.") }
+                // A login that was refused is dead: its copy goes, and the account signs in again in Settings.
+                do { try dropLend(target.id) } catch { throw Abort("Could not remove the expired sign-in. Try again.") }
+                return .needsSetup(expired: true)
             }
-            guard let after, after.identity == current.identity, after.token == current.token else {
-                throw abandon(after: after, before: current, run)
-            }
-            run.slotTouched = false
-            guard result == .invalid, round == 0, !run.freshLogin else {
-                // A login that was refused is dead and its copy goes; a failure that may pass keeps it for the next try.
-                if result == .invalid { try? dropLend(target.id) }
-                throw Abort(result == .invalid ? "Claude rejected the sign-in. Try again."
-                                               : "Claude Code could not sign in. Check the connection and try again.")
-            }
-            // The saved login is dead: remove it and sign in once more in the browser.
-            do { try dropLend(target.id) } catch { throw Abort("Could not remove the expired sign-in. Try again.") }
-            credential = try browserSignIn(for: target, reason: .savedLoginExpired, run)
-            current = try readDefault(run)
-            if let early = gate(current, run) { return early }
-            try writeJournal(.started, previousID: current.accountID, run)
         }
-        guard handedOver else { throw Abort("Claude Code could not sign in. Try again.") }
 
         // The copy of the new login that stayed in its own folder was used up.
         removeUsedUpLend(target.id, run)
@@ -297,7 +288,7 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
             // Its saved copy is gone and the slot does not hold its login.
             if after != nil { needsLogin.insert(target.id, at: 0) }
             // An unreadable slot after a handover that reported success most likely holds the target now. The previous
-            // token is not lent back because it may still be there, so that account signs in with the browser next time
+            // token is not lent back because it may still be there, so that account has to sign in again in Settings
             // unless a login of its own already waits in its folder.
             if after == nil, current.credential != nil, let id = current.accountID,
                let account = run.accounts.first(where: { $0.id == id }), !hasLendLogin(for: account) {
@@ -422,7 +413,7 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
     private func lendSlot(_ accountID: UUID) -> ClaudeSlot { .folder(files.lend(accountID)) }
 
     // The account's own login if the folder holds one for exactly that account; anything else in the folder is cleared.
-    private func savedLogin(for account: UsageAccount, _ run: Run) throws -> ClaudeLoginCredential? {
+    private func savedLogin(for account: UsageAccount, _ run: Attempt) throws -> ClaudeLoginCredential? {
         let slot = lendSlot(account.id)
         let secret: Data?
         do { secret = try keychain.readSecret(service: slot.service, account: slot.account) }
@@ -445,16 +436,63 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         return nil
     }
 
-    // Signs the account in with the browser into its own folder and returns the login Claude Code stored there.
-    private func browserSignIn(for account: UsageAccount, reason: ClaudeCodeBrowserReason, _ run: Run) throws -> ClaudeLoginCredential {
+    // MARK: Signing an account in for Claude Code
+
+    // The one browser sign-in an account needs before a switch can use it, done in Settings › Accounts: Claude Code signs
+    // the browser's account in to the account's own lend folder, and the login stays there until a switch hands it over.
+    // The default login is neither read nor written, and no record is kept for a restart: whatever a cut-short sign-in
+    // leaves in the folder is judged, and cleared if it cannot be used, the next time the folder is looked at.
+    // Blocks until the browser is done, cancelled or timed out.
+    func prepareLendLogin(
+        for target: UsageAccount, control: OperationControl = OperationControl(),
+        progress: @escaping @Sendable (ClaudeCodePrepareStep) -> Void = { _ in },
+        openURL: @escaping @Sendable (URL) -> Void
+    ) -> ClaudeCodePrepareOutcome {
+        guard beginOperation() else {
+            return .failed("Another Claude Code operation is still running. Try again in a moment.")
+        }
+        defer { endOperation() }
+        let run = PrepareRun(target: target, control: control, progress: progress, openURL: openURL,
+                             log: LimitResetLog(root: files.root, account: target, attempt: UUID(), fileName: LimitResetLog.claudeCodeSwitchFileName))
+        run.log.record("start", ["operation": "prepare"])
+        let outcome: ClaudeCodePrepareOutcome
+        do { outcome = try prepare(run) }
+        catch let abort as Abort { outcome = abort.cancelled ? .cancelled : .failed(abort.reason) }
+        catch { outcome = .failed("Could not sign in. Try again.") }
+        var result = Self.describe(outcome)
+        result["operation"] = "prepare"
+        run.log.record("result", result)
+        return outcome
+    }
+
+    private func prepare(_ run: PrepareRun) throws -> ClaudeCodePrepareOutcome {
+        let target = run.target
+        guard target.provider == .claude else { throw Abort("Only a Claude account can be used in Claude Code.") }
+        guard ClaudeSlotIdentity.canVerify(target) else {
+            throw Abort("Reconnect this account before using it in Claude Code.")
+        }
+        run.progress(.checkingVersion)
+        let version = checkVersion()
+        run.step("version", version.blockReason == nil ? "ok" : "blocked", ["version": String(describing: version)])
+        if let reason = version.blockReason { throw Abort(reason) }
+
+        // A login that can be handed over waits already: nothing to do. Anything else in the folder is cleared first.
+        if try savedLogin(for: target, run) != nil { return .alreadyPrepared }
+        try signInWithBrowser(run)
+        return .prepared
+    }
+
+    // Signs the account in with the browser into its own folder and checks what Claude Code stored there.
+    private func signInWithBrowser(_ run: PrepareRun) throws {
+        let account = run.target
         let slot = lendSlot(account.id)
         guard let directory = slot.directory else { throw Abort("Could not prepare the sign-in.") }
         do {
             try files.createPrivateDirectory(files.lendRoot)
             try files.createPrivateDirectory(directory)
         } catch { throw Abort("Could not prepare the sign-in folder.") }
-        run.progress(.waitingForBrowser(reason))
-        run.step("browserSignIn", "waiting", ["reason": String(describing: reason)])
+        run.progress(.waitingForBrowser)
+        run.step("browserSignIn", "waiting")
         do { try cli.browserLogin(directory: directory, control: run.control, openURL: run.openURL) }
         catch {
             try? dropLend(account.id)
@@ -486,14 +524,12 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
             run.step("browserSignIn", "differentAccount")
             throw Abort("Signed in as a different account.")
         }
-        guard let secret, let credential = ClaudeLoginCredential(keychainData: secret) else {
+        guard let secret, ClaudeLoginCredential(keychainData: secret) != nil else {
             try? dropLend(account.id)
             run.step("browserSignIn", "unusable")
             throw Abort("The browser sign-in could not be used. Try again.")
         }
-        run.freshLogin = true
         run.step("browserSignIn", "ok")
-        return credential
     }
 
     // Removes the copy a handover used up. If the Keychain item cannot be deleted it stays, but it no longer passes
@@ -521,7 +557,7 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
     }
 
     // Lends the login that was in the default slot to its own account. A login that cannot be saved
-    // means that account signs in with the browser next time. The same token is never used twice: before it is
+    // means that account has to sign in again in Settings. The same token is never used twice: before it is
     // tried again the folder is looked at, because a command that timed out may already have saved the login.
     private func giveBack(_ previous: DefaultLogin, _ run: Run) -> [UUID] {
         guard previous.identity.hasLogin, let id = previous.accountID, let account = run.accounts.first(where: { $0.id == id }) else {
@@ -672,26 +708,13 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         init(cancelled: Bool) { reason = "Cancelled."; self.cancelled = cancelled }
     }
 
-    private final class Run {
+    // What every run of the engine keeps: whose it is, and the log of its steps.
+    private class Attempt {
         let target: UsageAccount
-        // Claude accounts that are still alive.
-        let accounts: [UsageAccount]
-        let confirmedLosing: ClaudeCodeUnknownLogin?
-        let control: OperationControl
-        let progress: @Sendable (ClaudeCodeSwitchStep) -> Void
-        let openURL: @Sendable (URL) -> Void
         let log: LimitResetLog
-        let startedAt: Date
-        // True from the first call that can write the default slot until that slot is known to be unchanged.
-        var slotTouched = false
-        // A browser sign-in happened in this run.
-        var freshLogin = false
 
-        init(target: UsageAccount, accounts: [UsageAccount], confirmedLosing: ClaudeCodeUnknownLogin?, control: OperationControl,
-             progress: @escaping @Sendable (ClaudeCodeSwitchStep) -> Void, openURL: @escaping @Sendable (URL) -> Void,
-             log: LimitResetLog, startedAt: Date) {
-            self.target = target; self.accounts = accounts; self.confirmedLosing = confirmedLosing; self.control = control
-            self.progress = progress; self.openURL = openURL; self.log = log; self.startedAt = startedAt
+        init(target: UsageAccount, log: LimitResetLog) {
+            self.target = target; self.log = log
         }
 
         func step(_ name: String, _ outcome: String, _ details: [String: Any] = [:]) {
@@ -702,6 +725,34 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         }
     }
 
+    private final class Run: Attempt {
+        // Claude accounts that are still alive.
+        let accounts: [UsageAccount]
+        let confirmedLosing: ClaudeCodeUnknownLogin?
+        let progress: @Sendable (ClaudeCodeSwitchStep) -> Void
+        let startedAt: Date
+        // True from the first call that can write the default slot until that slot is known to be unchanged.
+        var slotTouched = false
+
+        init(target: UsageAccount, accounts: [UsageAccount], confirmedLosing: ClaudeCodeUnknownLogin?,
+             progress: @escaping @Sendable (ClaudeCodeSwitchStep) -> Void, log: LimitResetLog, startedAt: Date) {
+            self.accounts = accounts; self.confirmedLosing = confirmedLosing; self.progress = progress; self.startedAt = startedAt
+            super.init(target: target, log: log)
+        }
+    }
+
+    private final class PrepareRun: Attempt {
+        let control: OperationControl
+        let progress: @Sendable (ClaudeCodePrepareStep) -> Void
+        let openURL: @Sendable (URL) -> Void
+
+        init(target: UsageAccount, control: OperationControl, progress: @escaping @Sendable (ClaudeCodePrepareStep) -> Void,
+             openURL: @escaping @Sendable (URL) -> Void, log: LimitResetLog) {
+            self.control = control; self.progress = progress; self.openURL = openURL
+            super.init(target: target, log: log)
+        }
+    }
+
     private static func describe(_ outcome: ClaudeCodeSwitchOutcome) -> [String: Any] {
         switch outcome {
         case .switched(let switched):
@@ -709,10 +760,19 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
                     "needsLogin": switched.needsLogin.map(\.uuidString)]
         case .alreadyInUse: return ["outcome": "alreadyInUse"]
         case .needsConfirmation(let login): return ["outcome": "needsConfirmation", "unregisteredEmail": login.email as Any]
-        case .cancelled: return ["outcome": "cancelled", "nothingChanged": true]
+        case .needsSetup(let expired): return ["outcome": "needsSetup", "expired": expired, "nothingChanged": true]
         case .failed(let failure):
             return ["outcome": "failed", "message": failure.reason, "nothingChanged": failure.nothingChanged,
                     "needsLogin": failure.needsLogin.map(\.uuidString)]
+        }
+    }
+
+    private static func describe(_ outcome: ClaudeCodePrepareOutcome) -> [String: Any] {
+        switch outcome {
+        case .prepared: return ["outcome": "prepared"]
+        case .alreadyPrepared: return ["outcome": "alreadyPrepared"]
+        case .cancelled: return ["outcome": "cancelled"]
+        case .failed(let reason): return ["outcome": "failed", "message": reason]
         }
     }
 }

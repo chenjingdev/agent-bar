@@ -12,11 +12,14 @@ struct ClaudeCodePanel: Equatable {
         case inClaudeCode
         // "Use in Claude Code". `help` says what it does, or why it cannot be pressed.
         case use(enabled: Bool, help: String)
+        // "Set Up in Settings…": this account has no sign-in saved for Claude Code yet. The button opens Settings ›
+        // Accounts, where the account signs in once; this window never opens a browser. `help` says what it does.
+        case setUp(help: String)
     }
 
     enum Line: Equatable {
-        // A switch is running. The browser wait is the only step that can be cancelled.
-        case progress(String, cancellable: Bool)
+        // A switch is running.
+        case progress(String)
         // Claude Code holds a login AgentBar does not have; switching would remove it.
         case confirmation(email: String?)
         // How the last switch ended.
@@ -45,7 +48,7 @@ struct ClaudeCodePanel: Equatable {
         func wrapped(_ text: String) -> Int { 15 * max(1, (text.count + 52) / 53) }
         return header + lines.reduce(10) { total, line in
             switch line {
-            case .progress(let message, _): return total + wrapped(message) + 6
+            case .progress(let message): return total + wrapped(message) + 6
             case .confirmation(let email): return total + wrapped(Self.confirmationText(email: email)) + 40
             case .result(_, let message, _): return total + wrapped(message) + 6
             case .notice(let message): return total + wrapped(message) + 6
@@ -54,10 +57,12 @@ struct ClaudeCodePanel: Equatable {
     }
 }
 
-// The header control: "Use in Claude Code", or "In Claude Code" for the account Claude Code already uses.
+// The header control: "Use in Claude Code", "Set Up in Settings…" for an account that has no sign-in saved yet, or
+// "In Claude Code" for the account Claude Code already uses.
 struct ClaudeCodeControlView: View {
     let control: ClaudeCodePanel.Control
     var use: () -> Void = {}
+    var setUp: () -> Void = {}
 
     var body: some View {
         switch control {
@@ -91,6 +96,19 @@ struct ClaudeCodeControlView: View {
             .disabled(!enabled)
             .fixedSize()
             .help(help)
+        case .setUp(let help):
+            Button(action: setUp) {
+                Text("Set Up in Settings…")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(0.10)))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .help(help)
         }
     }
 }
@@ -98,8 +116,6 @@ struct ClaudeCodeControlView: View {
 // The lines under the header: progress, the question, the last result, or why the button is blocked.
 struct ClaudeCodeLinesView: View {
     let lines: [ClaudeCodePanel.Line]
-    // Cancel while waiting for the browser.
-    var cancel: () -> Void = {}
     // "Switch" on the question.
     var confirm: () -> Void = {}
     // "Cancel" on the question.
@@ -122,17 +138,10 @@ struct ClaudeCodeLinesView: View {
     @ViewBuilder
     private func row(_ line: ClaudeCodePanel.Line) -> some View {
         switch line {
-        case .progress(let message, let cancellable):
+        case .progress(let message):
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text(message).fixedSize(horizontal: false, vertical: true)
-                if cancellable {
-                    Spacer(minLength: 4)
-                    Button("Cancel", action: cancel)
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.85))
-                }
             }
             .font(Self.detailFont)
             .foregroundStyle(AppTheme.muted)

@@ -12,21 +12,29 @@ import Testing
 @Suite(.serialized)
 struct UsageStoreClaudeCodeTests {
     private static let tooOld = "Claude Code 2.1.308 is too old. Update to 2.1.309 or newer."
+    static let setUpHelp = "Sign in once in Settings › Accounts so Claude Code can use this account."
 
     // MARK: What each window shows
 
-    @Test func theAccountClaudeCodeUsesSaysSoAndTheOthersOfferTheButton() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
+    @Test func theAccountClaudeCodeUsesSaysSoAndTheOthersOfferTheButtonOrTheWayToSettings() async throws {
+        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b"]); defer { f.close() }
         await f.start()
 
         #expect(f.panel("a") == ClaudeCodePanel(control: .inClaudeCode, lines: []))
         #expect(f.panel("b").lines.isEmpty && f.enabled("b"))
+        // c has no sign-in saved for Claude Code: its window sends the person to Settings and starts nothing itself.
+        #expect(f.panel("c") == ClaudeCodePanel(control: .setUp(help: Self.setUpHelp), lines: []))
         #expect(f.store.claudeCodeAvailability == .ready)
         #expect(f.store.claudeCodeAccountID == f.account("a").id)
+        #expect(f.store.claudeCodeReady == [f.account("b").id])
+        f.press("c")
+        #expect(f.store.claudeCodeActivity == nil && f.store.claudeCodePreparation == nil)
+        #expect(f.gates.calls.filter { $0 != "version" }.allSatisfy { $0.hasPrefix("read") || $0.hasPrefix("contains") })
+        #expect(f.opened.values.isEmpty)
     }
 
     @Test func theMarkerFollowsTheRealLoginWhoeverChangesIt() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["a", "b"]); defer { f.close() }
         await f.start()
 
         // Signed in as b in a terminal.
@@ -61,11 +69,15 @@ struct UsageStoreClaudeCodeTests {
     }
 
     @Test func withoutClaudeCodeNoWindowOffersAnything() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
         f.gates.installed = false
         await f.start()
 
         #expect(f.panel("a") == .hidden && f.panel("b") == .hidden)
+        // Nor does Settings: Claude Code is not there to be signed in for.
+        #expect(f.setup("a") == .hidden && f.setup("b") == .hidden)
+        f.signIn("b")
+        #expect(f.store.claudeCodePreparation == nil && !f.gates.calls.contains("browser"))
         #expect(f.store.claudeCodeAvailability == .missing)
         // Pressing what is not there does nothing.
         f.press("b")
@@ -74,14 +86,14 @@ struct UsageStoreClaudeCodeTests {
         // Installing it shows the buttons within one refresh, and removing it hides them within one.
         f.gates.installed = true
         await f.refresh()
-        #expect(f.panel("a").control == .inClaudeCode && f.enabled("b"))
+        #expect(f.panel("a").control == .inClaudeCode && f.enabled("b") && f.setup("b").status == .ready)
         f.gates.installed = false
         await f.refresh()
-        #expect(f.panel("a") == .hidden && f.panel("b") == .hidden)
+        #expect(f.panel("a") == .hidden && f.panel("b") == .hidden && f.setup("b") == .hidden)
     }
 
     @Test func anOldClaudeCodeBlocksTheButtonAndSaysWhy() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
         f.world.version = "2.1.308 (Claude Code)\n"
         await f.start()
 
@@ -108,7 +120,7 @@ struct UsageStoreClaudeCodeTests {
     }
 
     @Test func anAccountThatMustSignInAgainIsBlockedWithItsStatusLineAsTheReason() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["a", "b"]); defer { f.close() }
         f.plan.requireSignIn(f.account("b").id)
         await f.start()
         await f.refresh()
@@ -203,7 +215,7 @@ struct UsageStoreClaudeCodeTests {
     }
 
     @Test func theHeaderIsTallerByTheEstimateWhenTheControlIsThere() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
+        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b"]); defer { f.close() }
         await f.start()
         await f.refresh()
         // The same account and usage in a store that has no Claude Code.
@@ -213,20 +225,23 @@ struct UsageStoreClaudeCodeTests {
                                loadAccount: { account, _ in SnapshotPlan.usage(for: account.provider) })
         defer { plain.shutdown() }
         await plain.refresh()
-        let b = f.account("b")
-        func height(of store: UsageStore) -> CGFloat {
-            let host = NSHostingView(rootView: AccountPopoverView(accountID: b.id).environmentObject(store))
+        func height(of store: UsageStore, _ account: UsageAccount) -> CGFloat {
+            let host = NSHostingView(rootView: AccountPopoverView(accountID: account.id).environmentObject(store))
             host.frame = NSRect(x: 0, y: 0, width: 392, height: 800)
             host.layoutSubtreeIfNeeded()
             return host.fittingSize.height
         }
 
-        #expect(f.store.claudeCodePanel(for: b).control != .hidden && plain.claudeCodePanel(for: b) == .hidden)
-        let growth = height(of: f.store) - height(of: plain)
-        #expect(abs(growth - CGFloat(ClaudeCodePanel.headerGrowth)) < 1, "the popover grew by \(growth)")
-    }
-
-    // MARK: Using an account
+        // b offers the switch, c the way to Settings: either control makes the header as much taller.
+        let b = f.account("b"), c = f.account("c")
+        #expect(f.enabled("b"))
+        guard case .setUp = f.panel("c").control else { Issue.record("c should offer Settings"); return }
+        #expect(plain.claudeCodePanel(for: b) == .hidden && plain.claudeCodePanel(for: c) == .hidden)
+        for account in [b, c] {
+            let growth = height(of: f.store, account) - height(of: plain, account)
+            #expect(abs(growth - CGFloat(ClaudeCodePanel.headerGrowth)) < 1, "the popover grew by \(growth)")
+        }
+    }    // MARK: Using an account
 
     @Test func pressingTheButtonSwitchesClaudeCodeAndLeavesAResultLine() async throws {
         let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
@@ -364,7 +379,7 @@ struct UsageStoreClaudeCodeTests {
 
         let result = try #require(f.result("b"))
         #expect(result.succeeded)
-        #expect(result.message == "Claude Code now uses b. Open sessions switch within 30 s. Remote Control disconnects. a needs a browser sign-in next time.")
+        #expect(result.message == "Claude Code now uses b. Open sessions switch within 30 s. Remote Control disconnects. a needs to sign in again in Settings › Accounts.")
     }
 
     @Test func aFailureShowsItsReasonAndLeavesTheMarkerWhereItWas() async throws {
@@ -386,7 +401,7 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.panel("b").control == .inClaudeCode)
     }
 
-    @Test func aFailureThatChangedTheLoginIsNotToldTwiceAndNamesWhoNeedsTheBrowser() async throws {
+    @Test func aFailureThatChangedTheLoginIsNotToldTwiceAndNamesWhoMustSignInAgain() async throws {
         let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
         f.world.script("default", .writesAnotherAccount("other@example.test"))
         await f.start()
@@ -396,7 +411,7 @@ struct UsageStoreClaudeCodeTests {
 
         let result = try #require(f.result("b"))
         #expect(!result.succeeded)
-        #expect(result.message == "Claude Code is signed in to a different account than expected. b needs a browser sign-in next time.")
+        #expect(result.message == "Claude Code is signed in to a different account than expected. b needs to sign in again in Settings › Accounts.")
         // The marker is read again from the real login: nobody registered is signed in now.
         #expect(f.store.claudeCodeAccountID == nil)
     }
@@ -419,7 +434,7 @@ struct UsageStoreClaudeCodeTests {
         }
     }
 
-    @Test func aLoginRenewedByAnOpenSessionIsReportedOnceWithWhoNeedsTheBrowser() async throws {
+    @Test func aLoginRenewedByAnOpenSessionIsReportedOnceWithWhoMustSignInAgain() async throws {
         let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
         f.world.script("default", .openSessionRenewsPreviousInstead)
         await f.start()
@@ -429,13 +444,13 @@ struct UsageStoreClaudeCodeTests {
 
         let result = try #require(f.result("b"))
         #expect(!result.succeeded)
-        #expect(result.message == "Claude Code's login changed while switching. Try again. b needs a browser sign-in next time.")
+        #expect(result.message == "Claude Code's login changed while switching. Try again. b needs to sign in again in Settings › Accounts.")
     }
 
     // MARK: While a switch runs
 
     @Test func whileASwitchRunsEveryWindowIsBlockedAndTheTwoAccountsCannotBeDeletedOrReconnected() async throws {
-        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b"]); defer { f.close() }
+        let f = try StoreFixture(["a", "b", "c"], signedIn: "a", saved: ["b", "c"]); defer { f.close() }
         await f.start()
         let hold = f.world.hold(login: "default")
 
@@ -444,10 +459,10 @@ struct UsageStoreClaudeCodeTests {
         try await waitFor("its progress") { f.store.claudeCodeActivity?.message == ClaudeCodeSwitchStep.signingIn.message }
 
         // Progress is shown everywhere; nothing can be pressed.
-        #expect(f.panel("b") == ClaudeCodePanel(control: .use(enabled: false, help: f.panel("b").helpText), lines: [.progress("Switching Claude Code…", cancellable: false)]))
+        #expect(f.panel("b") == ClaudeCodePanel(control: .use(enabled: false, help: f.panel("b").helpText), lines: [.progress("Switching Claude Code…")]))
         #expect(!f.enabled("b") && !f.enabled("c"))
-        #expect(f.panel("c").lines == [.progress("Switching Claude Code to b…", cancellable: false)])
-        #expect(f.panel("a") == ClaudeCodePanel(control: .inClaudeCode, lines: [.progress("Switching Claude Code to b…", cancellable: false)]))
+        #expect(f.panel("c").lines == [.progress("Switching Claude Code to b…")])
+        #expect(f.panel("a") == ClaudeCodePanel(control: .inClaudeCode, lines: [.progress("Switching Claude Code to b…")]))
         let calls = f.gates.calls
         f.press("c"); f.press("b")
         #expect(f.gates.calls == calls && f.store.claudeCodeActivity?.targetID == f.account("b").id)
@@ -517,7 +532,7 @@ struct UsageStoreClaudeCodeTests {
     // MARK: The question
 
     @Test func aLoginAgentBarDoesNotHaveIsAskedAboutFirstAndRemovedOnlyOnYes() async throws {
-        let f = try StoreFixture(["a", "b"], saved: ["b"]) { $0.signInDefault(email: "stranger@example.test") }; defer { f.close() }
+        let f = try StoreFixture(["a", "b"], saved: ["a", "b"]) { $0.signInDefault(email: "stranger@example.test") }; defer { f.close() }
         await f.start()
         let stranger = f.world.person("stranger@example.test")
 
@@ -592,129 +607,64 @@ struct UsageStoreClaudeCodeTests {
 
     // MARK: The browser
 
-    @Test func theBrowserWaitShowsItsReasonAndCanBeCancelled() async throws {
-        let f = try StoreFixture(["a", "b", "c"], signedIn: "a"); defer { f.close() }
+    @Test func aSwitchToAnAccountWithNothingSavedOpensNoBrowserAndSendsThePersonToSettings() async throws {
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
         f.world.plan(.signIn("b@example.test"))
-        let hold = f.gates.holdBrowser()
         await f.start()
+        // b's saved sign-in goes away behind the app's back, after the window was told it was there.
+        f.world.removeItem(f.switching.lendSlot(f.account("b")))
+        try FileManager.default.removeItem(at: f.files.lend(f.account("b").id))
+        #expect(f.enabled("b"))
         let token = f.world.token(in: f.switching.defaultSlot)
 
         f.press("b")
-        try await waitFor("the browser page") { hold.entered.wait(timeout: .now()) == .success }
-        try await waitFor("the cancel button") { f.store.claudeCodeActivity?.canCancel == true && f.opened.values.count == 1 }
-
-        // The page was opened by the store's own browser, once, and the first line says to sign in once.
-        #expect(f.opened.values == [FakeClaudeWorld.browserURL])
-        #expect(f.panel("b").lines == [.progress("Sign in as b@example.test in the browser once so Claude Code can use this account.", cancellable: true)])
-        // Another account's window shows that a switch is running, without a Cancel of its own.
-        #expect(f.panel("c").lines == [.progress("Switching Claude Code to b…", cancellable: false)])
-
-        f.store.cancelClaudeCodeSwitch()
-        #expect(f.panel("b").lines == [.progress("Cancelling…", cancellable: false)])
         await f.finish()
 
-        // Cancelling is not an error: nothing is said, nothing changed, and the half-made sign-in is gone.
-        #expect(f.store.claudeCodeActivity == nil && f.result("b") == nil)
+        // Nothing was changed, no page was opened, and the person is told where to go.
+        let result = try #require(f.result("b"))
+        #expect(!result.succeeded && result.message == "Sign in to b once in Settings › Accounts first.")
+        #expect(f.opened.values.isEmpty && !f.gates.calls.contains("browser") && !f.gates.calls.contains("login"))
         #expect(f.switching.defaultEmail == "a@example.test" && f.world.token(in: f.switching.defaultSlot) == token)
-        #expect(!f.switching.lendFolderExists(f.account("b")) && !f.gates.calls.contains("login"))
-        #expect(f.panel("a").control == .inClaudeCode && f.enabled("b"))
+        #expect(f.store.claudeCodeActivity == nil && f.panel("a").control == .inClaudeCode)
+        // The window offers Settings from now on, without waiting for the next reading.
+        #expect(f.panel("b").control == .setUp(help: Self.setUpHelp))
+        #expect(f.setup("b").status == .notSetUp(blocked: nil))
+        #expect(f.switching.logLines.last?["outcome"] as? String == "needsSetup")
     }
 
-    @Test func aSavedLoginThatExpiredAsksForTheSameAccountInTheBrowser() async throws {
+    @Test func aSavedLoginThatExpiredIsRemovedAndTheWindowSendsThePersonToSettings() async throws {
         let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
-        // b's saved login was used up elsewhere, so the handover is refused and the browser is needed.
+        // b's saved sign-in was used up elsewhere, so the handover is refused.
         f.world.revoke(try #require(f.world.token(in: f.switching.lendSlot(f.account("b")))))
         f.world.plan(.signIn("b@example.test"))
-        let hold = f.gates.holdBrowser()
         await f.start()
-
-        f.press("b")
-        try await waitFor("the browser page") { hold.entered.wait(timeout: .now()) == .success }
-        try await waitFor("the cancel button") { f.store.claudeCodeActivity?.canCancel == true }
-
-        #expect(f.panel("b").lines == [.progress("The saved sign-in expired. Sign in as b@example.test in the browser again.", cancellable: true)])
-        f.store.cancelClaudeCodeSwitch()
-        await f.finish()
-    }
-
-    @Test func theBrowserLineFallsBackToItsPlainWordsWithoutAnAddress() {
-        for reason in [ClaudeCodeBrowserReason.noSavedLogin, .savedLoginExpired] {
-            #expect(reason.message(signingInAs: nil) == reason.message && reason.message(signingInAs: "") == reason.message)
-            #expect(reason.message(signingInAs: "x@example.test").contains("x@example.test"))
-        }
-    }
-
-    @Test func cancelOnlyWorksWhileTheBrowserIsWaited() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
-        await f.start()
-        let hold = f.world.hold(login: "default")
-
-        f.press("b")
-        try await waitFor("the login command") { hold.entered.wait(timeout: .now()) == .success }
-        f.store.cancelClaudeCodeSwitch()
-        hold.release.signal()
-        await f.finish()
-
-        #expect(f.switching.defaultEmail == "b@example.test", "a step that cannot be cancelled goes on to the end")
-        #expect(f.result("b")?.succeeded == true)
-    }
-
-    @Test func aBrowserThatCannotBeOpenedEndsTheSwitchWithThatReason() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a", browserOpens: false); defer { f.close() }
-        _ = f.gates.holdBrowser()
-        await f.start()
+        #expect(f.enabled("b") && f.setup("b").status == .ready)
+        let token = f.world.token(in: f.switching.defaultSlot)
 
         f.press("b")
         await f.finish()
 
         let result = try #require(f.result("b"))
-        #expect(!result.succeeded)
-        #expect(result.message == "Could not open your browser. Check the default browser setting and try again.")
-        #expect(f.switching.defaultEmail == "a@example.test" && f.store.claudeCodeActivity == nil)
+        #expect(!result.succeeded && result.message == "The saved sign-in for b expired. Sign in again in Settings › Accounts.")
+        #expect(f.opened.values.isEmpty && !f.gates.calls.contains("browser"))
+        #expect(f.switching.defaultEmail == "a@example.test" && f.world.token(in: f.switching.defaultSlot) == token)
+        #expect(!f.switching.lendFolderExists(f.account("b")) && f.store.claudeCodeActivity == nil)
+        // Its window offers Settings, its line there offers the sign-in, and nothing says the sign-in is ready.
+        #expect(f.panel("b").control == .setUp(help: Self.setUpHelp) && f.result("b") != nil)
+        #expect(f.setup("b").status == .notSetUp(blocked: nil) && !f.store.claudeCodeReady.contains(f.account("b").id))
+        // Also after the window has read the folders again.
+        await f.refresh()
+        #expect(f.panel("b").control == .setUp(help: Self.setUpHelp))
     }
 
-    @Test func aBrowserSignInThatTimesOutShowsItsReason() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
-        f.world.plan(.timeout)
-        await f.start()
-
-        f.press("b")
-        await f.finish()
-
-        #expect(f.result("b")?.message == "Browser sign-in timed out. Try again.")
-        #expect(f.result("b")?.succeeded == false && f.switching.defaultEmail == "a@example.test")
-        #expect(f.opened.values == [FakeClaudeWorld.browserURL])
-    }
-
-    @Test func aSignInAsAnotherAccountIsDiscardedAndSaid() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
-        f.world.plan(.signIn("someone.else@example.test"))
-        await f.start()
-
-        f.press("b")
-        await f.finish()
-
-        #expect(f.result("b")?.message == "Signed in as a different account.")
-        #expect(f.switching.defaultEmail == "a@example.test" && !f.switching.lendFolderExists(f.account("b")))
-    }
-
-    @Test func quittingEndsTheBrowserWaitAndChangesNothing() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
-        f.world.plan(.signIn("b@example.test"))
-        let hold = f.gates.holdBrowser()
-        await f.start()
-
-        f.press("b")
-        try await waitFor("the browser page") { hold.entered.wait(timeout: .now()) == .success }
-        f.store.shutdown()
-        await f.finish()
-
-        #expect(f.store.claudeCodeActivity == nil && f.result("b") == nil)
-        #expect(f.switching.defaultEmail == "a@example.test" && !f.gates.calls.contains("login"))
-        #expect(f.switching.journal == nil)
-    }
-
-    // MARK: Starting the app
+    @Test func theBrowserLineFallsBackToItsPlainWordsWithoutAnAddress() {
+        let step = ClaudeCodePrepareStep.waitingForBrowser
+        #expect(step.message == "Sign in once in the browser so Claude Code can use this account.")
+        #expect(step.message(signingInAs: nil) == step.message && step.message(signingInAs: "") == step.message)
+        #expect(step.message(signingInAs: "x@example.test") == "Sign in as x@example.test in the browser once so Claude Code can use this account.")
+        // Only the browser wait names an account.
+        #expect(ClaudeCodePrepareStep.checkingVersion.message(signingInAs: "x@example.test") == "Checking Claude Code…")
+    }    // MARK: Starting the app
 
     @Test func aSwitchCutShortIsFinishedAtLaunchAndSaidOnTheTargetsWindow() async throws {
         let f = try StoreFixture(["prev", "target"], stableID: false) { sf in
@@ -739,8 +689,9 @@ struct UsageStoreClaudeCodeTests {
         #expect(seen.values == ["journal=false filled=true"])
         let result = try #require(f.result("target"))
         #expect(result.succeeded)
-        #expect(result.message == "AgentBar quit while switching. Claude Code now uses target. prev needs a browser sign-in next time.")
-        #expect(f.panel("target").control == .inClaudeCode && f.enabled("prev"))
+        #expect(result.message == "AgentBar quit while switching. Claude Code now uses target. prev needs to sign in again in Settings › Accounts.")
+        // prev's login was only in memory when the app quit, so its window sends the person to Settings.
+        #expect(f.panel("target").control == .inClaudeCode && f.panel("prev").control == .setUp(help: Self.setUpHelp))
         #expect(!f.switching.lendFolderExists(f.account("target")) && f.switching.journal == nil)
     }
 
@@ -763,7 +714,7 @@ struct UsageStoreClaudeCodeTests {
     }
 
     @Test func nothingCanBePressedUntilTheRecoveryIsOver() async throws {
-        let f = try StoreFixture(["prev", "target", "other"]) { sf in
+        let f = try StoreFixture(["prev", "target", "other"], saved: ["prev", "other"]) { sf in
             let prev = sf.accounts[0], target = sf.accounts[1]
             sf.signInDefault(target)
             try sf.saveLogin(for: target)
@@ -838,15 +789,21 @@ struct UsageStoreClaudeCodeTests {
         #expect(sf.world.events.isEmpty)
     }
 
-    @Test func theFirstSwitchToAnAccountSignsInWithTheBrowserOnceAndLaterOnesNeedNoBrowser() async throws {
+    @Test func anAccountSignsInOnceInSettingsAndAfterThatSwitchesNeedNoBrowser() async throws {
         let f = try StoreFixture(["a", "b"], signedIn: "a"); defer { f.close() }
         f.world.plan(.signIn("b@example.test"))
         await f.start()
+        #expect(f.panel("b").control == .setUp(help: Self.setUpHelp))
 
-        f.press("b")
+        f.signIn("b")
         await f.finish()
 
         #expect(f.opened.values == [FakeClaudeWorld.browserURL], "the page opened in the person's browser, once")
+        #expect(f.setup("b").status == .ready && f.enabled("b"))
+        #expect(f.switching.defaultEmail == "a@example.test", "signing in does not touch Claude Code's login")
+
+        f.press("b")
+        await f.finish()
         #expect(f.result("b")?.succeeded == true && f.panel("b").control == .inClaudeCode)
         #expect(f.switching.defaultEmail == "b@example.test" && f.switching.lendEmail(f.account("a")) == "a@example.test")
 
@@ -989,7 +946,7 @@ struct UsageStoreClaudeCodeTests {
     }
 
     @Test func deletingTheAccountClaudeCodeUsesLeavesClaudeCodeSignedIn() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["a"]); defer { f.close() }
+        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["a", "b"]); defer { f.close() }
         await f.start()
         let a = f.account("a")
         #expect(f.panel("a").control == .inClaudeCode)
@@ -1236,15 +1193,20 @@ struct UsageStoreClaudeCodeTests {
         store.popoverWillOpen()
         store.useInClaudeCode(account)
         store.confirmClaudeCodeSwitch()
-        store.cancelClaudeCodeSwitch()
+        // Settings › Accounts asks for nothing either: no line, no sign-in, nothing read when the list opens.
+        store.prepareForClaudeCode(account)
+        store.cancelClaudeCodePreparation()
+        store.accountsListDidOpen()
         store.popoverDidClose(accountIDs: [account.id])
         await store.fillAccountUUIDs()
         await store.claudeCodeReading?.value
+        await store.claudeCodePreparationTask?.value
 
-        #expect(store.claudeCodePanel(for: account) == .hidden)
+        #expect(store.claudeCodePanel(for: account) == .hidden && store.claudeCodeSetup(for: account) == .hidden)
         #expect(store.claudeCodeAvailability == .unknown && store.claudeCodeAccountID == nil)
         #expect(store.claudeCodeActivity == nil && store.claudeCodeConfirmation == nil && store.claudeCodeResults.isEmpty)
-        #expect(!store.claudeCodeStarting && !store.isClaudeCodeLocked(account))
+        #expect(store.claudeCodePreparation == nil && store.claudeCodeReady.isEmpty && store.claudeCodeSetupFailures.isEmpty)
+        #expect(!store.claudeCodeStarting && !store.isClaudeCodeLocked(account) && store.claudeCodeLockNote(for: account) == nil)
         // No journal, no log, no lend folder, and the registry was not rewritten with an account UUID.
         #expect(try tree(of: root) == treeBefore)
         #expect(try Data(contentsOf: files.registryURL) == registryBefore)

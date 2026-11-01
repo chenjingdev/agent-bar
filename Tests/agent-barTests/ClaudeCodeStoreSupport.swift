@@ -195,11 +195,20 @@ final class StoreFixture {
         store.accounts.first { $0.name == name } ?? accounts.first { $0.name == name }!
     }
     func panel(_ name: String) -> ClaudeCodePanel { store.claudeCodePanel(for: account(name)) }
+    // The account's line in Settings › Accounts.
+    func setup(_ name: String) -> ClaudeCodeSetup { store.claudeCodeSetup(for: account(name)) }
+    // Whether the account's "Sign In…" can be pressed.
+    func canSignIn(_ name: String) -> Bool {
+        if case .notSetUp(nil) = setup(name).status { return true }
+        return false
+    }
     func enabled(_ name: String) -> Bool {
         if case .use(true, _) = panel(name).control { return true }
         return false
     }
     func press(_ name: String) { store.useInClaudeCode(account(name)) }
+    // "Sign In…" on the account's line in Settings › Accounts.
+    func signIn(_ name: String) { store.prepareForClaudeCode(account(name)) }
 
     // The result line the account's window shows, if any.
     func result(_ name: String) -> (succeeded: Bool, message: String)? {
@@ -209,9 +218,10 @@ final class StoreFixture {
 
     // Everything the store does when the app starts.
     func start() async { await store.runClaudeCodeStartup() }
-    // Waits for the running switch and the reading that follows it.
+    // Waits for the running switch or sign-in and the reading that follows it.
     func finish() async {
         await store.claudeCodeSwitchTask?.value
+        await store.claudeCodePreparationTask?.value
         await store.claudeCodeReading?.value
     }
     // Reads usage and Claude Code's state again and waits for both.

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private struct AccountFrames: PreferenceKey {
@@ -51,6 +52,7 @@ struct AccountManagementView: View {
                 Button("Retry Pending Cleanup") { Task { await store.retryCleanup() } }
             }
         }
+        .onAppear { store.accountsListDidOpen() }
         .onDisappear { accountDrag = nil; settlingAccountDrag = false }
         .sheet(item: $editing) { account in AccountEditSheet(account: account, displayName: store.accountLabel(for: account)) }
         .sheet(isPresented: $choosingProvider) {
@@ -78,6 +80,23 @@ struct AccountManagementView: View {
             + "If Claude Code is using this account now, Claude Code stays signed in. \(preserved)"
     }
     private func row(_ account: UsageAccount, preview: Bool = false) -> some View {
+        let claudeCode = store.claudeCodeSetup(for: account)
+        return VStack(alignment: .leading, spacing: 8) {
+            accountRow(account, preview: preview)
+            if claudeCode.status != .hidden {
+                // Under the account's name, in line with it: past the drag handle.
+                ClaudeCodeSetupView(setup: claudeCode, signIn: { store.prepareForClaudeCode(account) },
+                                    cancel: { store.cancelClaudeCodePreparation() },
+                                    openLog: { NSWorkspace.shared.open(store.claudeCodeLogURL) })
+                    .padding(.leading, 24)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+    }
+
+    private func accountRow(_ account: UsageAccount, preview: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -127,9 +146,6 @@ struct AccountManagementView: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help("Account options")
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
     }
 
     @ViewBuilder private var accountDragOverlay: some View {
@@ -239,7 +255,7 @@ struct LoginProgressView: View {
                     .font(.headline).textSelection(.enabled)
                 if pending.replacing != nil {
                     if store.reconnectLockedByClaudeCode && store.reconnectionComparison != .different {
-                        Text("Claude Code is using this account right now. Reconnect is available when it finishes.")
+                        Text("This account is in use for Claude Code right now. Reconnect is available when it finishes.")
                             .font(.caption).foregroundStyle(.orange)
                     }
                     if store.reconnectionComparison == .different {

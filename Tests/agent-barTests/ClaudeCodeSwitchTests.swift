@@ -156,30 +156,28 @@ struct ClaudeCodeSwitchTests {
 
     // MARK: The first time: the browser
 
-    @Test func withoutASavedLoginTheBrowserSignsTheAccountInFirst() throws {
+    @Test func withoutASavedLoginNothingIsChangedAndNoBrowserIsOpened() throws {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")
-        f.signInDefault(prev)
+        let prevToken = f.signInDefault(prev)
+        // A browser that would sign the account in, if one were opened.
         f.world.plan(.signIn("target@example.test"))
-        let opened = Recorder<URL>()
 
-        let result = f.switchTo(target, openURL: { opened.add($0) })
+        let result = f.switchTo(target)
 
-        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
-        #expect(result.steps == [.checkingVersion, .readingCurrentLogin, .waitingForBrowser(.noSavedLogin), .signingIn,
-                                 .verifying, .returningPreviousLogin])
-        #expect(opened.values == [FakeClaudeWorld.browserURL])
-        // The previous login is read again after the wait, so it is as fresh as it can be.
-        #expect(f.world.events == [
-            "version", "read default", "read lend(target)",
-            "browser lend(target)", "read lend(target)", "read default",
-            "login default <- target [journal started]", "delete lend(target)", "read default",
-            "read lend(prev)", "login lend(prev) <- prev [journal slotSwitched]", "read lend(prev)",
-        ])
-        #expect(f.defaultEmail == "target@example.test" && f.lendEmail(prev) == "prev@example.test")
+        #expect(result.outcome == .needsSetup(expired: false))
+        #expect(result.steps == [.checkingVersion, .readingCurrentLogin])
+        // Only reads: the default login and the account's folder are looked at, and that is all.
+        #expect(f.world.events == ["version", "read default", "read lend(target)"])
+        #expect(f.world.openedURLs.isEmpty && !f.world.calls.contains { $0.arguments.first == "auth" })
+        #expect(f.defaultEmail == "prev@example.test" && f.world.isLive(prevToken))
+        #expect(!f.lendFolderExists(target) && !f.world.hasItem(f.lendSlot(target)))
+        #expect(f.journal == nil)
+        let last = try #require(f.logLines.last)
+        #expect(last["event"] as? String == "result" && last["outcome"] as? String == "needsSetup")
+        #expect(last["expired"] as? Bool == false && last["nothingChanged"] as? Bool == true)
         #expect(f.world.problems.isEmpty)
     }
-
     @Test func aSavedLoginThatBelongsToSomeoneElseIsClearedAndNeverLent() throws {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")
@@ -191,122 +189,58 @@ struct ClaudeCodeSwitchTests {
 
         let result = f.switchTo(target)
 
-        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
-        #expect(f.world.events.prefix(5).elementsEqual(["version", "read default", "read lend(target)", "delete lend(target)", "browser lend(target)"]))
+        // Nothing usable is saved for the account, so the switch asks for the sign-in in Settings. It does not open a browser.
+        #expect(result.outcome == .needsSetup(expired: false))
+        #expect(f.world.events == ["version", "read default", "read lend(target)", "delete lend(target)"])
         #expect(!f.world.calls.contains { $0.environment["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] == intruder })
-        #expect(f.defaultEmail == "target@example.test")
+        #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(target))
+        #expect(f.world.openedURLs.isEmpty && f.defaultEmail == "prev@example.test")
     }
-
-    @Test func aRefusedSavedLoginIsRemovedAndTheBrowserIsUsedOnce() throws {
+    @Test func aRefusedSavedLoginIsRemovedAndNothingElseChanges() throws {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")
-        f.signInDefault(prev)
+        let prevToken = f.signInDefault(prev)
         let spent = try f.saveLogin(for: target)
         f.world.revoke(spent)
+        // A browser that would sign the account in again, if one were opened.
         f.world.plan(.signIn("target@example.test"))
 
         let result = f.switchTo(target)
 
-        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
-        #expect(result.steps == [.checkingVersion, .readingCurrentLogin, .signingIn, .waitingForBrowser(.savedLoginExpired),
-                                 .signingIn, .verifying, .returningPreviousLogin])
+        #expect(result.outcome == .needsSetup(expired: true))
+        #expect(result.steps == [.checkingVersion, .readingCurrentLogin, .signingIn])
+        // The refused login is tried once, the slot is looked at to be sure nothing moved, and the dead copy goes.
         #expect(f.world.events == [
             "version", "read default", "read lend(target)",
             "login default <- target (spent) [journal started]", "read default", "delete lend(target)",
-            "browser lend(target)", "read lend(target)", "read default",
-            "login default <- target [journal started]", "delete lend(target)", "read default",
-            "read lend(prev)", "login lend(prev) <- prev [journal slotSwitched]", "read lend(prev)",
         ])
-        #expect(f.defaultEmail == "target@example.test")
+        #expect(f.world.openedURLs.isEmpty)
+        #expect(f.defaultEmail == "prev@example.test" && f.world.token(in: f.defaultSlot) == prevToken && f.world.isLive(prevToken))
+        #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(target))
+        #expect(!f.world.events.contains { $0.hasPrefix("login lend(") })
+        #expect(f.journal == nil)
+        let last = try #require(f.logLines.last)
+        #expect(last["outcome"] as? String == "needsSetup" && last["expired"] as? Bool == true && last["nothingChanged"] as? Bool == true)
+
+        // The next press finds nothing saved: it says so, and does not try the dead login again.
+        #expect(f.switchTo(target).outcome == .needsSetup(expired: false))
+        #expect(f.world.events.filter { $0.hasPrefix("login default") }.count == 1)
     }
 
-    @Test func aLoginChangedWhileTheBrowserWasOpenIsTheOneLentBack() throws {
+    @Test func aRefusedSavedLoginThatWillNotGoAwayIsReportedAsAFailure() throws {
         let f = try SwitchFixture()
-        let prev = f.addAccount("prev"), other = f.addAccount("other"), target = f.addAccount("target")
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
         f.signInDefault(prev)
         let spent = try f.saveLogin(for: target)
         f.world.revoke(spent)
-        f.world.plan(.signIn("target@example.test"))
-
-        // While the browser is open, somebody signs Claude Code in as another registered account.
-        let result = f.switchTo(target, openURL: { _ in f.signInDefault(other) })
-
-        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: other.id, needsLogin: [])))
-        #expect(f.lendEmail(other) == "other@example.test" && !f.world.hasItem(f.lendSlot(prev)))
-        // The record that a crash would leave behind names the login that is really there to lend.
-        let journals = f.world.journalsAtLogin
-        #expect(journals.map { $0?.previousID } == [prev.id, other.id, other.id])
-        #expect(journals.allSatisfy { $0?.stage == .started || $0?.stage == .slotSwitched })
-    }
-
-    @Test func aRefusedLoginIsRetriedWithTheBrowserOnlyOnce() throws {
-        let f = try SwitchFixture()
-        let prev = f.addAccount("prev"), target = f.addAccount("target")
-        let prevToken = f.signInDefault(prev)
-        try f.saveLogin(for: target)
-        f.world.plan(.signIn("target@example.test"))
-        f.world.script("default", .invalidGrant(echoToken: false), .invalidGrant(echoToken: false))
+        f.world.keepItem("lend(target)")
 
         let result = f.switchTo(target)
 
-        #expect(result.outcome == .failed(.init(reason: "Claude rejected the sign-in. Try again.", nothingChanged: true)))
-        #expect(f.world.events.filter { $0.hasPrefix("browser") }.count == 1)
-        #expect(f.world.events.filter { $0.hasPrefix("login default") }.count == 2)
-        #expect(f.defaultEmail == "prev@example.test" && f.world.isLive(prevToken))
-        #expect(!f.world.events.contains { $0.hasPrefix("login lend(prev)") })
-        // The login the browser just made was refused too: its copy is not kept, and the browser is not opened again.
-        #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(target))
-        #expect(f.journal == nil)
+        // It cannot be said that the person only has to sign in again while the old copy is still there.
+        #expect(result.outcome == .failed(.init(reason: "Could not remove the expired sign-in. Try again.", nothingChanged: true)))
+        #expect(f.defaultEmail == "prev@example.test" && f.world.openedURLs.isEmpty && f.journal == nil)
     }
-
-    @Test func aBrowserLoginAsAnotherAccountIsDiscarded() throws {
-        let f = try SwitchFixture()
-        let prev = f.addAccount("prev"), target = f.addAccount("target")
-        f.signInDefault(prev)
-        f.world.plan(.signIn("someone.else@example.test"))
-
-        let result = f.switchTo(target)
-
-        #expect(result.outcome == .failed(.init(reason: "Signed in as a different account.", nothingChanged: true)))
-        #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(target))
-        #expect(f.defaultEmail == "prev@example.test")
-        #expect(!f.world.events.contains { $0.hasPrefix("login") })
-        #expect(f.journal == nil)
-    }
-
-    @Test func cancellingTheBrowserWaitChangesNothing() throws {
-        let f = try SwitchFixture()
-        let prev = f.addAccount("prev"), target = f.addAccount("target")
-        let prevToken = f.signInDefault(prev)
-        let control = OperationControl()
-        f.world.plan(.signIn("target@example.test"))
-
-        let result = f.switchTo(target, control: control, openURL: { _ in control.cancel() })
-
-        #expect(result.outcome == .cancelled)
-        #expect(result.steps.last == .waitingForBrowser(.noSavedLogin))
-        #expect(!f.lendFolderExists(target) && !f.world.hasItem(f.lendSlot(target)))
-        #expect(f.defaultEmail == "prev@example.test" && f.world.isLive(prevToken))
-        #expect(!f.world.events.contains { $0.hasPrefix("login") })
-        #expect(f.logLines.last?["outcome"] as? String == "cancelled")
-    }
-
-    @Test func aBrowserLoginThatDoesNotFinishFailsWithoutChanges() throws {
-        for plan in [FakeClaudeWorld.Browser.timeout, .failure] {
-            let f = try SwitchFixture()
-            let prev = f.addAccount("prev"), target = f.addAccount("target")
-            f.signInDefault(prev)
-            f.world.plan(plan)
-
-            let result = f.switchTo(target)
-
-            guard case .failed(let failure) = result.outcome else { Issue.record("expected a failure"); return }
-            #expect(failure.nothingChanged && failure.reason.hasPrefix("Browser sign-in"))
-            if case .timeout = plan { #expect(failure.reason == "Browser sign-in timed out. Try again.") }
-            #expect(!f.lendFolderExists(target) && f.defaultEmail == "prev@example.test")
-        }
-    }
-
     // MARK: Failures
 
     @Test func aFailedHandoverLeavesEverythingAsItWas() throws {
@@ -565,24 +499,23 @@ struct ClaudeCodeSwitchTests {
         }
     }
 
-    @Test func aFailedHandoverThatMovedTheSlotEndsTheSwitchInsteadOfGoingOnToTheBrowser() throws {
+    @Test func aRefusedHandoverThatMovedTheSlotIsSettledAndNotTakenForAnExpiredLogin() throws {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")
         f.signInDefault(prev)
         try f.saveLogin(for: target)
-        f.world.plan(.signIn("target@example.test"))
         f.world.script("default", .emptiesSlotThenRefuses)
 
         let result = f.switchTo(target)
 
-        // The previous login must not vanish from the result just because a second round could have worked.
+        // The command said the login was refused, but the slot moved: the previous login must not vanish from the result
+        // just because the refusal looked like an expired sign-in.
         #expect(result.outcome == .failed(.init(reason: "Claude Code's login changed unexpectedly. Check it in Claude Code.",
                                                 nothingChanged: false, needsLogin: [target.id])))
-        #expect(!f.world.events.contains { $0.hasPrefix("browser") })
+        #expect(f.world.openedURLs.isEmpty)
         #expect(f.lendEmail(prev) == "prev@example.test")
         #expect(!f.world.hasItem(f.lendSlot(target)))
     }
-
     @Test func aNewLoginInTheKeychainAloneIsNotMistakenForNoChange() throws {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")
@@ -712,21 +645,19 @@ struct ClaudeCodeSwitchTests {
         let prev = f.addAccount("prev"), target = f.addAccount("target")
         f.signInDefault(prev)
         try f.saveLogin(for: target)
-        f.world.plan(.signIn("target@example.test"))
         f.world.script("default", .timeoutAfterOutput("Login failed: Request failed with status code 400 for {token}"))
 
         let result = f.switchTo(target)
 
         // The command printed why it failed and then hung: that is the saved login being refused, not a network problem.
-        #expect(result.outcome == .switched(.init(accountID: target.id, previousAccountID: prev.id, needsLogin: [])))
-        #expect(result.steps.contains(.waitingForBrowser(.savedLoginExpired)))
+        #expect(result.outcome == .needsSetup(expired: true))
+        #expect(!f.world.hasItem(f.lendSlot(target)))
         let refusal = try #require(f.logLines.first { $0["step"] as? String == "signIn" })
         #expect(refusal["outcome"] as? String == "invalid")
         let output = try #require(refusal["output"] as? String)
         #expect(output.contains("status code 400") && output.contains("[redacted]"))
         for token in f.world.allTokens { #expect(!f.logText.contains(token)) }
     }
-
     @Test func aTimeoutWithNothingPrintedIsStillAPassingFailureAndItsOutputIsLogged() throws {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")
@@ -762,22 +693,6 @@ struct ClaudeCodeSwitchTests {
         #expect(second.email == "second@example.test" && second != first)
         #expect(f.defaultEmail == "second@example.test" && !f.world.events.contains { $0.hasPrefix("login") })
         #expect(f.switchTo(target, confirmedLosing: second).outcome == .switched(.init(accountID: target.id, previousAccountID: nil, needsLogin: [])))
-    }
-
-    @Test func aLoginThatChangesWhileTheBrowserIsOpenIsAskedAboutAgain() throws {
-        let f = try SwitchFixture()
-        let target = f.addAccount("target")
-        f.signInDefault(email: "first@example.test")
-        f.world.plan(.signIn("target@example.test"))
-        guard case .needsConfirmation(let first) = f.switchTo(target).outcome else { Issue.record("expected a question"); return }
-
-        let result = f.switchTo(target, confirmedLosing: first, openURL: { _ in f.signInDefault(email: "second@example.test") })
-
-        guard case .needsConfirmation(let second) = result.outcome else { Issue.record("expected a second question"); return }
-        #expect(second.email == "second@example.test")
-        // Nothing was changed, and the sign-in the person just did is kept for the next try.
-        #expect(f.defaultEmail == "second@example.test" && !f.world.events.contains { $0.hasPrefix("login") })
-        #expect(f.world.hasItem(f.lendSlot(target)) && f.lendEmail(target) == "target@example.test")
     }
 
     // MARK: Removing a lend login
@@ -875,22 +790,18 @@ struct ClaudeCodeSwitchTests {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")
         f.signInDefault(prev)
-        f.world.plan(.signIn("target@example.test"))
-        // The handover does not go through, so the fresh login stays in its folder.
-        f.world.script("default", .timeout)
+        try f.saveLogin(for: target)
 
-        let result = f.switchTo(target)
+        guard case .switched = f.switchTo(target).outcome else { Issue.record("expected the switch to work"); return }
 
-        guard case .failed(let failure) = result.outcome else { Issue.record("expected a failure"); return }
-        #expect(failure.nothingChanged)
-        let folder = f.files.lend(target.id)
+        // The folder the previous login was lent back into, and the one it lives in.
+        let folder = f.files.lend(prev.id)
         #expect(permissions(f.files.lendRoot) == 0o700 && permissions(folder) == 0o700)
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
         #expect(!names.contains(".credentials.json"))
         #expect(!names.contains("agentbar-browser-opener") && !names.contains("agentbar-oauth-url"))
-        #expect(f.world.hasItem(f.lendSlot(target)))
+        #expect(f.world.hasItem(f.lendSlot(prev)))
     }
-
     @Test func aLendFolderLivesUnderTheDataDirectoryByAccountID() throws {
         let files = AccountFiles(root: URL(fileURLWithPath: "/tmp/agentbar-example/multi-account-v1"))
         let id = UUID()
@@ -1082,9 +993,7 @@ struct ClaudeCodeSwitchTests {
         let prev = f.addAccount("prev"), target = f.addAccount("target")
         f.signInDefault(prev)
         try f.saveLogin(for: target)
-        f.world.plan(.signIn("target@example.test"))
-        // Claude Code echoes the token it was given in two of its error messages.
-        f.world.script("default", .invalidGrant(echoToken: true))
+        // Claude Code echoes the token it was given in one of its error messages.
         f.world.script("lend(prev)", .invalidGrant(echoToken: true))
 
         let result = f.switchTo(target)
@@ -1095,9 +1004,10 @@ struct ClaudeCodeSwitchTests {
         #expect(Set(lines.compactMap { $0["attempt"] as? String }).count == 1 && lines.allSatisfy { $0["attempt"] != nil })
         #expect(lines.allSatisfy { $0["account"] as? String == "target" && $0["provider"] as? String == "claude" && $0["time"] != nil })
         let steps = lines.compactMap { $0["step"] as? String }
-        #expect(steps == ["version", "readCurrentLogin", "savedLogin", "signIn", "browserSignIn", "browserSignIn", "readCurrentLogin",
-                          "signIn", "removeUsedUpCopy", "verify", "giveBack"])
+        #expect(steps == ["version", "readCurrentLogin", "savedLogin", "signIn", "removeUsedUpCopy", "verify", "giveBack"])
         #expect(lines.last?["outcome"] as? String == "switched")
+        // A switch is not marked as the other kind of attempt.
+        #expect(lines.allSatisfy { $0["operation"] == nil })
         // The refusal is kept, the token inside it is not.
         let refusal = try #require(lines.first { $0["step"] as? String == "giveBack" })
         #expect((refusal["output"] as? String)?.contains("status code 400") == true && (refusal["output"] as? String)?.contains("[redacted]") == true)
@@ -1108,6 +1018,25 @@ struct ClaudeCodeSwitchTests {
         #expect(permissions(f.logURL) == 0o600)
     }
 
+    @Test func aRefusedLoginIsLoggedAsAnAttemptThatChangedNothingAndWithoutItsToken() throws {
+        let f = try SwitchFixture()
+        let prev = f.addAccount("prev"), target = f.addAccount("target")
+        f.signInDefault(prev)
+        try f.saveLogin(for: target)
+        // The refusal names the token it was given.
+        f.world.script("default", .invalidGrant(echoToken: true))
+
+        let result = f.switchTo(target)
+
+        #expect(result.outcome == .needsSetup(expired: true))
+        let lines = f.logLines
+        #expect(lines.compactMap { $0["step"] as? String } == ["version", "readCurrentLogin", "savedLogin", "signIn"])
+        let refusal = try #require(lines.first { $0["step"] as? String == "signIn" })
+        #expect(refusal["outcome"] as? String == "invalid")
+        #expect((refusal["output"] as? String)?.contains("[redacted]") == true)
+        #expect(lines.last?["outcome"] as? String == "needsSetup" && lines.last?["nothingChanged"] as? Bool == true)
+        for token in f.world.allTokens { #expect(!f.logText.contains(token)) }
+    }
     @Test func aSwitchThatChangesNothingStillWritesItsResult() throws {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")

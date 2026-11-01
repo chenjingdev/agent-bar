@@ -6,6 +6,8 @@ import SwiftUI
 struct AccountPopoverView: View {
     let accountIDs: [UUID]
     let groupID: UUID?
+    // Opens a tab of the settings window; the window itself is the app's, so a test passes its own.
+    var openSettings: @MainActor (SettingsTab, UUID?) -> Void = { SettingsWindowController.shared.show(tab: $0, groupID: $1) }
     @EnvironmentObject private var store: UsageStore
     @State private var selected: UUID?
     init(accountID: UUID, groupID: UUID? = nil) { self.accountIDs = [accountID]; self.groupID = groupID }
@@ -24,8 +26,8 @@ struct AccountPopoverView: View {
                 if let account {
                     let claudeCode = store.claudeCodePanel(for: account)
                     header(account, claudeCode: claudeCode)
-                    ClaudeCodeLinesView(lines: claudeCode.lines, cancel: { store.cancelClaudeCodeSwitch() },
-                                        confirm: { store.confirmClaudeCodeSwitch() }, decline: { store.cancelClaudeCodeConfirmation() },
+                    ClaudeCodeLinesView(lines: claudeCode.lines, confirm: { store.confirmClaudeCodeSwitch() },
+                                        decline: { store.cancelClaudeCodeConfirmation() },
                                         openLog: { NSWorkspace.shared.open(store.claudeCodeLogURL) })
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
@@ -45,6 +47,11 @@ struct AccountPopoverView: View {
             .onChange(of: account?.id) { reportShownAccount() }
             .onChange(of: groupID) { reportShownAccount() }
     }
+    // What "Set Up in Settings…" does: opens Settings › Accounts, where the account signs in once for Claude Code. Settings
+    // selects the menu bar group this popover belongs to, as the gear and "Accounts…" do.
+    static func setUpAction(groupID: UUID?, open: @escaping @MainActor (SettingsTab, UUID?) -> Void) -> @MainActor () -> Void {
+        { open(.accounts, groupID) }
+    }
     // A group's popover shows one of its accounts at a time. A result line is cleared by the closing that follows seeing
     // it, so the store has to know which one is on screen.
     private func reportShownAccount() {
@@ -61,13 +68,14 @@ struct AccountPopoverView: View {
                 HStack(spacing: 8) {
                     Text(account.provider.displayName)
                         .font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(AppTheme.muted)
-                    ClaudeCodeControlView(control: claudeCode.control, use: { store.useInClaudeCode(account) })
+                    ClaudeCodeControlView(control: claudeCode.control, use: { store.useInClaudeCode(account) },
+                                          setUp: Self.setUpAction(groupID: groupID, open: openSettings))
                 }
                 .padding(.top, claudeCode.control == .hidden ? 0 : 3)
             }
             Spacer(minLength: 8)
             Button { store.refreshNow() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
-            Button { SettingsWindowController.shared.show(tab: .menuBar, groupID: groupID) } label: { Image(systemName: "gearshape") }.help("Settings")
+            Button { openSettings(.menuBar, groupID) } label: { Image(systemName: "gearshape") }.help("Settings")
         }.buttonStyle(.plain).font(.system(size: 14, weight: .semibold)).padding(16)
     }
     @ViewBuilder private func content(_ account: UsageAccount) -> some View {
@@ -107,7 +115,7 @@ struct AccountPopoverView: View {
             Text(store.isRefreshing ? "Refreshing…" : "\(count) account\(count == 1 ? "" : "s") in menu bar")
                 .font(.system(size: 10)).foregroundStyle(AppTheme.muted).lineLimit(1)
             Spacer(minLength: 4)
-            Button("Accounts…") { SettingsWindowController.shared.show(tab: .accounts, groupID: groupID) }
+            Button("Accounts…") { openSettings(.accounts, groupID) }
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }.buttonStyle(.plain).font(.system(size: 12, weight: .bold, design: .rounded)).padding(14)
     }

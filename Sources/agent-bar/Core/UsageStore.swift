@@ -22,15 +22,23 @@ enum ClaudeCodeAvailability: Equatable {
 struct ClaudeCodeActivity {
     let id = UUID()
     let targetID: UUID
-    // The address the target is registered with: the browser has to be signed in to it.
-    let targetEmail: String?
     // The account Claude Code was signed in to when the button was pressed, if AgentBar has it.
     let previousID: UUID?
+    var message: String
+}
+
+// The browser sign-in that runs from Settings › Accounts to get one account ready for Claude Code. It is never
+// running beside a switch or another sign-in, and while it runs the account's Delete and Reconnect wait.
+struct ClaudeCodePreparation {
+    let id = UUID()
+    let accountID: UUID
+    // The address the account is registered with: the browser has to be signed in to it.
+    let email: String?
     let control: OperationControl
     var message: String
     // Only the browser wait can be cancelled.
     var canCancel = false
-    // Set when the browser could not be opened: the switch is cancelled, and this is why.
+    // Set when the browser could not be opened: the sign-in is cancelled, and this is why.
     var failure: String?
 }
 
@@ -77,7 +85,13 @@ final class UsageStore: ObservableObject {
     @Published private(set) var claudeCodeActivity: ClaudeCodeActivity?
     @Published private(set) var claudeCodeConfirmation: ClaudeCodeConfirmation?
     @Published private(set) var claudeCodeResults: [UUID: ClaudeCodeResult] = [:]
+    // The accounts whose own folder holds a login a switch can hand over, as last read.
+    @Published private(set) var claudeCodeReady: Set<UUID> = []
+    @Published private(set) var claudeCodePreparation: ClaudeCodePreparation?
+    // Why an account's last sign-in for Claude Code did not work, for its line in Settings › Accounts.
+    @Published private(set) var claudeCodeSetupFailures: [UUID: String] = [:]
     private(set) var claudeCodeSwitchTask: Task<Void, Never>?
+    private(set) var claudeCodePreparationTask: Task<Void, Never>?
     private(set) var claudeCodeReading: Task<Void, Never>?
     private var claudeCodeEpoch = 0
     // The account each menu bar group's popover shows, and the accounts it has shown since it last opened.
@@ -625,7 +639,7 @@ final class UsageStore: ObservableObject {
             // If no switch is running by now, the one that turned this away ended while this deletion was still going: its
             // clean-up went past without this account and no other end will come for it. Go on after a moment. The pause
             // keeps an engine that is busy with something the store does not know of from being asked again and again at once.
-            if claudeCodeActivity == nil {
+            if claudeCodeActivity == nil && claudeCodePreparation == nil {
                 Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(100))
                     await self?.retryCleanup(allowUserInteraction: false)
@@ -650,60 +664,67 @@ final class UsageStore: ObservableObject {
     // Whether "Use in Claude Code" exists at all in this run.
     var claudeCodeEnabled: Bool { claudeCode != nil }
 
-    // The accounts whose Delete and Reconnect must wait: the two a running switch involves, or every Claude account
-    // while a switch cut short last time is being finished (the journal says which, but only the engine reads it).
+    // The accounts whose Delete and Reconnect must wait: the two a running switch involves, the one a sign-in for Claude
+    // Code is saving a login for, or every Claude account while a switch cut short last time is being finished (the
+    // journal says which, but only the engine reads it).
     private var claudeCodeLockedIDs: Set<UUID> {
         var ids = Set<UUID>()
         if let activity = claudeCodeActivity {
             ids.insert(activity.targetID)
             if let previous = activity.previousID { ids.insert(previous) }
         }
+        if let preparation = claudeCodePreparation { ids.insert(preparation.accountID) }
         if claudeCodeStarting { ids.formUnion(accounts.filter { $0.provider == .claude }.map(\.id)) }
         return ids
     }
     func isClaudeCodeLocked(_ account: UsageAccount) -> Bool { claudeCodeLockedIDs.contains(account.id) }
-    // Whether the sign-in under review would replace an account a Claude Code switch is using.
+    // Whether the sign-in under review would replace an account Claude Code is using or being signed in for.
     var reconnectLockedByClaudeCode: Bool {
         guard let id = pendingLogin?.replacing, let account = registry.accounts.first(where: { $0.id == id }) else { return false }
         return isClaudeCodeLocked(account)
     }
     // Why an account cannot be changed now, and when it can: `action` is what the person asked for.
     private func claudeCodeBusyMessage(_ action: String) -> String {
-        claudeCodeActivity == nil ? "AgentBar is still checking Claude Code. \(action) in a moment."
-                                  : "Claude Code is switching accounts. \(action) after it finishes."
+        if claudeCodeActivity != nil { return "Claude Code is switching accounts. \(action) after it finishes." }
+        if claudeCodePreparation != nil { return "AgentBar is signing this account in for Claude Code. \(action) after it finishes." }
+        return "AgentBar is still checking Claude Code. \(action) in a moment."
     }
     // Why the account is locked, for the Accounts list; nil when it is not.
     func claudeCodeLockNote(for account: UsageAccount) -> String? {
         guard isClaudeCodeLocked(account) else { return nil }
-        return claudeCodeActivity == nil ? "Checking Claude Code" : "Switching Claude Code"
+        if claudeCodeActivity != nil { return "Switching Claude Code" }
+        if claudeCodePreparation != nil { return "Signing in for Claude Code" }
+        return "Checking Claude Code"
+    }
+
+    // Why nothing can be started for the account now, or nil. `help` is for the button's tooltip; `notice` is also written
+    // under the header, where nothing else already says it. A usage sign-in that has to be redone blocks a switch (the
+    // account's window already says so) but not the sign-in for Claude Code, which is a login of its own.
+    private func claudeCodeBlock(for account: UsageAccount, usageSignInMatters: Bool) -> (help: String, notice: String?)? {
+        if claudeCodeStarting || claudeCodeAvailability == .unknown { return ("Checking Claude Code…", nil) }
+        if claudeCodeActivity != nil { return ("Claude Code is being switched. Wait for it to finish.", nil) }
+        if claudeCodePreparation != nil { return ("An account is signing in for Claude Code. Wait for it to finish.", nil) }
+        if case .blocked(let reason) = claudeCodeAvailability { return (reason, reason) }
+        if usageSignInMatters, snapshot(for: account).requiresLogin { return (AccountPopoverView.signInRequiredLine, nil) }
+        if !ClaudeSlotIdentity.canVerify(account) {
+            let unverifiable = "Reconnect this account before using it in Claude Code."
+            return (unverifiable, unverifiable)
+        }
+        return nil
     }
 
     // What the account's window shows. The control is hidden without a switcher and when Claude Code is not installed.
     func claudeCodePanel(for account: UsageAccount) -> ClaudeCodePanel {
         guard claudeCode != nil, account.provider == .claude, !account.deletionPending,
               claudeCodeAvailability != .missing else { return .hidden }
-        // Why the button cannot be pressed. `notice` is also written under the header where nothing else already says it:
-        // the sign-in status line is shown there anyway.
-        var blocked: (help: String, notice: String?)?
-        let unverifiable = "Reconnect this account before using it in Claude Code."
-        if claudeCodeStarting || claudeCodeAvailability == .unknown {
-            blocked = ("Checking Claude Code…", nil)
-        } else if claudeCodeActivity != nil {
-            blocked = ("Claude Code is being switched. Wait for it to finish.", nil)
-        } else if case .blocked(let reason) = claudeCodeAvailability {
-            blocked = (reason, reason)
-        } else if snapshot(for: account).requiresLogin {
-            blocked = (AccountPopoverView.signInRequiredLine, nil)
-        } else if !ClaudeSlotIdentity.canVerify(account) {
-            blocked = (unverifiable, unverifiable)
-        }
+        let blocked = claudeCodeBlock(for: account, usageSignInMatters: true)
 
         var lines: [ClaudeCodePanel.Line] = []
         if let activity = claudeCodeActivity {
             if activity.targetID == account.id {
-                lines.append(.progress(activity.message, cancellable: activity.canCancel))
+                lines.append(.progress(activity.message))
             } else if let target = accounts.first(where: { $0.id == activity.targetID }) {
-                lines.append(.progress("Switching Claude Code to \(target.title)…", cancellable: false))
+                lines.append(.progress("Switching Claude Code to \(target.title)…"))
             }
         } else if let confirmation = claudeCodeConfirmation, confirmation.accountID == account.id {
             lines.append(.confirmation(email: confirmation.login.email))
@@ -717,16 +738,38 @@ final class UsageStore: ObservableObject {
         } else if let blocked {
             control = .use(enabled: false, help: blocked.help)
             if let notice = blocked.notice { lines.insert(.notice(notice), at: 0) }
+        } else if !claudeCodeReady.contains(account.id) {
+            // Nothing to hand over yet. The browser sign-in that makes it is not done from here.
+            control = .setUp(help: "Sign in once in Settings › Accounts so Claude Code can use this account.")
         } else {
             control = .use(enabled: true, help: "Switches Claude Code to this account. Open sessions switch within 30 s.")
         }
         return ClaudeCodePanel(control: control, lines: lines)
     }
 
+    // What the account's line in Settings › Accounts shows; nothing where the account's window shows no control.
+    func claudeCodeSetup(for account: UsageAccount) -> ClaudeCodeSetup {
+        guard claudeCode != nil, account.provider == .claude, !account.deletionPending,
+              claudeCodeAvailability != .missing else { return .hidden }
+        if let preparation = claudeCodePreparation, preparation.accountID == account.id {
+            return ClaudeCodeSetup(status: .signingIn(message: preparation.message, cancellable: preparation.canCancel))
+        }
+        if claudeCodeAccountID == account.id { return ClaudeCodeSetup(status: .inClaudeCode) }
+        if claudeCodeReady.contains(account.id) { return ClaudeCodeSetup(status: .ready) }
+        return ClaudeCodeSetup(status: .notSetUp(blocked: claudeCodeBlock(for: account, usageSignInMatters: false)?.help),
+                               failure: claudeCodeSetupFailures[account.id])
+    }
+
     private func canStartClaudeCodeSwitch(_ account: UsageAccount) -> Bool {
         guard !storageUnavailable, !account.deletionPending, accounts.contains(where: { $0.id == account.id }),
               case .use(let enabled, _) = claudeCodePanel(for: account).control else { return false }
         return enabled
+    }
+
+    private func canStartClaudeCodePreparation(_ account: UsageAccount) -> Bool {
+        guard !storageUnavailable, !account.deletionPending, accounts.contains(where: { $0.id == account.id }),
+              case .notSetUp(let blocked) = claudeCodeSetup(for: account).status else { return false }
+        return blocked == nil
     }
 
     func useInClaudeCode(_ account: UsageAccount) {
@@ -746,41 +789,27 @@ final class UsageStore: ObservableObject {
 
     func cancelClaudeCodeConfirmation() { claudeCodeConfirmation = nil }
 
-    // Cancel while the switch waits for the browser. Any other step cannot be cancelled and has no button.
-    func cancelClaudeCodeSwitch() {
-        guard var activity = claudeCodeActivity, activity.canCancel else { return }
-        activity.canCancel = false
-        activity.message = "Cancelling…"
-        claudeCodeActivity = activity
-        activity.control.cancel()
-        claudeCodeBrowser.close()
-    }
-
     private func startClaudeCodeSwitch(to account: UsageAccount, confirmed: ClaudeCodeUnknownLogin?) {
         guard let claudeCode else { return }
         // Earlier results describe a login that is about to change.
         claudeCodeConfirmation = nil
         claudeCodeResults.removeAll()
         claudeCodeEpoch += 1
-        let control = OperationControl()
-        let activity = ClaudeCodeActivity(targetID: account.id, targetEmail: account.identity?.email, previousID: claudeCodeAccountID,
-                                          control: control, message: ClaudeCodeSwitchStep.checkingVersion.message)
+        let activity = ClaudeCodeActivity(targetID: account.id, previousID: claudeCodeAccountID,
+                                          message: ClaudeCodeSwitchStep.checkingVersion.message)
         let id = activity.id
         claudeCodeActivity = activity
         let accounts = registry.accounts
         let removing = savedLoginLock
-        // The engine blocks, and tells its progress and the sign-in page from its own thread, in order.
+        // The engine blocks, and tells its progress from its own thread, in order.
         claudeCodeSwitchTask = Task { [weak self] in
             let outcome = await Task.detached(priority: .utility) {
                 // A saved login that is being removed has the engine for a moment. Wait for it, or the engine sends this away.
                 removing.withLock {}
                 return claudeCode.switchAccount(
-                    to: account, among: accounts, confirmedLosing: confirmed, control: control,
+                    to: account, among: accounts, confirmedLosing: confirmed,
                     progress: { step in
                         DispatchQueue.main.async { MainActor.assumeIsolated { self?.claudeCodeProgress(step, activity: id) } }
-                    },
-                    openURL: { url in
-                        DispatchQueue.main.async { MainActor.assumeIsolated { self?.openClaudeCodeBrowser(url, control: control, activity: id) } }
                     })
             }.value
             self?.finishClaudeCodeSwitch(outcome, target: account, activity: id)
@@ -791,32 +820,14 @@ final class UsageStore: ObservableObject {
 
     private func claudeCodeProgress(_ step: ClaudeCodeSwitchStep, activity id: UUID) {
         guard var activity = claudeCodeActivity, activity.id == id else { return }
-        if case .waitingForBrowser(let reason) = step {
-            // A cancel that is already on its way keeps its words.
-            activity.canCancel = !activity.control.cancelled
-            activity.message = activity.control.cancelled ? "Cancelling…" : reason.message(signingInAs: activity.targetEmail)
-        } else {
-            activity.canCancel = false
-            activity.message = step.message
-        }
+        activity.message = step.message
         claudeCodeActivity = activity
-    }
-
-    // The sign-in page is opened in the person's own browser. That closes the popover, so the progress lives here.
-    private func openClaudeCodeBrowser(_ url: URL, control: OperationControl, activity id: UUID) {
-        guard claudeCodeActivity?.id == id, !control.cancelled else { return }
-        claudeCodeBrowser.open(url, mode: .standard, control: control, failed: { [weak self] message in
-            guard var activity = self?.claudeCodeActivity, activity.id == id else { return }
-            activity.failure = message
-            self?.claudeCodeActivity = activity
-        }, cancelled: {})
     }
 
     private func finishClaudeCodeSwitch(_ outcome: ClaudeCodeSwitchOutcome, target: UsageAccount, activity id: UUID) {
         guard let activity = claudeCodeActivity, activity.id == id else { return }
         claudeCodeActivity = nil
         claudeCodeEpoch += 1
-        claudeCodeBrowser.close()
         switch outcome {
         case .switched(let switched):
             claudeCodeAccountID = switched.accountID
@@ -826,8 +837,13 @@ final class UsageStore: ObservableObject {
             claudeCodeAccountID = target.id
         case .needsConfirmation(let login):
             claudeCodeConfirmation = ClaudeCodeConfirmation(accountID: target.id, login: login)
-        case .cancelled:
-            if let failure = activity.failure { claudeCodeResults[target.id] = ClaudeCodeResult(succeeded: false, message: failure) }
+        case .needsSetup(let expired):
+            // Nothing was changed, and no browser opened: the account's window now offers the way to Settings. It does so at
+            // once, not only after the next reading.
+            claudeCodeReady.remove(target.id)
+            let message = expired ? "The saved sign-in for \(target.title) expired. Sign in again in Settings › Accounts."
+                                  : "Sign in to \(target.title) once in Settings › Accounts first."
+            claudeCodeResults[target.id] = ClaudeCodeResult(succeeded: false, message: message)
         case .failed(let failure):
             let message = Self.claudeCodeFailureMessage(failure)
             claudeCodeResults[target.id] = ClaudeCodeResult(succeeded: false, message: claudeCodeNotes(message, needsLogin: failure.needsLogin))
@@ -842,11 +858,103 @@ final class UsageStore: ObservableObject {
         return failure.reason + (failure.nothingChanged || saysSo ? "" : " Claude Code's login may have changed.")
     }
 
-    // The accounts whose saved login could not be kept sign in with the browser the next time.
+    // The accounts whose saved login could not be kept have to sign in again in Settings before their next use.
     private func claudeCodeNotes(_ message: String, needsLogin ids: [UUID]) -> String {
         ([message] + ids.compactMap { id in
-            accounts.first { $0.id == id }.map { "\($0.title) needs a browser sign-in next time." }
+            accounts.first { $0.id == id }.map { "\($0.title) needs to sign in again in Settings › Accounts." }
         }).joined(separator: " ")
+    }
+
+    // MARK: Claude Code: signing an account in once
+
+    // "Sign In…" on an account's line in Settings › Accounts: the browser signs the account in once, and its login waits in
+    // the account's own folder for the switch that uses it. The popover's button never does this.
+    func prepareForClaudeCode(_ account: UsageAccount) {
+        // The registry's own copy, in case the one the window holds is older.
+        guard let account = accounts.first(where: { $0.id == account.id }), canStartClaudeCodePreparation(account) else { return }
+        startClaudeCodePreparation(for: account)
+    }
+
+    // Cancel while the sign-in waits for the browser. Any other step cannot be cancelled and has no button.
+    func cancelClaudeCodePreparation() {
+        guard var preparation = claudeCodePreparation, preparation.canCancel else { return }
+        preparation.canCancel = false
+        preparation.message = "Cancelling…"
+        claudeCodePreparation = preparation
+        preparation.control.cancel()
+        claudeCodeBrowser.close()
+    }
+
+    private func startClaudeCodePreparation(for account: UsageAccount) {
+        guard let claudeCode else { return }
+        // The last attempt's reason describes what is about to be tried again.
+        claudeCodeSetupFailures[account.id] = nil
+        claudeCodeEpoch += 1
+        let control = OperationControl()
+        let preparation = ClaudeCodePreparation(accountID: account.id, email: account.identity?.email, control: control,
+                                                message: ClaudeCodePrepareStep.checkingVersion.message)
+        let id = preparation.id
+        claudeCodePreparation = preparation
+        let removing = savedLoginLock
+        claudeCodePreparationTask = Task { [weak self] in
+            let outcome = await Task.detached(priority: .utility) {
+                // A saved login that is being removed has the engine for a moment. Wait for it, or the engine sends this away.
+                removing.withLock {}
+                return claudeCode.prepareLendLogin(
+                    for: account, control: control,
+                    progress: { step in
+                        DispatchQueue.main.async { MainActor.assumeIsolated { self?.claudeCodePrepareProgress(step, preparation: id) } }
+                    },
+                    openURL: { url in
+                        DispatchQueue.main.async { MainActor.assumeIsolated { self?.openClaudeCodeBrowser(url, control: control, preparation: id) } }
+                    })
+            }.value
+            self?.finishClaudeCodePreparation(outcome, account: account, preparation: id)
+            // Deletions that had to wait for this sign-in go on now.
+            await self?.retryCleanup(allowUserInteraction: false)
+        }
+    }
+
+    private func claudeCodePrepareProgress(_ step: ClaudeCodePrepareStep, preparation id: UUID) {
+        guard var preparation = claudeCodePreparation, preparation.id == id else { return }
+        if case .waitingForBrowser = step {
+            // A cancel that is already on its way keeps its words.
+            preparation.canCancel = !preparation.control.cancelled
+            preparation.message = preparation.control.cancelled ? "Cancelling…" : step.message(signingInAs: preparation.email)
+        } else {
+            preparation.canCancel = false
+            preparation.message = step.message
+        }
+        claudeCodePreparation = preparation
+    }
+
+    // The sign-in page is opened in the person's own browser. Settings stays where it is and its line shows the wait.
+    private func openClaudeCodeBrowser(_ url: URL, control: OperationControl, preparation id: UUID) {
+        guard claudeCodePreparation?.id == id, !control.cancelled else { return }
+        claudeCodeBrowser.open(url, mode: .standard, control: control, failed: { [weak self] message in
+            guard var preparation = self?.claudeCodePreparation, preparation.id == id else { return }
+            preparation.failure = message
+            self?.claudeCodePreparation = preparation
+        }, cancelled: {})
+    }
+
+    private func finishClaudeCodePreparation(_ outcome: ClaudeCodePrepareOutcome, account: UsageAccount, preparation id: UUID) {
+        guard let preparation = claudeCodePreparation, preparation.id == id else { return }
+        claudeCodePreparation = nil
+        claudeCodeEpoch += 1
+        claudeCodeBrowser.close()
+        switch outcome {
+        case .prepared, .alreadyPrepared:
+            // Ready at once, not only after the next reading.
+            claudeCodeReady.insert(account.id)
+            claudeCodeSetupFailures[account.id] = nil
+        case .cancelled:
+            // Nothing is said about a cancel the person made. A browser that could not be opened is why the sign-in was cancelled.
+            if let failure = preparation.failure { claudeCodeSetupFailures[account.id] = failure }
+        case .failed(let reason):
+            claudeCodeSetupFailures[account.id] = reason
+        }
+        refreshClaudeCodeState(checkVersion: false)
     }
 
     // MARK: Claude Code: what it is signed in to
@@ -879,9 +987,10 @@ final class UsageStore: ObservableObject {
     }
 
     // Reads, in the background, whether Claude Code is installed and new enough (only when asked, and when it was not
-    // usable before) and which registered account it is signed in to. Reads that overlap are folded into one more.
+    // usable before), which registered account it is signed in to, and which accounts have a login waiting to be handed
+    // over. Reads that overlap are folded into one more. None runs beside a switch or a sign-in for Claude Code.
     func refreshClaudeCodeState(checkVersion: Bool = true) {
-        guard claudeCode != nil, !claudeCodeStarting, claudeCodeActivity == nil else { return }
+        guard claudeCode != nil, !claudeCodeStarting, claudeCodeActivity == nil, claudeCodePreparation == nil else { return }
         claudeCodeVersionDue = claudeCodeVersionDue || checkVersion
         guard claudeCodeReading == nil else { claudeCodeReadAgain = true; return }
         claudeCodeReading = Task { [weak self] in
@@ -891,7 +1000,7 @@ final class UsageStore: ObservableObject {
                 let versionDue = claudeCodeVersionDue
                 claudeCodeVersionDue = false
                 await readClaudeCodeState(checkVersion: versionDue)
-            } while claudeCodeReadAgain && claudeCodeActivity == nil && !claudeCodeStarting
+            } while claudeCodeReadAgain && claudeCodeActivity == nil && claudeCodePreparation == nil && !claudeCodeStarting
             claudeCodeReading = nil
         }
     }
@@ -906,25 +1015,32 @@ final class UsageStore: ObservableObject {
         let reading = await Task.detached(priority: .utility) {
             Self.readClaudeCode(claudeCode, accounts: accounts, checkVersion: checkVersion, known: known)
         }.value
-        // A switch that started or ended meanwhile makes this reading old.
-        guard epoch == claudeCodeEpoch, claudeCodeActivity == nil else { return }
+        // A switch or a sign-in that started or ended meanwhile makes this reading old.
+        guard epoch == claudeCodeEpoch, claudeCodeActivity == nil, claudeCodePreparation == nil else { return }
         claudeCodeAvailability = reading.availability
         claudeCodeAccountID = reading.accountID
+        if claudeCodeReady != reading.ready { claudeCodeReady = reading.ready }
+        // A reason stops being true once the account is set up, or Claude Code has it.
+        let stale = claudeCodeSetupFailures.keys.filter { reading.ready.contains($0) || $0 == reading.accountID }
+        for id in stale { claudeCodeSetupFailures[id] = nil }
     }
 
     private struct ClaudeCodeReading: Sendable {
         var availability: ClaudeCodeAvailability
         var accountID: UUID?
+        var ready: Set<UUID>
     }
 
     nonisolated private static func readClaudeCode(_ claudeCode: ClaudeCodeSwitcher, accounts: [UsageAccount], checkVersion: Bool,
                                                    known: ClaudeCodeAvailability) -> ClaudeCodeReading {
-        guard claudeCode.isInstalled() else { return ClaudeCodeReading(availability: .missing, accountID: nil) }
+        guard claudeCode.isInstalled() else { return ClaudeCodeReading(availability: .missing, accountID: nil, ready: []) }
         var availability = known
         if checkVersion || known == .unknown || known == .missing {
             if let reason = claudeCode.checkVersion().blockReason { availability = .blocked(reason) } else { availability = .ready }
         }
-        return ClaudeCodeReading(availability: availability, accountID: claudeCode.currentAccountID(among: accounts))
+        // Only whether a login item exists and whose it is: no secret is read, so no Keychain window can come up.
+        let ready = Set(accounts.filter { $0.provider == .claude && !$0.deletionPending && false }.map(\.id))
+        return ClaudeCodeReading(availability: availability, accountID: claudeCode.currentAccountID(among: accounts), ready: ready)
     }
 
     // The popover of menu bar group `group` is about to open. The login may have been changed in a terminal since it last
@@ -938,6 +1054,9 @@ final class UsageStore: ObservableObject {
         let start = popoverShown[group].flatMap { candidates.contains($0) ? $0 : nil } ?? candidates.first
         popoverSeen[group] = start.map { [$0] } ?? []
     }
+
+    // Settings › Accounts is on screen: the logins may have been changed since they were last read.
+    func accountsListDidOpen() { refreshClaudeCodeState(checkVersion: false) }
 
     // The window says which of its accounts it shows now (a group's popover shows one at a time, chosen by tabs).
     func popoverShows(_ accountID: UUID, group: UUID) {
@@ -1005,8 +1124,8 @@ final class UsageStore: ObservableObject {
         loginBrowser.close()
         loginAuthorizationURL = nil; canOpenPrivateLogin = false
         controls.values.forEach { $0.cancel() }
-        // A switch waiting for the browser ends here. Any other step finishes or is picked up by the next launch.
-        claudeCodeActivity?.control.cancel()
+        // A sign-in waiting for the browser ends here, and leaves nothing behind. A switch finishes, or is picked up by the next launch.
+        claudeCodePreparation?.control.cancel()
         claudeCodeBrowser.close()
     }
 }
