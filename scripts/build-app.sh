@@ -12,6 +12,9 @@ install_path="$install_dir/$bundle_name"
 build_configuration="release"
 should_install=0
 signing_identity="${AGENTBAR_CODE_SIGN_IDENTITY:-}"
+app_version="${AGENTBAR_VERSION:-$("$script_dir/version.sh")}"
+build_number="${AGENTBAR_BUILD_NUMBER:-$("$script_dir/version.sh" --build)}"
+public_update_key=$(<"$repo_dir/config/sparkle-public-key.txt")
 
 for arg in "$@"; do
   case "$arg" in
@@ -45,10 +48,13 @@ echo "Creating app bundle at $bundle_path"
 rm -rf "$bundle_path"
 mkdir -p "$bundle_path/Contents/MacOS"
 mkdir -p "$bundle_path/Contents/Resources"
+mkdir -p "$bundle_path/Contents/Frameworks"
 
 cp "$binary_path" "$bundle_path/Contents/MacOS/agent-bar"
+framework_path="$repo_dir/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+ditto "$framework_path" "$bundle_path/Contents/Frameworks/Sparkle.framework"
 
-cat > "$bundle_path/Contents/Info.plist" <<'PLIST'
+cat > "$bundle_path/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -68,9 +74,23 @@ cat > "$bundle_path/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.2.0</string>
+  <string>$app_version</string>
   <key>CFBundleVersion</key>
-  <string>2</string>
+  <string>$build_number</string>
+  <key>SUFeedURL</key>
+  <string>https://github.com/chenjingdev/agent-bar/releases/latest/download/appcast.xml</string>
+  <key>SUPublicEDKey</key>
+  <string>$public_update_key</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>3600</integer>
+  <key>SUVerifyUpdateBeforeExtraction</key>
+  <true/>
+  <key>SURequireSignedFeed</key>
+  <true/>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
@@ -93,7 +113,18 @@ if [[ -z "$signing_identity" ]]; then
 fi
 if [[ -z "$signing_identity" ]]; then signing_identity="-"; fi
 echo "Signing with: $signing_identity"
-codesign --force --deep -s "$signing_identity" "$bundle_path" >/dev/null
+sign_options=(--force --sign "$signing_identity")
+if [[ "$signing_identity" != "-" ]]; then
+  sign_options+=(--options runtime --timestamp)
+fi
+framework="$bundle_path/Contents/Frameworks/Sparkle.framework"
+codesign "${sign_options[@]}" "$framework/Versions/B/XPCServices/Installer.xpc"
+codesign "${sign_options[@]}" --preserve-metadata=entitlements "$framework/Versions/B/XPCServices/Downloader.xpc"
+codesign "${sign_options[@]}" "$framework/Versions/B/Autoupdate"
+codesign "${sign_options[@]}" "$framework/Versions/B/Updater.app"
+codesign "${sign_options[@]}" "$framework"
+codesign "${sign_options[@]}" "$bundle_path"
+codesign --verify --deep --strict "$bundle_path"
 
 if [[ "$should_install" -eq 1 ]]; then
   "$script_dir/install-app.sh" "$bundle_path" "$install_path"

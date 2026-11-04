@@ -1,0 +1,110 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agentbar-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Test
+        run: |
+          swift --version
+          swift test
+          python3 scripts/test_install.py
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: macos-26
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Version
+        id: version
+        run: |
+          version=$(scripts/version.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          certificate_path="$RUNNER_TEMP/agentbar-signing.p12"
+          keychain_path="$RUNNER_TEMP/agentbar-signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_path" > /dev/null
+          security list-keychains -d user -s "$keychain_path"
+          identity=$(security find-identity -v -p codesigning "$keychain_path" | awk '/Developer ID Application:/{print $2; exit}')
+          test -n "$identity"
+          echo "AGENTBAR_CODE_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build signed app
+        run: ./scripts/build-app.sh
+      - name: Notarize and staple
+        env:
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          key_path="$RUNNER_TEMP/notary-key.p8"
+          printf '%s' "$APPLE_NOTARY_KEY_P8" > "$key_path"
+          chmod 600 "$key_path"
+          ditto -c -k --sequesterRsrc --keepParent AgentBar.app "$RUNNER_TEMP/AgentBar-notary.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/AgentBar-notary.zip" \
+            --key "$key_path" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait --output-format json > "$RUNNER_TEMP/notary-result.json"
+          python3 -c 'import json,sys; result=json.load(open(sys.argv[1])); print("Notarization:", result["status"]); sys.exit(result["status"] != "Accepted")' "$RUNNER_TEMP/notary-result.json"
+          xcrun stapler staple AgentBar.app
+      - name: Package and sign update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: ./scripts/package-release.sh
+      - name: Publish release
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          latest_main=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$latest_main" != "$GITHUB_SHA" ]; then
+            echo 'A newer main commit is queued for release.'
+            exit 0
+          fi
+          if release=$(gh release view "$RELEASE_TAG" --json isDraft,targetCommitish 2>/dev/null); then
+            target=$(printf '%s' "$release" | python3 -c 'import json,sys; print(json.load(sys.stdin)["targetCommitish"])')
+            test "$target" = "$GITHUB_SHA"
+            is_draft=$(printf '%s' "$release" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["isDraft"]).lower())')
+            if [ "$is_draft" = false ]; then
+              echo "Release $RELEASE_TAG is already published."
+              exit 0
+            fi
+            gh release upload "$RELEASE_TAG" work/release/* --clobber
+          else
+            gh release create "$RELEASE_TAG" work/release/* --draft --target "$GITHUB_SHA" \
+              --title "AgentBar $RELEASE_VERSION" --generate-notes
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest
