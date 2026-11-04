@@ -1,0 +1,77 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agentbar-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Test
+        run: |
+          swift --version
+          swift test
+          python3 scripts/test_install.py
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: macos-26
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AGENTBAR_CODE_SIGN_IDENTITY: '-'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Version
+        id: version
+        run: |
+          version=$(scripts/version.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Build signed app
+        run: ./scripts/build-app.sh
+      - name: Package and sign update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: ./scripts/package-release.sh
+      - name: Publish release
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          latest_main=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$latest_main" != "$GITHUB_SHA" ]; then
+            echo 'A newer main commit is queued for release.'
+            exit 0
+          fi
+          if release=$(gh release view "$RELEASE_TAG" --json isDraft,targetCommitish 2>/dev/null); then
+            target=$(printf '%s' "$release" | python3 -c 'import json,sys; print(json.load(sys.stdin)["targetCommitish"])')
+            test "$target" = "$GITHUB_SHA"
+            is_draft=$(printf '%s' "$release" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["isDraft"]).lower())')
+            if [ "$is_draft" = false ]; then
+              echo "Release $RELEASE_TAG is already published."
+              exit 0
+            fi
+            gh release upload "$RELEASE_TAG" work/release/* --clobber
+          else
+            gh release create "$RELEASE_TAG" work/release/* --draft --target "$GITHUB_SHA" \
+              --title "AgentBar $RELEASE_VERSION" --generate-notes
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest

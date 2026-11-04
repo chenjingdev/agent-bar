@@ -15,6 +15,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var store: UsageStore
+    @ObservedObject private var updater = AppUpdater.shared
     @State private var tab: SettingsTab
     init(tab: SettingsTab = .accounts) { _tab = State(initialValue: tab) }
     var body: some View {
@@ -29,6 +30,16 @@ struct SettingsView: View {
                 MenuBarSettingsView()
             case .general:
                 Form {
+                    Section("Updates") {
+                        Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development")")
+                            .foregroundStyle(.secondary)
+                        Toggle("Automatically update AgentBar", isOn: Binding(
+                            get: { updater.automaticUpdates },
+                            set: { updater.setAutomaticUpdates($0) }
+                        ))
+                        Button("Check for Updates…", action: updater.checkForUpdates)
+                            .disabled(!updater.canCheckForUpdates)
+                    }
                     Section("Refresh") {
                         Picker("Refresh Interval", selection: $settings.refreshIntervalSeconds) {
                             Text("60 sec").tag(60.0); Text("120 sec").tag(120.0)

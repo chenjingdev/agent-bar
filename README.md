@@ -2,7 +2,7 @@
 
 A local macOS menu bar app for monitoring **Codex and Claude Code subscription limits across multiple accounts**.
 
-Download the app from [GitHub Releases](https://github.com/chenjingdev/agent-bar/releases/latest). The prebuilt app supports Apple Silicon Macs running macOS 14 or later. It is ad-hoc signed and is not notarized by Apple. Extract the ZIP and place `AgentBar.app` in Applications. The official provider CLIs are still required.
+Download the app from [GitHub Releases](https://github.com/chenjingdev/agent-bar/releases/latest). The prebuilt app supports Apple Silicon Macs running macOS 14 or later. It is ad-hoc signed and is not notarized by Apple; macOS may require allowing the first launch in System Settings › Privacy & Security. Extract the ZIP and place `AgentBar.app` in Applications. The official provider CLIs are still required.
 
 ## Accounts and menu bar
 
@@ -73,6 +73,18 @@ The existing refresh interval is preserved (60, 120, 300, or 600 seconds). Accou
 Unknown usage is `--`, not `0%`. Old values retain their original timestamp and are marked stale. Existing global cache files are not imported into managed accounts. Legacy caches from externally signed-in CLI accounts are never read. Both usage providers and CLI launchers require an explicit account-owned directory.
 
 No backend, telemetry, browser-cookie extraction, or session-log scanning is added. Authentication and usage requests go to the relevant provider through its CLI or usage endpoint.
+
+## Automatic updates and releases
+
+AgentBar uses [Sparkle](https://sparkle-project.org/) to check for updates hourly, download them, and install and relaunch automatically. Automatic updates are enabled by default. Settings › General shows the installed version, an automatic-update switch, and **Check for Updates…**. An automatic restart waits for an active account sign-in or coupon redemption to finish.
+
+Updates are fetched over HTTPS from the latest GitHub release's `appcast.xml`. Sparkle verifies the signed feed and the update archive against the public key embedded in the app before installing it. Account data and settings remain in their existing locations.
+
+Versions before 0.3 do not contain an updater. Install a current release once to enable automatic updates afterward.
+
+Every push to `main` runs the release workflow: tests, build, ad-hoc app signing, signed appcast generation, and publication of the app ZIP, checksums, and appcast as a GitHub release. Pull requests run validation without release credentials. The version is `VERSION` plus the full Git commit count, such as `0.3.51`; the same count is the bundle build number. A full Git history is required when building.
+
+The repository's `SPARKLE_PRIVATE_KEY` Actions secret signs the feed and archive. Only the Sparkle public key belongs in `config/sparkle-public-key.txt`. The private key is also retained in this Mac's Keychain under the Sparkle account `dev.chenjing.agent-bar`. Keep it safe; replacing it prevents existing installations from trusting updates signed only with the replacement key.
 
 ## Build and install
 

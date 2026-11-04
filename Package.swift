@@ -10,6 +10,7 @@ let package = Package(
         .executable(name: "agent-bar", targets: ["agent_bar"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
         .package(
             url: "https://github.com/swiftlang/swift-testing.git",
             revision: "5ee435b15ad40ec1f644b5eb9d247f263ccd2170"
@@ -18,7 +19,9 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "agent_bar",
-            path: "Sources/agent-bar"
+            dependencies: [.product(name: "Sparkle", package: "Sparkle")],
+            path: "Sources/agent-bar",
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@loader_path/../Frameworks"])]
         ),
         .testTarget(
             name: "agent_barTests",

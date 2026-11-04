@@ -6,8 +6,8 @@ import Testing
 
 @MainActor
 struct SettingsViewLayoutTests {
-    @Test("Settings view stays within its bounded height")
-    func settingsViewHeightIsBounded() {
+    @Test("Settings view stays within its bounded height", arguments: [SettingsTab.accounts, .general])
+    func settingsViewHeightIsBounded(tab: SettingsTab) {
         let identifier = "SettingsViewLayoutTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: identifier)!
         defaults.removePersistentDomain(forName: identifier)
@@ -15,7 +15,7 @@ struct SettingsViewLayoutTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root); defaults.removePersistentDomain(forName: identifier) }
         let store = UsageStore(settings: settings, files: AccountFiles(root: root), autoRefresh: false)
-        let view = SettingsView()
+        let view = SettingsView(tab: tab)
             .environmentObject(settings)
             .environmentObject(store)
         let hostingView = NSHostingView(rootView: view)

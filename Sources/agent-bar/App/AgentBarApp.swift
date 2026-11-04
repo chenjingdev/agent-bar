@@ -15,6 +15,7 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.accessory)
         // Windows follow the app appearance. Menu bar items keep the menu bar's own.
         themeSubscription = AppContainer.shared.settings.$theme.sink { NSApplication.shared.appearance = $0.appearance }
+        AppUpdater.shared.start(store: AppContainer.shared.store)
         coordinator = StatusBarCoordinator(
             store: AppContainer.shared.store,
             providers: AppContainer.shared.availableProviders
