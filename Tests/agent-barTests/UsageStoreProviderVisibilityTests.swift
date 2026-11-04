@@ -1,8 +1,10 @@
+import Combine
 import Foundation
 import Testing
 @testable import agent_bar
 
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct UsageStoreProviderVisibilityTests {
     @Test func hiddenAccountsAreSkippedByManualRefresh() async throws {
         let fixture = try VisibilityFixture()
@@ -28,7 +30,7 @@ struct UsageStoreProviderVisibilityTests {
         let fixture = try VisibilityFixture(suspend: true)
         defer { fixture.close() }
         let task = Task { await fixture.store.refresh() }
-        try await fixture.waitFor { await fixture.loader.count(fixture.claude.id) == 1 }
+        await fixture.loader.waitForLoad(fixture.claude.id)
         fixture.store.updateDisplay { $0.setVisible(fixture.claude.id, false) }
         #expect(await fixture.loader.wasCancelled(fixture.claude.id))
         await fixture.loader.release()
@@ -41,7 +43,7 @@ struct UsageStoreProviderVisibilityTests {
         let fixture = try VisibilityFixture(suspend: true, sameProvider: true)
         defer { fixture.close() }
         let task = Task { await fixture.store.refresh() }
-        try await fixture.waitFor { await fixture.loader.count(fixture.claude.id) == 1 }
+        await fixture.loader.waitForLoad(fixture.claude.id)
         fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, false) }
         await fixture.loader.release()
         await task.value
@@ -52,10 +54,10 @@ struct UsageStoreProviderVisibilityTests {
         let fixture = try VisibilityFixture(suspend: true, automatic: true)
         defer { fixture.close() }
         fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, false) }
-        try await fixture.waitFor { await fixture.loader.count(fixture.claude.id) == 1 }
+        await fixture.loader.waitForLoad(fixture.claude.id)
         fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, true) }
         await fixture.loader.release()
-        try await fixture.waitFor { !fixture.store.isRefreshing }
+        await fixture.waitForRefreshToFinish()
         #expect(await fixture.loader.count(fixture.claude.id) == 1)
         #expect(await fixture.loader.count(fixture.codex.id) == 1)
     }
@@ -63,12 +65,12 @@ struct UsageStoreProviderVisibilityTests {
     @Test func visualChangesDoNotRefetchAndReenabledAccountRefreshes() async throws {
         let fixture = try VisibilityFixture(automatic: true)
         defer { fixture.close() }
-        try await fixture.waitFor { !fixture.store.isRefreshing }
+        await fixture.waitForRefreshToFinish()
         fixture.store.updateDisplay { $0.showPercent = false; $0.update(fixture.codex.id) { $0.color = .teal }; $0.move(fixture.codex.id, offset: -1) }
         #expect(!fixture.store.isRefreshing)
         fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, false) }
         fixture.store.updateDisplay { $0.setVisible(fixture.codex.id, true) }
-        try await fixture.waitFor { !fixture.store.isRefreshing }
+        await fixture.waitForRefreshToFinish()
         #expect(await fixture.loader.count(fixture.claude.id) == 1)
         #expect(await fixture.loader.count(fixture.codex.id) == 2)
     }
@@ -124,11 +126,9 @@ private final class VisibilityFixture {
                            autoRefresh: automatic, loadAccount: { await loader.load($0, control: $1) })
     }
     func close() { store.shutdown(); try? FileManager.default.removeItem(at: files.root); defaults.removePersistentDomain(forName: suite) }
-    func waitFor(_ condition: () async -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(3)
-        while !(await condition()) {
-            if Date() > deadline { throw AccountError.timeout }
-            try await Task.sleep(for: .milliseconds(5))
+    func waitForRefreshToFinish() async {
+        for await refreshing in store.$isRefreshing.values {
+            if !refreshing { return }
         }
     }
 }
@@ -137,15 +137,31 @@ private actor VisibilityLoader {
     private var counts: [UUID: Int] = [:]
     private var controls: [UUID: OperationControl] = [:]
     private var suspended: Bool
+    private var loadWaiters: [UUID: [AsyncStream<Void>.Continuation]] = [:]
+    private var releaseWaiters: [AsyncStream<Void>.Continuation] = []
     init(suspended: Bool) { self.suspended = suspended }
     var total: Int { counts.values.reduce(0, +) }
     func count(_ id: UUID) -> Int { counts[id, default: 0] }
     func wasCancelled(_ id: UUID) -> Bool { controls[id]?.cancelled == true }
-    func release() { suspended = false }
+    func waitForLoad(_ id: UUID) async {
+        guard counts[id, default: 0] == 0 else { return }
+        let (started, continuation) = AsyncStream<Void>.makeStream()
+        loadWaiters[id, default: []].append(continuation)
+        for await _ in started { return }
+    }
+    func release() {
+        suspended = false
+        for waiter in releaseWaiters { waiter.yield(); waiter.finish() }
+        releaseWaiters.removeAll()
+    }
     func load(_ account: UsageAccount, control: OperationControl) async -> ProviderSnapshot {
         counts[account.id, default: 0] += 1; controls[account.id] = control
-        let deadline = Date().addingTimeInterval(3)
-        while suspended && Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        for waiter in loadWaiters.removeValue(forKey: account.id) ?? [] { waiter.yield(); waiter.finish() }
+        if suspended {
+            let (released, continuation) = AsyncStream<Void>.makeStream()
+            releaseWaiters.append(continuation)
+            for await _ in released { break }
+        }
         return ProviderSnapshot(provider: account.provider, updatedAt: .now, fiveHour: nil,
             weekly: WindowSummary(tokens: 42, limitTokens: 100, resetAt: nil, displayStyle: .percentage),
             modelWeeklies: [], planName: nil, sourceDescription: "Fixture", note: nil, isStale: false, requiresLogin: false)
