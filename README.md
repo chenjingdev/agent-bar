@@ -88,15 +88,15 @@ To install, first quit the existing AgentBar, then run:
 open ~/Applications/AgentBar.app
 ```
 
-The installer copies the previous app, its preferences, and existing multi-account data to:
+An ordinary update replaces only `~/Applications/AgentBar.app`. Accounts, login credentials, preferences, and usage data remain in their existing locations. The installer does not create historical app or account-data backups, and it leaves backups made by older installers untouched. Data migrations preserve only the specific settings files they change; for example, layout migration saves the previous display JSON.
 
-`~/Library/Application Support/AgentBar/Backups/<timestamp>/`
+The installer checks that all AgentBar instances are closed before building and again before replacement, including instances launched through a different path. Concurrent installations to the same destination are refused using an OS file lock, which is released when the installer exits. It verifies the source, staged, and installed app signatures. The previous app is held temporarily on the same filesystem and restored if replacement or verification fails; successful installation removes that temporary copy. If restoration itself fails, the previous app is retained at the recovery path printed by the installer.
 
-Data files a locked Mac cannot read are left out of that backup and listed; any other backup error stops the installation. It verifies the staged app's signature before replacement and refuses to replace a running app. For stable macOS Keychain authorization across local rebuilds, the script uses `AGENTBAR_CODE_SIGN_IDENTITY` when set, otherwise a recognized local code-signing identity already installed on this Mac, with ad-hoc signing only as a fallback. The local bundle is not notarized for public distribution.
-
-To roll back, quit AgentBar, restore `AgentBar.app` from the selected backup, and restore the corresponding AgentBar preferences if needed. Preserve the newer multi-account data separately before restoring its backup. Never restore over external `~/.codex`, `~/.claude`, or unrelated Keychain entries.
+For stable macOS Keychain authorization across local rebuilds, the script uses `AGENTBAR_CODE_SIGN_IDENTITY` when set, otherwise a recognized local code-signing identity already installed on this Mac, with ad-hoc signing only as a fallback. The local bundle is not notarized for public distribution. To return to an older release with a compatible data format, quit AgentBar and replace the app bundle; the existing accounts and preferences can remain in place. A release that changes a data format needs migration-specific recovery instructions and a targeted backup of the affected files. Older versions may not understand the newer format. Never restore over unrelated CLI or Keychain data.
 
 ## Validation
+
+`python3 scripts/test_install.py` exercises app installation in temporary directories with fixture bundles and mocked system commands. It checks running-app preflight (also using a real native fixture process), concurrent installation with the real OS lock, signature and replacement failures, rollback, temporary-file cleanup, and preservation of existing user data without creating historical backups.
 
 `swift test` covers mixed-provider line order and missing data, per-group display options, theme persistence and popover appearance, duplicate-account popover routing, more than four groups, hidden-account refresh suspension/resumption, CLI process-tree cleanup, account storage and permissions, representative persistence, cache isolation, Codex usage limit resets and credits, unknown-versus-zero values, credential mismatches, delayed-result rejection, process cancellation/timeouts, and SwiftUI rendering.
 
