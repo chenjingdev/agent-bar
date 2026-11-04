@@ -54,6 +54,16 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, @MainAct
         return true
     }
 
+    func updater(
+        _ updater: SPUUpdater,
+        shouldPostponeRelaunchForUpdate item: SUAppcastItem,
+        untilInvokingBlock installHandler: @escaping () -> Void
+    ) -> Bool {
+        guard !isIdle else { return false }
+        scheduleInstallation(installHandler)
+        return true
+    }
+
     func observeIdleState(_ publisher: AnyPublisher<Bool, Never>) {
         idleSubscription = publisher.removeDuplicates().sink { [weak self] idle in
             self?.isIdle = idle
