@@ -20,5 +20,7 @@ printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$sparkle_bin/generate_appcast" \
   --link https://github.com/chenjingdev/agent-bar \
   "$output_dir"
 printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$sparkle_bin/sign_update" --verify --ed-key-file - "$output_dir/appcast.xml"
+archive_signature=$(python3 -c 'import sys,xml.etree.ElementTree as ET; print(ET.parse(sys.argv[1]).find("./channel/item/enclosure").attrib["{http://www.andymatuschak.org/xml-namespaces/sparkle}edSignature"])' "$output_dir/appcast.xml")
+printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$sparkle_bin/sign_update" --verify --ed-key-file - "$output_dir/$archive" "$archive_signature"
 (cd "$output_dir" && shasum -a 256 "$archive" appcast.xml > SHA256SUMS.txt)
 python3 "$repo_dir/scripts/verify-release.py" "$output_dir"
