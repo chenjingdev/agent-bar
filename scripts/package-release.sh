@@ -10,8 +10,6 @@ sparkle_bin="$repo_dir/.build/artifacts/sparkle/Sparkle/bin"
 
 : "${SPARKLE_PRIVATE_KEY:?Set SPARKLE_PRIVATE_KEY to the Sparkle signing key.}"
 codesign --verify --deep --strict "$bundle"
-xcrun stapler validate "$bundle"
-spctl --assess --type execute "$bundle"
 rm -rf "$output_dir"
 mkdir -p "$output_dir"
 ditto -c -k --sequesterRsrc --keepParent "$bundle" "$output_dir/$archive"

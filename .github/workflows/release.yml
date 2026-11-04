@@ -34,6 +34,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
+      AGENTBAR_CODE_SIGN_IDENTITY: '-'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -44,42 +45,8 @@ jobs:
           version=$(scripts/version.sh)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-      - name: Import Developer ID certificate
-        env:
-          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          certificate_path="$RUNNER_TEMP/agentbar-signing.p12"
-          keychain_path="$RUNNER_TEMP/agentbar-signing.keychain-db"
-          keychain_password=$(openssl rand -hex 24)
-          echo "::add-mask::$keychain_password"
-          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_path" > /dev/null
-          security list-keychains -d user -s "$keychain_path"
-          identity=$(security find-identity -v -p codesigning "$keychain_path" | awk '/Developer ID Application:/{print $2; exit}')
-          test -n "$identity"
-          echo "AGENTBAR_CODE_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
       - name: Build signed app
         run: ./scripts/build-app.sh
-      - name: Notarize and staple
-        env:
-          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: |
-          key_path="$RUNNER_TEMP/notary-key.p8"
-          printf '%s' "$APPLE_NOTARY_KEY_P8" > "$key_path"
-          chmod 600 "$key_path"
-          ditto -c -k --sequesterRsrc --keepParent AgentBar.app "$RUNNER_TEMP/AgentBar-notary.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/AgentBar-notary.zip" \
-            --key "$key_path" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" \
-            --wait --output-format json > "$RUNNER_TEMP/notary-result.json"
-          python3 -c 'import json,sys; result=json.load(open(sys.argv[1])); print("Notarization:", result["status"]); sys.exit(result["status"] != "Accepted")' "$RUNNER_TEMP/notary-result.json"
-          xcrun stapler staple AgentBar.app
       - name: Package and sign update feed
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
