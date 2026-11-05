@@ -309,16 +309,36 @@ final class UsageStore: ObservableObject {
         account.credentialID.map { files.credentials($0) }
     }
 
-    func accountLabel(for account: UsageAccount) -> String {
-        guard account.name == account.identity?.email else { return account.name }
-        let peers = accounts.filter { $0.provider == account.provider && !$0.deletionPending }
-        let number = (peers.firstIndex(where: { $0.id == account.id }) ?? 0) + 1
-        return account.provider.displayName + (number > 1 ? " \(number)" : "")
+    // The account's own name. Accounts that share it are told apart by what they already carry: the login email, then
+    // the provider (unless the provider is shown beside the name anyway), then the organization, each only where it
+    // differs from a same-named account still left.
+    func accountLabel(for account: UsageAccount, providerShown: Bool = false) -> String {
+        let same = { (a: String?, b: String?) in a?.lowercased() == b?.lowercased() }
+        var peers = accounts.filter {
+            $0.id != account.id && !$0.deletionPending && same($0.title, account.title)
+                && (!providerShown || $0.provider == account.provider)
+        }
+        var label = account.title
+        func add(_ value: String?, _ key: (UsageAccount) -> String?) {
+            guard let value, !value.isEmpty, !same(value, account.title),
+                  peers.contains(where: { !same(key($0), value) }) else { return }
+            label += " · " + value
+            peers.removeAll { !same(key($0), value) }
+        }
+        add(account.identity?.email) { $0.identity?.email }
+        if !providerShown { add(account.provider.displayName) { $0.provider.displayName } }
+        add(account.identity?.organization) { $0.identity?.organization }
+        return label
     }
-    func rename(_ account: UsageAccount, name: String) {
-        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
-        guard !trimmed.isEmpty, let index = registry.accounts.firstIndex(where: { $0.id == account.id }) else { return }
-        var next = registry; next.accounts[index].name = trimmed; _ = commit(next)
+    // Records the name and organization a refresh read from the provider, for the same login it was read for.
+    private func applyProfile(_ profile: AccountProfile, for request: UsageAccount) {
+        guard let index = registry.accounts.firstIndex(where: { $0.id == request.id }),
+              Self.acceptsResult(request: request, current: registry.accounts[index]),
+              var identity = registry.accounts[index].identity else { return }
+        identity.name = profile.name
+        if let organization = profile.organization { identity.organization = organization }
+        guard identity != registry.accounts[index].identity else { return }
+        var next = registry; next.accounts[index].identity = identity; _ = commit(next)
     }
     private func updateRepresentatives() {
         claudeSnapshot = snapshot(for: .claude)
@@ -383,6 +403,7 @@ final class UsageStore: ObservableObject {
             if let retryAt = result.retryAt {
                 nextEligibleRefresh[account.id] = max(nextEligibleRefresh[account.id] ?? .distantPast, retryAt)
             }
+            if let profile = result.accountProfile { applyProfile(profile, for: account) }
             guard !control.cancelled, refreshAccountIDs.contains(account.id) else { continue }
             var display = result
             if result.isStale, account.isManaged, result.fiveHour?.utilization == nil, result.weekly?.utilization == nil,
@@ -451,7 +472,7 @@ final class UsageStore: ObservableObject {
         guard canStartLogin(replacing: replacing) else { return }
         do { _ = try ProviderCLI.executable(provider) }
         catch { errorMessage = error.localizedDescription; return }
-        let candidate = UsageAccount(id: UUID(), provider: provider, name: "New \(provider.displayName) account", credentialID: UUID())
+        let candidate = UsageAccount(id: UUID(), provider: provider, credentialID: UUID())
         do { try files.createPrivateDirectory(files.credentials(candidate.credentialID!)) }
         catch { errorMessage = error.localizedDescription; return }
         var next = registry; next.cleanupPending.append(candidate)
@@ -472,7 +493,8 @@ final class UsageStore: ObservableObject {
                     if provider == .codex {
                         let rpc = try CodexRPC(directory: directory, control: control)
                         defer { rpc.stop() }
-                        let identity = try rpc.login(openURL: openURL)
+                        var identity = try rpc.login(openURL: openURL)
+                        identity.name = CodexAuthFile.profile(directory: directory)?.name
                         return .success(identity)
                     }
                     return .success(try ClaudeOAuthLauncher.login(directory: directory, control: control, openURL: openURL))
@@ -483,7 +505,6 @@ final class UsageStore: ObservableObject {
             loginAuthorizationURL = nil; canOpenPrivateLogin = false
             if !control.cancelled, case .success(let identity) = result {
                 var completed = candidate; completed.identity = identity
-                completed.name = identity.email ?? "\(provider.displayName) account"
                 reviewSignedIn(PendingAccountLogin(account: completed, replacing: replacing?.id))
             } else {
                 loginMessage = nil
@@ -547,7 +568,7 @@ final class UsageStore: ObservableObject {
             if reconnectionComparison == .different { errorMessage = "This is a different account. Add it as a new account."; return }
             if reconnectionComparison != .same && !replaceUnverified { return }
             let old = next.accounts[index]
-            incoming = UsageAccount(id: old.id, provider: old.provider, name: old.name, identity: incoming.identity, credentialID: incoming.credentialID)
+            incoming = UsageAccount(id: old.id, provider: old.provider, identity: incoming.identity, credentialID: incoming.credentialID)
             next.accounts[index] = incoming
             if old.isManaged { next.cleanupPending.append(old) }
             controls[id]?.cancel(); snapshots[id] = nil; nextEligibleRefresh[id] = nil; limitResetResults[id] = nil

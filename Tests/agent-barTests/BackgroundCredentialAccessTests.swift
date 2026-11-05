@@ -75,7 +75,8 @@ struct BackgroundCredentialAccessTests {
             #expect(!result.isStale)
             #expect(result.weekly?.utilization == 0.42)
         }
-        #expect(calls.requests == 3)
+        // Each load reads the usage and then the profile the account's name comes from.
+        #expect(calls.requests == 6)
     }
 
     @Test func missingOrUnrenewableCredentialRequiresLogin() async throws {

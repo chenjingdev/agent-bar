@@ -11,7 +11,6 @@ private struct AccountFrames: PreferenceKey {
 // Accounts manage identities; menu bar groups control display and polling.
 struct AccountManagementView: View {
     @EnvironmentObject private var store: UsageStore
-    @State private var editing: UsageAccount?
     @State private var deleting: UsageAccount?
     @State private var choosingProvider = false
     @State private var accountFrames: [UUID: CGRect] = [:]
@@ -54,7 +53,6 @@ struct AccountManagementView: View {
         }
         .onAppear { store.accountsListDidOpen() }
         .onDisappear { accountDrag = nil; settlingAccountDrag = false }
-        .sheet(item: $editing) { account in AccountEditSheet(account: account, displayName: store.accountLabel(for: account)) }
         .sheet(isPresented: $choosingProvider) {
             AddAccountProviderSheet { provider in store.startLogin(provider) }
         }
@@ -109,9 +107,8 @@ struct AccountManagementView: View {
                 .accessibilityAction(named: "Move up") { moveAccount(account.id, offset: -1) }
                 .accessibilityAction(named: "Move down") { moveAccount(account.id, offset: 1) }
             VStack(alignment: .leading, spacing: 4) {
-                Button { editing = account } label: {
-                    Text(store.accountLabel(for: account)).font(.headline).lineLimit(1)
-                }.buttonStyle(.plain).help("Rename account")
+                // The name comes from the account itself; the email and provider below tell same-named accounts apart.
+                Text(account.title).font(.headline).lineLimit(1).textSelection(.enabled)
                 if let email = account.identity?.email, !email.isEmpty {
                     Text(email).font(.callout).textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -134,8 +131,6 @@ struct AccountManagementView: View {
                 Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).help("Sign-in required")
             }
             Menu {
-                Button("Rename") { editing = account }
-                    .disabled(account.deletionPending || store.storageUnavailable)
                 Button("Reconnect") { store.startLogin(account.provider, replacing: account) }
                     .disabled(store.isLoggingIn || store.pendingLogin != nil || account.deletionPending || store.storageUnavailable
                               || store.isClaudeCodeLocked(account))
@@ -279,41 +274,5 @@ struct LoginProgressView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.accentColor.opacity(0.08)))
-    }
-}
-
-struct AccountEditSheet: View {
-    let account: UsageAccount
-    @EnvironmentObject private var store: UsageStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var name: String
-    init(account: UsageAccount, displayName: String) {
-        self.account = account
-        _name = State(initialValue: displayName)
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Rename Account").font(.headline)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(account.provider.displayName).font(.subheadline)
-                if let identity = account.identity?.description, !identity.isEmpty {
-                    Text(identity).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-            }
-            TextField("Account name", text: $name)
-                .textFieldStyle(.roundedBorder)
-            Text("Badge text and color are edited on usage lines in Menu Bar.")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Button("Cancel") { dismiss() }
-                Spacer()
-                Button("Save") {
-                    store.rename(account, name: name)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }.padding(24).frame(width: 380)
     }
 }

@@ -820,7 +820,10 @@ struct UsageStoreClaudeCodeTests {
         let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
         await f.start()
         let stale = f.account("b")
-        f.store.rename(stale, name: "b renamed")
+        // The account was renamed on Claude's side; the next refresh brings the new name.
+        f.plan.report(AccountProfile(name: "b renamed"), for: stale.id)
+        await f.refresh()
+        #expect(f.store.accounts.first { $0.id == stale.id }?.title == "b renamed")
 
         f.store.useInClaudeCode(stale)
         await f.finish()

@@ -29,12 +29,25 @@ enum ClaudeOAuthLauncher {
     }
     static func login(directory: URL, control: OperationControl, openURL: @Sendable (URL) -> Void) throws -> AccountIdentity {
         try browserSignIn(directory: directory, control: control, openURL: openURL) {
-            let identity = try ProviderCLI.claudeStatus(directory: directory, control: control)
+            var identity = try ProviderCLI.claudeStatus(directory: directory, control: control)
+            identity.name = profileName(directory: directory)
             try control.checkCancellation()
             try saveLoginCredential(directory: directory)
             try control.checkCancellation()
             return identity
         }
+    }
+
+    // The profile name Claude Code saved with the sign-in (`oauthAccount.displayName`, else `fullName`). Later refreshes
+    // read the profile from Claude itself.
+    static func profileName(directory: URL) -> String? {
+        let legacy = directory.appendingPathComponent(".config.json")
+        let path = FileManager.default.fileExists(atPath: legacy.path) ? legacy : directory.appendingPathComponent(".claude.json")
+        guard let data = try? Data(contentsOf: path),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let account = object["oauthAccount"] as? [String: Any] else { return nil }
+        return [account["displayName"], account["fullName"]].lazy
+            .compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
     }
 
     /// Runs `claude auth login --claudeai` in `directory`: captures and validates the sign-in URL, hands

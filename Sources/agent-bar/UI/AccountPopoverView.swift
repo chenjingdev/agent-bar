@@ -62,7 +62,7 @@ struct AccountPopoverView: View {
         return HStack(spacing: 10) {
             AccountBadge(text: display.badge, color: display.color)
             VStack(alignment: .leading, spacing: 1) {
-                Text(account.title).font(.system(size: 18, weight: .heavy, design: .rounded)).lineLimit(1).textSelection(.enabled)
+                Text(store.accountLabel(for: account, providerShown: true)).font(.system(size: 18, weight: .heavy, design: .rounded)).lineLimit(1).textSelection(.enabled)
                 // "Use in Claude Code" sits by the provider, not beside the icons: a long name (an e-mail address is the
                 // default) would have no room left.
                 HStack(spacing: 8) {

@@ -29,7 +29,7 @@ struct LimitResetLog: Sendable {
         url = Self.url(root: root, fileName: fileName)
         provider = account.provider
         accountID = account.id
-        accountName = account.name
+        accountName = account.title
         self.attempt = attempt
     }
 

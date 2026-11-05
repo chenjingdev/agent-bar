@@ -355,7 +355,7 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         }
         let owner = run.accounts.first { $0.id == login.accountID }
         run.step("readCurrentLogin", login.identity.hasLogin ? "signedIn" : "signedOut",
-                 ["previousAccount": owner?.name ?? (login.identity.hasLogin ? "unregistered login" : "none"),
+                 ["previousAccount": owner?.title ?? (login.identity.hasLogin ? "unregistered login" : "none"),
                   "unregisteredEmail": owner == nil && login.identity.hasLogin ? login.identity.email as Any : NSNull()])
         return login
     }
