@@ -313,21 +313,24 @@ final class UsageStore: ObservableObject {
     // the provider (unless the provider is shown beside the name anyway), then the organization, each only where it
     // differs from a same-named account still left.
     func accountLabel(for account: UsageAccount, providerShown: Bool = false) -> String {
-        let same = { (a: String?, b: String?) in a?.lowercased() == b?.lowercased() }
+        Self.label(for: account, among: accounts, providerShown: providerShown)
+    }
+    nonisolated static func label(for account: UsageAccount, among accounts: [UsageAccount], providerShown: Bool) -> String {
+        let fold = { (value: String?) in value?.lowercased() }
         var peers = accounts.filter {
-            $0.id != account.id && !$0.deletionPending && same($0.title, account.title)
+            $0.id != account.id && !$0.deletionPending && fold($0.title) == fold(account.title)
                 && (!providerShown || $0.provider == account.provider)
         }
+        var parts: [(String?, (UsageAccount) -> String?)] = [(account.identity?.email, { $0.identity?.email })]
+        if !providerShown { parts.append((account.provider.displayName, { $0.provider.displayName })) }
+        parts.append((account.identity?.organization, { $0.identity?.organization }))
         var label = account.title
-        func add(_ value: String?, _ key: (UsageAccount) -> String?) {
-            guard let value, !value.isEmpty, !same(value, account.title),
-                  peers.contains(where: { !same(key($0), value) }) else { return }
+        for (value, key) in parts {
+            guard let value, !value.isEmpty, fold(value) != fold(account.title),
+                  peers.contains(where: { fold(key($0)) != fold(value) }) else { continue }
             label += " · " + value
-            peers.removeAll { !same(key($0), value) }
+            peers.removeAll { fold(key($0)) != fold(value) }
         }
-        add(account.identity?.email) { $0.identity?.email }
-        if !providerShown { add(account.provider.displayName) { $0.provider.displayName } }
-        add(account.identity?.organization) { $0.identity?.organization }
         return label
     }
     // Records the name and organization a refresh read from the provider, for the same login it was read for.
