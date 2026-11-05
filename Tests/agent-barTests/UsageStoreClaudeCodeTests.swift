@@ -255,7 +255,7 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.panel("b").control == .inClaudeCode && f.enabled("a"))
         let result = try #require(f.result("b"))
         #expect(result.succeeded)
-        #expect(result.message == "Claude Code now uses b. Open sessions switch within 30 s. Remote Control disconnects.")
+        #expect(result.message == "Claude Code now uses b@example.test. Open sessions switch within 30 s. Remote Control disconnects.")
         #expect(f.result("a") == nil)
         #expect(f.store.claudeCodeActivity == nil && f.store.claudeCodeConfirmation == nil)
         #expect(f.world.problems.isEmpty)
@@ -364,7 +364,7 @@ struct UsageStoreClaudeCodeTests {
         #expect(f.result("b") == nil, "the old result describes a login that is changing")
         await f.finish()
 
-        #expect(f.result("a")?.message == "Claude Code now uses a. Open sessions switch within 30 s. Remote Control disconnects.")
+        #expect(f.result("a")?.message == "Claude Code now uses a@example.test. Open sessions switch within 30 s. Remote Control disconnects.")
         #expect(f.result("b") == nil && f.panel("a").control == .inClaudeCode)
     }
 
@@ -379,7 +379,7 @@ struct UsageStoreClaudeCodeTests {
 
         let result = try #require(f.result("b"))
         #expect(result.succeeded)
-        #expect(result.message == "Claude Code now uses b. Open sessions switch within 30 s. Remote Control disconnects. a needs to sign in again in Settings › Accounts.")
+        #expect(result.message == "Claude Code now uses b@example.test. Open sessions switch within 30 s. Remote Control disconnects. a@example.test needs to sign in again in Settings › Accounts.")
     }
 
     @Test func aFailureShowsItsReasonAndLeavesTheMarkerWhereItWas() async throws {
@@ -411,7 +411,7 @@ struct UsageStoreClaudeCodeTests {
 
         let result = try #require(f.result("b"))
         #expect(!result.succeeded)
-        #expect(result.message == "Claude Code is signed in to a different account than expected. b needs to sign in again in Settings › Accounts.")
+        #expect(result.message == "Claude Code is signed in to a different account than expected. b@example.test needs to sign in again in Settings › Accounts.")
         // The marker is read again from the real login: nobody registered is signed in now.
         #expect(f.store.claudeCodeAccountID == nil)
     }
@@ -444,7 +444,7 @@ struct UsageStoreClaudeCodeTests {
 
         let result = try #require(f.result("b"))
         #expect(!result.succeeded)
-        #expect(result.message == "Claude Code's login changed while switching. Try again. b needs to sign in again in Settings › Accounts.")
+        #expect(result.message == "Claude Code's login changed while switching. Try again. b@example.test needs to sign in again in Settings › Accounts.")
     }
 
     // MARK: While a switch runs
@@ -461,8 +461,8 @@ struct UsageStoreClaudeCodeTests {
         // Progress is shown everywhere; nothing can be pressed.
         #expect(f.panel("b") == ClaudeCodePanel(control: .use(enabled: false, help: f.panel("b").helpText), lines: [.progress("Switching Claude Code…")]))
         #expect(!f.enabled("b") && !f.enabled("c"))
-        #expect(f.panel("c").lines == [.progress("Switching Claude Code to b…")])
-        #expect(f.panel("a") == ClaudeCodePanel(control: .inClaudeCode, lines: [.progress("Switching Claude Code to b…")]))
+        #expect(f.panel("c").lines == [.progress("Switching Claude Code to b@example.test…")])
+        #expect(f.panel("a") == ClaudeCodePanel(control: .inClaudeCode, lines: [.progress("Switching Claude Code to b@example.test…")]))
         let calls = f.gates.calls
         f.press("c"); f.press("b")
         #expect(f.gates.calls == calls && f.store.claudeCodeActivity?.targetID == f.account("b").id)
@@ -622,7 +622,7 @@ struct UsageStoreClaudeCodeTests {
 
         // Nothing was changed, no page was opened, and the person is told where to go.
         let result = try #require(f.result("b"))
-        #expect(!result.succeeded && result.message == "Sign in to b once in Settings › Accounts first.")
+        #expect(!result.succeeded && result.message == "Sign in to b@example.test once in Settings › Accounts first.")
         #expect(f.opened.values.isEmpty && !f.gates.calls.contains("browser") && !f.gates.calls.contains("login"))
         #expect(f.switching.defaultEmail == "a@example.test" && f.world.token(in: f.switching.defaultSlot) == token)
         #expect(f.store.claudeCodeActivity == nil && f.panel("a").control == .inClaudeCode)
@@ -645,7 +645,7 @@ struct UsageStoreClaudeCodeTests {
         await f.finish()
 
         let result = try #require(f.result("b"))
-        #expect(!result.succeeded && result.message == "The saved sign-in for b expired. Sign in again in Settings › Accounts.")
+        #expect(!result.succeeded && result.message == "The saved sign-in for b@example.test expired. Sign in again in Settings › Accounts.")
         #expect(f.opened.values.isEmpty && !f.gates.calls.contains("browser"))
         #expect(f.switching.defaultEmail == "a@example.test" && f.world.token(in: f.switching.defaultSlot) == token)
         #expect(!f.switching.lendFolderExists(f.account("b")) && f.store.claudeCodeActivity == nil)
@@ -689,7 +689,7 @@ struct UsageStoreClaudeCodeTests {
         #expect(seen.values == ["journal=false filled=true"])
         let result = try #require(f.result("target"))
         #expect(result.succeeded)
-        #expect(result.message == "AgentBar quit while switching. Claude Code now uses target. prev needs to sign in again in Settings › Accounts.")
+        #expect(result.message == "AgentBar quit while switching. Claude Code now uses target@example.test. prev@example.test needs to sign in again in Settings › Accounts.")
         // prev's login was only in memory when the app quit, so its window sends the person to Settings.
         #expect(f.panel("target").control == .inClaudeCode && f.panel("prev").control == .setUp(help: Self.setUpHelp))
         #expect(!f.switching.lendFolderExists(f.account("target")) && f.switching.journal == nil)
@@ -814,21 +814,6 @@ struct UsageStoreClaudeCodeTests {
         await f.finish()
         #expect(f.opened.values.count == 1 && f.panel("b").control == .inClaudeCode)
         #expect(f.world.problems.isEmpty)
-    }
-
-    @Test func theWindowHoldsTheRegistrysAccountNotAnOlderCopyOfIt() async throws {
-        let f = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"]); defer { f.close() }
-        await f.start()
-        let stale = f.account("b")
-        // The account was renamed on Claude's side; the next refresh brings the new name.
-        f.plan.report(AccountProfile(name: "b renamed"), for: stale.id)
-        await f.refresh()
-        #expect(f.store.accounts.first { $0.id == stale.id }?.title == "b renamed")
-
-        f.store.useInClaudeCode(stale)
-        await f.finish()
-
-        #expect(f.result("b renamed")?.message == "Claude Code now uses b renamed. Open sessions switch within 30 s. Remote Control disconnects.")
     }
 
     @Test func thePopoverDrawsTheControlAndItsLines() async throws {

@@ -1002,7 +1002,7 @@ struct ClaudeCodeSwitchTests {
         let lines = f.logLines
         #expect(lines.first?["event"] as? String == "start" && lines.last?["event"] as? String == "result")
         #expect(Set(lines.compactMap { $0["attempt"] as? String }).count == 1 && lines.allSatisfy { $0["attempt"] != nil })
-        #expect(lines.allSatisfy { $0["account"] as? String == "target" && $0["provider"] as? String == "claude" && $0["time"] != nil })
+        #expect(lines.allSatisfy { $0["account"] as? String == "target@example.test" && $0["provider"] as? String == "claude" && $0["time"] != nil })
         let steps = lines.compactMap { $0["step"] as? String }
         #expect(steps == ["version", "readCurrentLogin", "savedLogin", "signIn", "removeUsedUpCopy", "verify", "giveBack"])
         #expect(lines.last?["outcome"] as? String == "switched")

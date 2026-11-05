@@ -282,7 +282,7 @@ struct ClaudeCodePrepareTests {
         // Told apart from a switch by its first line, and by its result.
         #expect(lines.first?["operation"] as? String == "prepare" && lines.last?["operation"] as? String == "prepare")
         #expect(Set(lines.compactMap { $0["attempt"] as? String }).count == 1 && lines.allSatisfy { $0["attempt"] != nil })
-        #expect(lines.allSatisfy { $0["account"] as? String == "target" && $0["provider"] as? String == "claude" && $0["time"] != nil })
+        #expect(lines.allSatisfy { $0["account"] as? String == "target@example.test" && $0["provider"] as? String == "claude" && $0["time"] != nil })
         #expect(lines.compactMap { $0["step"] as? String } == ["version", "savedLogin", "browserSignIn", "browserSignIn"])
         #expect(lines.compactMap { $0["outcome"] as? String } == ["ok", "none", "waiting", "ok", "prepared"])
         let text = f.logText

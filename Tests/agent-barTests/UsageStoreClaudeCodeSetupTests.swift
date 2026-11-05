@@ -539,7 +539,7 @@ struct UsageStoreClaudeCodeSetupTests {
 
         f.press("b")
         await f.finish()
-        #expect(f.result("b")?.message == "The saved sign-in for b expired. Sign in again in Settings › Accounts.")
+        #expect(f.result("b")?.message == "The saved sign-in for b@example.test expired. Sign in again in Settings › Accounts.")
         #expect(f.panel("b").control == .setUp(help: UsageStoreClaudeCodeTests.setUpHelp) && f.canSignIn("b"))
 
         f.world.plan(.signIn("b@example.test"))
@@ -564,7 +564,7 @@ struct UsageStoreClaudeCodeSetupTests {
         await f.finish()
 
         // a could not be lent back: its line and its window both say it has to sign in again, in Settings.
-        #expect(f.result("b")?.message == "Claude Code now uses b. Open sessions switch within 30 s. Remote Control disconnects. a needs to sign in again in Settings › Accounts.")
+        #expect(f.result("b")?.message == "Claude Code now uses b@example.test. Open sessions switch within 30 s. Remote Control disconnects. a@example.test needs to sign in again in Settings › Accounts.")
         #expect(f.setup("a") == ClaudeCodeSetup(status: .notSetUp(blocked: nil)))
         #expect(f.panel("a").control == .setUp(help: UsageStoreClaudeCodeTests.setUpHelp))
     }

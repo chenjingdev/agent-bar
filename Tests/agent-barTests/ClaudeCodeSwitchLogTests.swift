@@ -7,7 +7,7 @@ struct ClaudeCodeSwitchLogTests {
     @Test func theSwitchLogHasItsOwnFileAndTheResetLogKeepsItsName() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-log-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
-        let account = UsageAccount(id: UUID(), provider: .claude, name: "work@example.test")
+        let account = UsageAccount(id: UUID(), provider: .claude, identity: AccountIdentity(email: "work@example.test"))
 
         let resets = LimitResetLog(root: root, account: account)
         let switches = LimitResetLog(root: root, account: account, attempt: UUID(), fileName: LimitResetLog.claudeCodeSwitchFileName)

@@ -176,7 +176,7 @@ final class StatusBarController {
         statusItem.length = image.size.width
         statusItem.button?.image = image
         dragSurface?.badgeImage = image
-        let description = entries.isEmpty ? "\(name) · Click to add a usage line" : entries.map { "\(store.accountLabel(for: $0.account)) · \($0.metric.title): \($0.percentage)\($0.stale ? " (cached)" : "")" }.joined(separator: "\n")
+        let description = entries.isEmpty ? "\(name) · Click to add a usage line" : entries.map { "\($0.account.title) · \($0.metric.title): \($0.percentage)\($0.stale ? " (cached)" : "")" }.joined(separator: "\n")
         let common = config.commonBadgeText.flatMap { $0.isEmpty ? nil : $0 }
         let accessibleDescription = common.map { $0 + "\n" + description } ?? description
         statusItem.button?.toolTip = accessibleDescription

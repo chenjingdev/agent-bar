@@ -103,16 +103,13 @@ struct AccountManagementView: View {
                     .onChanged { if !preview { updateAccountDrag(account.id, value: $0) } }
                     .onEnded { if !preview { finishAccountDrag(at: $0.location) } })
                 .help("Drag to reorder accounts")
-                .accessibilityLabel("Move \(store.accountLabel(for: account)) account")
+                .accessibilityLabel("Move \(account.title) account")
                 .accessibilityAction(named: "Move up") { moveAccount(account.id, offset: -1) }
                 .accessibilityAction(named: "Move down") { moveAccount(account.id, offset: 1) }
             VStack(alignment: .leading, spacing: 4) {
-                // The name comes from the account itself; the email and provider below tell same-named accounts apart.
+                // The login email names the account here as everywhere else; the provider and organization follow.
                 Text(account.title).font(.headline).lineLimit(1).textSelection(.enabled)
-                if let email = account.identity?.email, !email.isEmpty {
-                    Text(email).font(.callout).textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
+                if account.identity?.email?.isEmpty ?? true {
                     Text(account.isManaged ? "Account details unavailable" : "Sign-in required")
                         .font(.callout).foregroundStyle(.secondary)
                 }

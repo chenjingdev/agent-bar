@@ -7,16 +7,9 @@ struct AccountIdentity: Codable, Equatable, Sendable {
     var organization: String?
     var organizationID: String?
     var stableID: String?
-    // The name the account itself carries (Claude's profile display name, the name on the ChatGPT login). It is read
-    // from the provider at sign-in and on every refresh, so a name changed there shows here. AgentBar never edits it.
-    var name: String? = nil
-
-    var displayName: String? {
-        name.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
-    }
 
     var description: String {
-        [displayName, email, organization].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        [email, organization].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     // Email is display information, not a provider-guaranteed immutable identifier.
@@ -40,18 +33,10 @@ struct UsageAccount: Codable, Equatable, Identifiable, Sendable {
     var deletionPending = false
 
     var isManaged: Bool { credentialID != nil }
-    // The account's own name, then its login email, then the provider. Same-named accounts are told apart by
-    // `UsageStore.accountLabel(for:providerShown:)`.
+    // Every place that names an account shows its login email; the provider stands in only without one.
     var title: String {
-        identity?.displayName ?? identity?.email.flatMap { $0.isEmpty ? nil : $0 } ?? provider.displayName
+        identity?.email.flatMap { $0.isEmpty ? nil : $0 } ?? provider.displayName
     }
-}
-
-// What a refresh read about the account from the provider. `name` nil means the account has none; `organization` nil
-// means the provider did not say, which keeps the organization already recorded.
-struct AccountProfile: Equatable, Codable, Sendable {
-    var name: String?
-    var organization: String? = nil
 }
 
 struct AccountRegistry: Codable, Equatable {

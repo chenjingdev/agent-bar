@@ -35,8 +35,7 @@ struct CodexUsageProvider: UsageProviding {
                     sourceDescription: "Codex app-server account/rateLimits/read",
                     note: "Account-wide Codex usage limits.", isStale: false, requiresLogin: false,
                     usageLimitResets: resets,
-                    credits: CodexRateLimitMapper.credits(payload.result.rateLimits.credits),
-                    accountProfile: CodexAuthFile.profile(directory: directory))
+                    credits: CodexRateLimitMapper.credits(payload.result.rateLimits.credits))
             } catch {
                 var failed = ProviderSnapshot.placeholder(for: .codex).failed(error.localizedDescription,
                     requiresLogin: (error as? AccountError).map { if case .loginRequired = $0 { return true }; return false } ?? false)
@@ -44,29 +43,6 @@ struct CodexUsageProvider: UsageProviding {
                 return failed
             }
         }.value
-    }
-}
-
-// The name on the ChatGPT login: the `name` claim of the ID token that the official CLI saved in the account's
-// `auth.json`. OpenAI issues a new ID token whenever Codex renews the login, so a name changed in ChatGPT shows once
-// Codex has renewed it. Only the token's claims are decoded; nothing from the file is kept or logged.
-enum CodexAuthFile {
-    static func profile(directory: URL) -> AccountProfile? {
-        guard let data = try? Data(contentsOf: directory.appendingPathComponent("auth.json")),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = (object["tokens"] as? [String: Any])?["id_token"] as? String,
-              let claims = claims(token) else { return nil }
-        let name = (claims["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return AccountProfile(name: name.flatMap { $0.isEmpty ? nil : $0 })
-    }
-
-    static func claims(_ token: String) -> [String: Any]? {
-        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 3 else { return nil }
-        var payload = parts[1].replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
-        guard let data = Data(base64Encoded: payload) else { return nil }
-        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 }
 

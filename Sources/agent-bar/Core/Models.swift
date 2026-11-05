@@ -163,8 +163,6 @@ struct ProviderSnapshot: Equatable, Codable, Sendable {
     var usageLimitResets: UsageLimitResets? = nil
     var credits: CreditBalance? = nil
     var claudeCredits: ClaudeCredits? = nil
-    // The account's name and organization as the provider reported them in this read, when it could.
-    var accountProfile: AccountProfile? = nil
 
     var reportsCredits: Bool { usageLimitResets != nil || credits != nil || claudeCredits != nil }
 

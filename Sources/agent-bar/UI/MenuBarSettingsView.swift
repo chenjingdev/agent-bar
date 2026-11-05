@@ -376,7 +376,7 @@ private struct MenuBarLineEditor: View {
                         }
                     }
                 })) {
-                    ForEach(store.orderedAccounts) { Text(store.accountLabel(for: $0, providerShown: true) + " · " + $0.provider.shortName).tag($0.id) }
+                    ForEach(store.orderedAccounts) { Text($0.title + " · " + $0.provider.shortName).tag($0.id) }
                 }.labelsHidden().frame(width: 150)
                 HStack(spacing: 4) {
                     ForEach(limitChoices) { metric in

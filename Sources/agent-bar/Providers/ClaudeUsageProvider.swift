@@ -51,9 +51,6 @@ struct ClaudeUsageProvider: UsageProviding {
                 guard credentials.cacheKey == (try readCredentials().cacheKey) else {
                     throw AccountError.message("The CLI account changed during the request. Refresh again.")
                 }
-                // The account's name follows its Claude profile. A usage reply the provider refused is not followed by
-                // another request, and an unreadable profile leaves the recorded name alone.
-                let profile = remoteResult.isStale ? nil : await fetchProfile(accessToken: credentials.accessToken)
                 let modelWeeklies: [ModelWeeklySummary] = (remoteResult.data.modelWeeklies ?? []).map { cached in
                     ModelWeeklySummary(
                         label: cached.label,
@@ -84,8 +81,7 @@ struct ClaudeUsageProvider: UsageProviding {
                     isStale: remoteResult.isStale,
                     requiresLogin: Self.requiresLogin(for: remoteResult.data.apiError),
                     usageLimitResets: remoteResult.data.usageLimitResets,
-                    claudeCredits: remoteResult.data.claudeCredits,
-                    accountProfile: profile
+                    claudeCredits: remoteResult.data.claudeCredits
                 )
             } catch {
                 let requiresLogin = Self.requiresLogin(for: error)
@@ -303,26 +299,6 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 
     private static let usageURL = "https://api.anthropic.com/api/oauth/usage"
-    // The profile Claude Code reads at sign-in: the account's display name (what Claude calls the person, set in
-    // claude.ai Settings › Profile) and its organization's name.
-    static let profileURL = "https://api.anthropic.com/api/oauth/profile"
-
-    private func fetchProfile(accessToken: String) async -> AccountProfile? {
-        guard !control.cancelled, let request = try? makeUsageRequest(accessToken: accessToken, url: Self.profileURL),
-              let (data, response) = try? await transport(request),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return Self.profile(from: data)
-    }
-
-    static func profile(from data: Data) -> AccountProfile? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let account = object["account"] as? [String: Any] else { return nil }
-        let text = { (value: Any?) -> String? in
-            (value as? String).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
-        }
-        return AccountProfile(name: text(account["display_name"]) ?? text(account["full_name"]),
-                              organization: text((object["organization"] as? [String: Any])?["name"]))
-    }
     // The same usage reply plus Claude's usage limit reset program (`cedar_ember`).
     private static let usageWithResetsURL = usageURL + "?cedar_ember=1"
     // Claude Code reads the program this way before it uses a reset; skip_spend leaves out

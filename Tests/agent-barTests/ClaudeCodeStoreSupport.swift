@@ -111,18 +111,13 @@ final class ClaudeCodeGates: ClaudeCLI, ClaudeKeychain, @unchecked Sendable {
 final class SnapshotPlan: @unchecked Sendable {
     private let lock = NSLock()
     private var needsSignIn: Set<UUID> = []
-    private var profiles: [UUID: AccountProfile] = [:]
 
     func requireSignIn(_ id: UUID) { lock.lock(); needsSignIn.insert(id); lock.unlock() }
-    // The provider reports this profile for the account from now on, as after a rename on the provider's side.
-    func report(_ profile: AccountProfile, for id: UUID) { lock.lock(); profiles[id] = profile; lock.unlock() }
 
     func snapshot(for account: UsageAccount) -> ProviderSnapshot {
-        lock.lock(); let blocked = needsSignIn.contains(account.id); let profile = profiles[account.id]; lock.unlock()
+        lock.lock(); let blocked = needsSignIn.contains(account.id); lock.unlock()
         guard !blocked else { return ProviderSnapshot.placeholder(for: account.provider).failed("Sign-in required.", requiresLogin: true) }
-        var usage = Self.usage(for: account.provider)
-        usage.accountProfile = profile
-        return usage
+        return Self.usage(for: account.provider)
     }
 
     static func usage(for provider: ProviderKind) -> ProviderSnapshot {

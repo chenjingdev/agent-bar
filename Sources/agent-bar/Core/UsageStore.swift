@@ -309,40 +309,6 @@ final class UsageStore: ObservableObject {
         account.credentialID.map { files.credentials($0) }
     }
 
-    // The account's own name. Accounts that share it are told apart by what they already carry: the login email, then
-    // the provider (unless the provider is shown beside the name anyway), then the organization, each only where it
-    // differs from a same-named account still left.
-    func accountLabel(for account: UsageAccount, providerShown: Bool = false) -> String {
-        Self.label(for: account, among: accounts, providerShown: providerShown)
-    }
-    nonisolated static func label(for account: UsageAccount, among accounts: [UsageAccount], providerShown: Bool) -> String {
-        let fold = { (value: String?) in value?.lowercased() }
-        var peers = accounts.filter {
-            $0.id != account.id && !$0.deletionPending && fold($0.title) == fold(account.title)
-                && (!providerShown || $0.provider == account.provider)
-        }
-        var parts: [(String?, (UsageAccount) -> String?)] = [(account.identity?.email, { $0.identity?.email })]
-        if !providerShown { parts.append((account.provider.displayName, { $0.provider.displayName })) }
-        parts.append((account.identity?.organization, { $0.identity?.organization }))
-        var label = account.title
-        for (value, key) in parts {
-            guard let value, !value.isEmpty, fold(value) != fold(account.title),
-                  peers.contains(where: { fold(key($0)) != fold(value) }) else { continue }
-            label += " · " + value
-            peers.removeAll { fold(key($0)) != fold(value) }
-        }
-        return label
-    }
-    // Records the name and organization a refresh read from the provider, for the same login it was read for.
-    private func applyProfile(_ profile: AccountProfile, for request: UsageAccount) {
-        guard let index = registry.accounts.firstIndex(where: { $0.id == request.id }),
-              Self.acceptsResult(request: request, current: registry.accounts[index]),
-              var identity = registry.accounts[index].identity else { return }
-        identity.name = profile.name
-        if let organization = profile.organization { identity.organization = organization }
-        guard identity != registry.accounts[index].identity else { return }
-        var next = registry; next.accounts[index].identity = identity; _ = commit(next)
-    }
     private func updateRepresentatives() {
         claudeSnapshot = snapshot(for: .claude)
         codexSnapshot = snapshot(for: .codex)
@@ -406,7 +372,6 @@ final class UsageStore: ObservableObject {
             if let retryAt = result.retryAt {
                 nextEligibleRefresh[account.id] = max(nextEligibleRefresh[account.id] ?? .distantPast, retryAt)
             }
-            if let profile = result.accountProfile { applyProfile(profile, for: account) }
             guard !control.cancelled, refreshAccountIDs.contains(account.id) else { continue }
             var display = result
             if result.isStale, account.isManaged, result.fiveHour?.utilization == nil, result.weekly?.utilization == nil,
@@ -496,8 +461,7 @@ final class UsageStore: ObservableObject {
                     if provider == .codex {
                         let rpc = try CodexRPC(directory: directory, control: control)
                         defer { rpc.stop() }
-                        var identity = try rpc.login(openURL: openURL)
-                        identity.name = CodexAuthFile.profile(directory: directory)?.name
+                        let identity = try rpc.login(openURL: openURL)
                         return .success(identity)
                     }
                     return .success(try ClaudeOAuthLauncher.login(directory: directory, control: control, openURL: openURL))

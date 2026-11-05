@@ -34,8 +34,7 @@ struct ClaudeCredentialRefreshTests {
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
         #expect(attributes[.protectionKey] as? FileProtectionType == .completeUntilFirstUserAuthentication)
         _ = await provider.load()
-        // One renewal, then usage and profile on each load.
-        #expect(await calls.methods == ["POST", "GET", "GET", "GET", "GET"])
+        #expect(await calls.methods == ["POST", "GET", "GET"])
     }
 
     @Test func revokedRefreshRequiresLoginButTemporaryFailureDoesNot() async throws {
