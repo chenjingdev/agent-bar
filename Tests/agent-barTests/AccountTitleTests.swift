@@ -12,6 +12,12 @@ struct AccountTitleTests {
         #expect(UsageAccount(id: UUID(), provider: .claude).title == "Claude")
     }
 
+    @Test func theUsageLinePickerPutsTheProviderTagBeforeTheEmail() {
+        let codex = UsageAccount(id: UUID(), provider: .codex, identity: AccountIdentity(email: "a@example.test"), credentialID: UUID())
+        #expect(codex.providerTaggedTitle == "CX a@example.test")
+        #expect(UsageAccount(id: UUID(), provider: .claude).providerTaggedTitle == "CL Claude")
+    }
+
     @Test func aNameSavedByAnEarlierVersionIsNotReadAndIsDroppedOnSave() throws {
         let files = AccountFiles(root: FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-tests-\(UUID())"))
         try files.createPrivateDirectory(files.root)

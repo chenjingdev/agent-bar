@@ -376,7 +376,7 @@ private struct MenuBarLineEditor: View {
                         }
                     }
                 })) {
-                    ForEach(store.orderedAccounts) { Text($0.title + " · " + $0.provider.shortName).tag($0.id) }
+                    ForEach(store.orderedAccounts) { Text($0.providerTaggedTitle).tag($0.id) }
                 }.labelsHidden().frame(width: 150)
                 HStack(spacing: 4) {
                     ForEach(limitChoices) { metric in
@@ -444,6 +444,11 @@ private struct MenuBarLineEditor: View {
             group.moveLine(line.id, offset: offset)
         } }
     }
+}
+
+extension UsageAccount {
+    // The usage-line account picker: the provider tag first, so accounts line up by provider ("CL a@example.test").
+    var providerTaggedTitle: String { provider.shortName + " " + title }
 }
 
 struct ChoiceButtonStyle: ButtonStyle {
