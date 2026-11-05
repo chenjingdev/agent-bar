@@ -28,13 +28,28 @@ enum ClaudeOAuthLauncher {
         return url
     }
     static func login(directory: URL, control: OperationControl, openURL: @Sendable (URL) -> Void) throws -> AccountIdentity {
+        try browserSignIn(directory: directory, control: control, openURL: openURL) {
+            let identity = try ProviderCLI.claudeStatus(directory: directory, control: control)
+            try control.checkCancellation()
+            try saveLoginCredential(directory: directory)
+            try control.checkCancellation()
+            return identity
+        }
+    }
+
+    /// Runs `claude auth login --claudeai` in `directory`: captures and validates the sign-in URL, hands
+    /// it to `openURL`, and waits for the CLI to finish. `afterExit` runs once the CLI exited
+    /// successfully, while the helper files are still in place.
+    static func browserSignIn<Value>(directory: URL, executable: URL? = nil, urlTimeout: TimeInterval = 20,
+                                      timeout: TimeInterval = 300, control: OperationControl,
+                                      openURL: @Sendable (URL) -> Void, afterExit: () throws -> Value) throws -> Value {
         let urlFile = directory.appendingPathComponent("agentbar-oauth-url")
         try? FileManager.default.removeItem(at: urlFile)
         let env = try environment(directory: directory)
-        let session = try ProcessSession(executable: ProviderCLI.executable(.claude), arguments: ["auth", "login", "--claudeai"],
+        let session = try ProcessSession(executable: executable ?? ProviderCLI.executable(.claude), arguments: ["auth", "login", "--claudeai"],
                                          environment: env, directory: directory)
         defer { session.stop(); try? FileManager.default.removeItem(at: urlFile) }
-        let deadline = Date().addingTimeInterval(20)
+        let deadline = Date().addingTimeInterval(urlTimeout)
         while !FileManager.default.fileExists(atPath: urlFile.path) {
             if control.cancelled { throw AccountError.cancelled }
             if Date() >= deadline { throw AccountError.message("Could not obtain the Claude sign-in URL.") }
@@ -52,14 +67,10 @@ enum ClaudeOAuthLauncher {
         guard let authorizationURL else { throw AccountError.message("Unsupported Claude sign-in URL format.") }
         try FileManager.default.removeItem(at: urlFile)
         openURL(authorizationURL)
-        _ = try session.collect(until: Date().addingTimeInterval(300), control: control)
+        _ = try session.collect(until: Date().addingTimeInterval(timeout), control: control)
         guard !control.cancelled else { throw AccountError.cancelled }
         guard session.exitStatus == 0 else { throw AccountError.message("Claude sign-in did not complete.") }
-        let identity = try ProviderCLI.claudeStatus(directory: directory, control: control)
-        try control.checkCancellation()
-        try saveLoginCredential(directory: directory)
-        try control.checkCancellation()
-        return identity
+        return try afterExit()
     }
 
     static func saveLoginCredential(directory: URL,

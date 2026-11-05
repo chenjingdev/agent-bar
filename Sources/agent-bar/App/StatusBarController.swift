@@ -30,6 +30,8 @@ final class StatusBarCoordinator {
     func popoverGroupID(for id: UUID) -> UUID? { controllers[id]?.popoverGroupID }
     func positionID(for id: UUID) -> UUID? { controllers[id]?.positionID }
     func popoverAppearanceName(for id: UUID) -> NSAppearance.Name? { controllers[id]?.popoverAppearanceName }
+    func popover(for id: UUID) -> NSPopover? { controllers[id]?.popoverObject }
+    func willOpenPopover(for id: UUID) { controllers[id]?.willOpenPopover() }
     func statusItemAppearanceName(for id: UUID) -> NSAppearance.Name? { controllers[id]?.statusItemAppearanceName }
     var groupOrderOnScreen: [UUID] { controllersFromLeftToRight().map(\.popoverGroupID) }
     func removeAll() { controllers.values.forEach { $0.remove() }; controllers.removeAll() }
@@ -114,6 +116,7 @@ final class StatusBarController {
     let positionID: UUID
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
+    private var closeObserver: NSObjectProtocol?
     private let host: NSHostingController<AccountPopoverRoot>
     private var entries: [MenuBarEntry] = []
     private var dragSurface: BadgeDragSurface?
@@ -124,6 +127,7 @@ final class StatusBarController {
     var screenWidth: CGFloat? { statusItem.button?.window?.screen?.frame.width }
     var screenFrame: NSRect? { statusItem.button?.window?.frame }
     var popoverAppearanceName: NSAppearance.Name? { popover.appearance?.name }
+    var popoverObject: NSPopover { popover }
     var statusItemAppearanceName: NSAppearance.Name? { statusItem.button?.effectiveAppearance.name }
     func applyTheme(_ theme: AppearanceTheme) { popover.appearance = theme.appearance }
     init(key: UUID, store: UsageStore, positionID: UUID? = nil, moveGroup: ((UUID, UUID) -> Bool)? = nil) {
@@ -148,7 +152,16 @@ final class StatusBarController {
         }
         popover.behavior = .transient
         popover.contentViewController = host
+        // Closing counts for the accounts the popover showed while it was open: a result line outlives the first close and
+        // is cleared by the next.
+        closeObserver = NotificationCenter.default.addObserver(forName: NSPopover.didCloseNotification, object: popover, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.popoverDidClose() }
+        }
+        store.popoverForget(group: key)
     }
+    private func popoverDidClose() { store.popoverDidClose(group: groupID) }
+    // The popover is about to open (`toggle` calls this).
+    func willOpenPopover() { store.popoverWillOpen(group: groupID, accountIDs: popoverAccountIDs) }
     func represent(_ id: UUID) {
         guard groupID != id else { return }
         popover.close()
@@ -173,13 +186,19 @@ final class StatusBarController {
         let ids = entries.map(\.account.id).filter { seen.insert($0).inserted }
         if host.rootView.accountIDs != ids { host.rootView = AccountPopoverRoot(accountIDs: ids, groupID: groupID, store: store) }
     }
-    func remove() { popover.close(); NSStatusBar.system.removeStatusItem(statusItem) }
+    func remove() {
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver); self.closeObserver = nil }
+        popover.close()
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
     @objc private func toggle(_ sender: AnyObject?) {
         guard let button = statusItem.button else { return }
         store.selectMenuBarGroup(groupID)
         if entries.isEmpty { SettingsWindowController.shared.show(tab: .menuBar, groupID: groupID); return }
         if popover.isShown { popover.performClose(sender) }
         else {
+            // The login Claude Code uses may have been changed in a terminal since it was last read.
+            willOpenPopover()
             // Size to the tallest account's cards instead of leaving a fixed blank area.
             let wanted = entries.map { entry -> CGFloat in
                 let cards = entry.metrics.filter { $0.window?.utilization != nil }.count
@@ -187,7 +206,11 @@ final class StatusBarController {
                 let snapshot = store.snapshot(for: entry.account)
                 let credits = CreditsCard.estimatedHeight(resets: snapshot.usageLimitResets, credits: snapshot.credits,
                     claudeCredits: snapshot.claudeCredits, showsResult: store.limitResetResults[entry.account.id] != nil)
-                return CGFloat(180 + cards * 120 + notes * 24 + credits) + (entries.count > 1 ? 40 : 0)
+                let claudeCode = store.claudeCodePanel(for: entry.account).estimatedHeight
+                let metricsHeight = 180 + cards * 120 + notes * 24
+                let contentHeight = CGFloat(metricsHeight + credits + claudeCode)
+                let tabsHeight: CGFloat = entries.count > 1 ? 40 : 0
+                return contentHeight + tabsHeight
             }.max() ?? 240
             let height = min(wanted, max(240, (button.window?.screen?.visibleFrame.height ?? 768) - 40))
             popover.contentSize = NSSize(width: 392, height: height)

@@ -15,10 +15,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, @MainAct
 
     func start(store: UsageStore) {
         guard controller == nil else { return }
-        observeIdleState(store.$isLoggingIn
-            .combineLatest(store.$pendingLogin, store.$redeemingCoupons)
-            .map { !$0 && $1 == nil && $2.isEmpty }
-            .eraseToAnyPublisher())
+        observeUserActivity(store)
         let controller = SPUStandardUpdaterController(
             startingUpdater: false,
             updaterDelegate: self,
@@ -62,6 +59,16 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, @MainAct
         guard !isIdle else { return false }
         scheduleInstallation(installHandler)
         return true
+    }
+
+    func observeUserActivity(_ store: UsageStore) {
+        let usageIdle = store.$isLoggingIn
+            .combineLatest(store.$pendingLogin, store.$redeemingCoupons)
+            .map { !$0 && $1 == nil && $2.isEmpty }
+        let claudeCodeIdle = store.$claudeCodeStarting
+            .combineLatest(store.$claudeCodeActivity, store.$claudeCodePreparation, store.$claudeCodeConfirmation)
+            .map { !$0 && $1 == nil && $2 == nil && $3 == nil }
+        observeIdleState(usageIdle.combineLatest(claudeCodeIdle).map { $0 && $1 }.eraseToAnyPublisher())
     }
 
     func observeIdleState(_ publisher: AnyPublisher<Bool, Never>) {

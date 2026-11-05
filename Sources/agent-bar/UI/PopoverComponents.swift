@@ -59,6 +59,35 @@ struct WindowCard: View {
     }
 }
 
+// How the last attempt ended, as "time · message" in green when it worked and orange when it did not, with the
+// log that records each of its steps. Used for a usage limit reset and for a switch of Claude Code's account.
+struct AttemptResultLine: View {
+    let succeeded: Bool
+    let message: String
+    let finishedAt: Date
+    let tint: Color
+    let logHelp: String
+    var openLog: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\(TokenFormatters.timeString(finishedAt)) · \(message)")
+                .foregroundStyle(succeeded ? Color.green : Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if let openLog {
+                Spacer(minLength: 4)
+                Button("Open Log", action: openLog)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(tint)
+                    .help(logHelp)
+            }
+        }
+        .font(.system(size: 11, weight: .medium, design: .rounded))
+    }
+}
+
 // Usage limit resets the account can still redeem, one row per coupon with its own button that
 // uses that coupon after an inline confirmation, and the account's credits: Codex's balance, or
 // Claude's dollar credits and extra usage. Each part appears only when the provider reports it.
@@ -241,21 +270,9 @@ struct CreditsCard: View {
 
     // The last attempt's outcome, with the log that records each of its steps.
     private func resultLine(_ result: LimitResetResult) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("\(TokenFormatters.timeString(result.finishedAt)) · \(result.message)")
-                .foregroundStyle(result.succeeded ? Color.green : Color.orange)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            if let openLog {
-                Spacer(minLength: 4)
-                Button("Open Log", action: openLog)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(AppTheme.tint(for: provider))
-                    .help("Opens the reset log, which records each step of every attempt.")
-            }
-        }
-        .font(Self.detailFont)
+        AttemptResultLine(succeeded: result.succeeded, message: result.message, finishedAt: result.finishedAt,
+                          tint: AppTheme.tint(for: provider),
+                          logHelp: "Opens the reset log, which records each step of every attempt.", openLog: openLog)
     }
 
     private func progress(_ title: String) -> some View {

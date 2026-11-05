@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private struct AccountFrames: PreferenceKey {
@@ -51,19 +52,51 @@ struct AccountManagementView: View {
                 Button("Retry Pending Cleanup") { Task { await store.retryCleanup() } }
             }
         }
+        .onAppear { store.accountsListDidOpen() }
         .onDisappear { accountDrag = nil; settlingAccountDrag = false }
         .sheet(item: $editing) { account in AccountEditSheet(account: account, displayName: store.accountLabel(for: account)) }
         .sheet(isPresented: $choosingProvider) {
             AddAccountProviderSheet { provider in store.startLogin(provider) }
         }
-        .alert("Delete this account from AgentBar?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+        .alert("Delete this account from AgentBar?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+               presenting: deleting) { account in
             Button("Cancel", role: .cancel) { deleting = nil }
             Button("Delete", role: .destructive) {
-                if let account = deleting { Task { await store.delete(account) } }; deleting = nil
+                Task { await store.delete(account) }; deleting = nil
             }
-        } message: { Text("This removes only the selected account’s AgentBar credentials and usage cache. External CLI sign-ins are preserved.") }
+        } message: { account in
+            Text(Self.deleteMessage(for: account.provider, claudeCodeEnabled: store.claudeCodeEnabled))
+        }
+    }
+
+    // What the Delete confirmation says. A Claude account also has a sign-in AgentBar saved for Claude Code, and that goes
+    // too; Claude Code's own login is left alone even when it belongs to this account. A run without "Use in Claude Code"
+    // (a development run) saves and removes nothing of the kind, so it says nothing about it.
+    nonisolated static func deleteMessage(for provider: ProviderKind, claudeCodeEnabled: Bool) -> String {
+        let removes = "This removes only the selected account’s AgentBar credentials and usage cache"
+        let preserved = "External CLI sign-ins are preserved."
+        guard provider == .claude, claudeCodeEnabled else { return "\(removes). \(preserved)" }
+        return "\(removes), plus any sign-in AgentBar saved on this Mac for Use in Claude Code. "
+            + "If Claude Code is using this account now, Claude Code stays signed in. \(preserved)"
     }
     private func row(_ account: UsageAccount, preview: Bool = false) -> some View {
+        let claudeCode = store.claudeCodeSetup(for: account)
+        return VStack(alignment: .leading, spacing: 8) {
+            accountRow(account, preview: preview)
+            if claudeCode.status != .hidden {
+                // Under the account's name, in line with it: past the drag handle.
+                ClaudeCodeSetupView(setup: claudeCode, signIn: { store.prepareForClaudeCode(account) },
+                                    cancel: { store.cancelClaudeCodePreparation() },
+                                    openLog: { NSWorkspace.shared.open(store.claudeCodeLogURL) })
+                    .padding(.leading, 24)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+    }
+
+    private func accountRow(_ account: UsageAccount, preview: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -94,6 +127,9 @@ struct AccountManagementView: View {
             Spacer()
             if account.deletionPending {
                 Text("Deletion pending").font(.caption).foregroundStyle(.orange)
+            } else if let note = store.claudeCodeLockNote(for: account) {
+                Text(note).font(.caption).foregroundStyle(.orange)
+                    .help("This account's logins are in use until Claude Code has finished.")
             } else if store.snapshot(for: account).requiresLogin {
                 Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).help("Sign-in required")
             }
@@ -101,16 +137,15 @@ struct AccountManagementView: View {
                 Button("Rename") { editing = account }
                     .disabled(account.deletionPending || store.storageUnavailable)
                 Button("Reconnect") { store.startLogin(account.provider, replacing: account) }
-                    .disabled(store.isLoggingIn || store.pendingLogin != nil || account.deletionPending || store.storageUnavailable)
+                    .disabled(store.isLoggingIn || store.pendingLogin != nil || account.deletionPending || store.storageUnavailable
+                              || store.isClaudeCodeLocked(account))
                 Button("Delete", role: .destructive) { deleting = account }
-                    .disabled(store.isLoggingIn || store.pendingLogin != nil || store.storageUnavailable)
+                    .disabled(store.isLoggingIn || store.pendingLogin != nil || store.storageUnavailable
+                              || store.isClaudeCodeLocked(account))
             } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help("Account options")
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
     }
 
     @ViewBuilder private var accountDragOverlay: some View {
@@ -219,6 +254,10 @@ struct LoginProgressView: View {
                      ? pending.account.identity!.description : "The provider did not return account details.")
                     .font(.headline).textSelection(.enabled)
                 if pending.replacing != nil {
+                    if store.reconnectLockedByClaudeCode && store.reconnectionComparison != .different {
+                        Text("This account is in use for Claude Code right now. Reconnect is available when it finishes.")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     if store.reconnectionComparison == .different {
                         Text("This is a different account from the one being reconnected. It can only be added as a new account.")
                         Button("Add Account") { store.confirmLogin(addAsNew: true) }.buttonStyle(.borderedProminent)
@@ -226,9 +265,13 @@ struct LoginProgressView: View {
                         Text("The account identity could not be verified automatically. Reconnect only if this is the same account.")
                         HStack {
                             Button("Reconnect") { store.confirmLogin(replaceUnverified: true) }.buttonStyle(.borderedProminent)
+                                .disabled(store.reconnectLockedByClaudeCode)
                             Button("Add Account") { store.confirmLogin(addAsNew: true) }
                         }
-                    } else { Button("Reconnect") { store.confirmLogin() }.buttonStyle(.borderedProminent) }
+                    } else {
+                        Button("Reconnect") { store.confirmLogin() }.buttonStyle(.borderedProminent)
+                            .disabled(store.reconnectLockedByClaudeCode)
+                    }
                 } else { Button("Add Account") { store.confirmLogin() }.buttonStyle(.borderedProminent) }
             }
             Button("Cancel", role: .cancel) { store.cancelLogin() }

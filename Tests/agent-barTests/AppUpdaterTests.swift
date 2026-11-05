@@ -29,6 +29,61 @@ struct AppUpdaterTests {
         #expect(installations == 1)
     }
 
+    @Test("A Claude Code account switch finishes before an automatic update", .timeLimit(.minutes(1)))
+    func waitsForClaudeCodeSwitch() async throws {
+        let fixture = try StoreFixture(["a", "b"], signedIn: "a", saved: ["b"])
+        defer { fixture.close() }
+        await fixture.start()
+        let updater = AppUpdater()
+        updater.observeUserActivity(fixture.store)
+        let hold = fixture.world.hold(login: "default")
+        fixture.press("b")
+        #expect(fixture.store.claudeCodeActivity != nil)
+        let (installed, continuation) = AsyncStream<Void>.makeStream()
+        var installations = 0
+        updater.scheduleInstallation {
+            installations += 1
+            continuation.yield()
+            continuation.finish()
+        }
+
+        await Task.yield()
+        #expect(installations == 0)
+        hold.release.signal()
+        await fixture.finish()
+        for await _ in installed { }
+        #expect(installations == 1)
+        #expect(fixture.store.claudeCodeAccountID == fixture.account("b").id)
+    }
+
+    @Test("A Claude Code browser sign-in finishes before an automatic update", .timeLimit(.minutes(1)))
+    func waitsForClaudeCodePreparation() async throws {
+        let fixture = try StoreFixture(["a", "b"], signedIn: "a")
+        defer { fixture.close() }
+        fixture.world.plan(.signIn("b@example.test"))
+        await fixture.start()
+        let updater = AppUpdater()
+        updater.observeUserActivity(fixture.store)
+        let hold = fixture.gates.holdBrowser()
+        fixture.signIn("b")
+        #expect(fixture.store.claudeCodePreparation != nil)
+        let (installed, continuation) = AsyncStream<Void>.makeStream()
+        var installations = 0
+        updater.scheduleInstallation {
+            installations += 1
+            continuation.yield()
+            continuation.finish()
+        }
+
+        await Task.yield()
+        #expect(installations == 0)
+        hold.release.signal()
+        await fixture.finish()
+        for await _ in installed { }
+        #expect(installations == 1)
+        #expect(fixture.store.claudeCodeReady.contains(fixture.account("b").id))
+    }
+
     @Test("The final relaunch gate holds manual installs until user actions finish", .timeLimit(.minutes(1)))
     func postponesFinalRelaunchUntilIdle() async {
         let updater = AppUpdater()

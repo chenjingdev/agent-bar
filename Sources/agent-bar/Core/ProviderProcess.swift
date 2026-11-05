@@ -2,7 +2,9 @@ import Darwin
 import Foundation
 
 // All blocking process work runs on a utility task. stdout is continuously drained;
-// stderr is never retained because authentication commands can print credentials.
+// stderr is discarded because authentication commands can print credentials, unless a caller
+// merges it into stdout (`mergeStandardError`) to tell why a command failed. That caller must
+// scrub the text before it keeps any of it.
 final class ProcessSession: @unchecked Sendable {
     private final class WeakSession { weak var value: ProcessSession?; init(_ value: ProcessSession) { self.value = value } }
     private static let registryLock = NSLock()
@@ -20,8 +22,12 @@ final class ProcessSession: @unchecked Sendable {
     private var ended = false
     private var overflow = false
     private var stopped = false
+    private var inputClosed = false
 
-    init(executable: URL, arguments: [String], environment: [String: String], directory: URL) throws {
+    // `mergeStandardError` sends stderr into the same pipe so a caller that classifies a failure
+    // sees what the CLI said; it must scrub the text before keeping it.
+    init(executable: URL, arguments: [String], environment: [String: String], directory: URL,
+         mergeStandardError: Bool = false) throws {
         // A CLI may exit between receiving a response and our next write.
         // Report EPIPE through FileHandle instead of terminating the whole app.
         guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
@@ -35,7 +41,7 @@ final class ProcessSession: @unchecked Sendable {
         process.currentDirectoryURL = directory
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
+        process.standardError = mergeStandardError ? output : FileHandle.nullDevice
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard let self else { return }
@@ -57,6 +63,14 @@ final class ProcessSession: @unchecked Sendable {
         Self.registryLock.unlock()
         do { try process.run() }
         catch { output.fileHandleForReading.readabilityHandler = nil; throw error }
+    }
+
+    // For a CLI that must see end-of-input instead of waiting for a person to type.
+    func closeInput() {
+        stopLock.lock(); defer { stopLock.unlock() }
+        guard !inputClosed else { return }
+        inputClosed = true
+        try? input.fileHandleForWriting.close()
     }
 
     func send(_ value: [String: Any]) throws {
@@ -99,6 +113,23 @@ final class ProcessSession: @unchecked Sendable {
             _ = condition.wait(until: min(deadline, Date().addingTimeInterval(0.1)))
         }
     }
+    // Like collect, but running out of time is not an error: what arrived so far comes back with
+    // `timedOut` set, so a command that printed why it failed before it hung is not lost.
+    func collectPartial(until deadline: Date, control: OperationControl) throws -> (data: Data, timedOut: Bool) {
+        var result = Data()
+        condition.lock()
+        defer { condition.unlock() }
+        while true {
+            if control.cancelled { throw AccountError.cancelled }
+            if overflow || result.count + buffer.count > 2_000_000 {
+                throw AccountError.message("The CLI response is too large.")
+            }
+            result.append(buffer); buffer.removeAll()
+            if ended && !process.isRunning { return (result, false) }
+            if Date() >= deadline { return (result, true) }
+            _ = condition.wait(until: min(deadline, Date().addingTimeInterval(0.1)))
+        }
+    }
     var exitStatus: Int32 { process.isRunning ? -1 : process.terminationStatus }
     func stop() {
         stopLock.lock(); defer { stopLock.unlock() }
@@ -117,7 +148,7 @@ final class ProcessSession: @unchecked Sendable {
         if pid > 0 { kill(-pid, SIGKILL) }
         output.fileHandleForReading.readabilityHandler = nil
         condition.lock(); ended = true; condition.broadcast(); condition.unlock()
-        try? input.fileHandleForWriting.close()
+        if !inputClosed { inputClosed = true; try? input.fileHandleForWriting.close() }
         try? output.fileHandleForReading.close()
     }
     deinit { stop() }
@@ -145,15 +176,16 @@ enum ProviderCLI {
         }
         return URL(fileURLWithPath: path).resolvingSymlinksInPath()
     }
-    static func processEnvironment() -> [String: String] {
-        let source = ProcessInfo.processInfo.environment
+    // `source` is the environment the app was started with; a test passes its own.
+    static func processEnvironment(from source: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var env: [String: String] = ["HOME": FileManager.default.homeDirectoryForCurrentUser.path,
             "PATH": "/opt/homebrew/bin:/usr/local/bin:" + FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bun/bin").path + ":/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"]
         for key in ["USER", "LOGNAME", "TMPDIR"] { env[key] = source[key] }
         return env
     }
-    static func environment(provider: ProviderKind, directory: URL) -> [String: String] {
-        var env = processEnvironment()
+    static func environment(provider: ProviderKind, directory: URL,
+                            from source: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var env = processEnvironment(from: source)
         env[provider == .codex ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"] = directory.path
         if provider == .claude {
             // Current Claude Code can namespace Keychain separately from its

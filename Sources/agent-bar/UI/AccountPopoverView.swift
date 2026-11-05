@@ -6,6 +6,8 @@ import SwiftUI
 struct AccountPopoverView: View {
     let accountIDs: [UUID]
     let groupID: UUID?
+    // Opens a tab of the settings window; the window itself is the app's, so a test passes its own.
+    var openSettings: @MainActor (SettingsTab, UUID?) -> Void = { SettingsWindowController.shared.show(tab: $0, groupID: $1) }
     @EnvironmentObject private var store: UsageStore
     @State private var selected: UUID?
     init(accountID: UUID, groupID: UUID? = nil) { self.accountIDs = [accountID]; self.groupID = groupID }
@@ -22,7 +24,11 @@ struct AccountPopoverView: View {
                     }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 16).padding(.top, 14)
                 }
                 if let account {
-                    header(account)
+                    let claudeCode = store.claudeCodePanel(for: account)
+                    header(account, claudeCode: claudeCode)
+                    ClaudeCodeLinesView(lines: claudeCode.lines, confirm: { store.confirmClaudeCodeSwitch() },
+                                        decline: { store.cancelClaudeCodeConfirmation() },
+                                        openLog: { NSWorkspace.shared.open(store.claudeCodeLogURL) })
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
                             if let error = store.displayError { Text(error).font(.caption).foregroundStyle(.orange) }
@@ -37,19 +43,39 @@ struct AccountPopoverView: View {
                 footer
             }
         }.foregroundStyle(.white).frame(width: 392)
+            .onAppear { reportShownAccount() }
+            .onChange(of: account?.id) { reportShownAccount() }
+            .onChange(of: groupID) { reportShownAccount() }
     }
-    private func header(_ account: UsageAccount) -> some View {
+    // What "Set Up in Settings…" does: opens Settings › Accounts, where the account signs in once for Claude Code. Settings
+    // selects the menu bar group this popover belongs to, as the gear and "Accounts…" do.
+    static func setUpAction(groupID: UUID?, open: @escaping @MainActor (SettingsTab, UUID?) -> Void) -> @MainActor () -> Void {
+        { open(.accounts, groupID) }
+    }
+    // A group's popover shows one of its accounts at a time. A result line is cleared by the closing that follows seeing
+    // it, so the store has to know which one is on screen.
+    private func reportShownAccount() {
+        if let groupID, let id = account?.id { store.popoverShows(id, group: groupID) }
+    }
+    private func header(_ account: UsageAccount, claudeCode: ClaudeCodePanel) -> some View {
         let display = store.displayConfiguration.display(account)
         return HStack(spacing: 10) {
             AccountBadge(text: display.badge, color: display.color)
             VStack(alignment: .leading, spacing: 1) {
                 Text(account.title).font(.system(size: 18, weight: .heavy, design: .rounded)).lineLimit(1).textSelection(.enabled)
-                Text(account.provider.displayName)
-                    .font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(AppTheme.muted)
+                // "Use in Claude Code" sits by the provider, not beside the icons: a long name (an e-mail address is the
+                // default) would have no room left.
+                HStack(spacing: 8) {
+                    Text(account.provider.displayName)
+                        .font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(AppTheme.muted)
+                    ClaudeCodeControlView(control: claudeCode.control, use: { store.useInClaudeCode(account) },
+                                          setUp: Self.setUpAction(groupID: groupID, open: openSettings))
+                }
+                .padding(.top, claudeCode.control == .hidden ? 0 : 3)
             }
             Spacer(minLength: 8)
             Button { store.refreshNow() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
-            Button { SettingsWindowController.shared.show(tab: .menuBar, groupID: groupID) } label: { Image(systemName: "gearshape") }.help("Settings")
+            Button { openSettings(.menuBar, groupID) } label: { Image(systemName: "gearshape") }.help("Settings")
         }.buttonStyle(.plain).font(.system(size: 14, weight: .semibold)).padding(16)
     }
     @ViewBuilder private func content(_ account: UsageAccount) -> some View {
@@ -75,9 +101,11 @@ struct AccountPopoverView: View {
                 .id(account.id)
         }
     }
+    // The status line of an account whose sign-in has to be redone. A blocked "Use in Claude Code" button gives it as its reason.
+    static let signInRequiredLine = "Sign-in required · reconnect in Settings › Accounts"
     private func statusLine(_ snapshot: ProviderSnapshot) -> String {
         let updated = "Updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))"
-        if snapshot.requiresLogin { return "Sign-in required · reconnect in Settings › Accounts" }
+        if snapshot.requiresLogin { return Self.signInRequiredLine }
         if snapshot.isStale { return (snapshot.note ?? "Cached usage.") + " · " + updated }
         return updated + (snapshot.planName.map { " · " + $0 } ?? "")
     }
@@ -87,7 +115,7 @@ struct AccountPopoverView: View {
             Text(store.isRefreshing ? "Refreshing…" : "\(count) account\(count == 1 ? "" : "s") in menu bar")
                 .font(.system(size: 10)).foregroundStyle(AppTheme.muted).lineLimit(1)
             Spacer(minLength: 4)
-            Button("Accounts…") { SettingsWindowController.shared.show(tab: .accounts, groupID: groupID) }
+            Button("Accounts…") { openSettings(.accounts, groupID) }
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }.buttonStyle(.plain).font(.system(size: 12, weight: .bold, design: .rounded)).padding(14)
     }
