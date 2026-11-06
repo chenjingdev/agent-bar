@@ -75,7 +75,7 @@ struct AccountManagementTests {
         let settings = AppSettings(defaults: defaults)
         let store = UsageStore(settings: settings, files: files, autoRefresh: false)
         defer { store.shutdown() }
-        let group = MenuBarLayout(name: "Mixed", rows: [MenuBarLine(accountID: c.id, metricID: "weekly"), MenuBarLine(accountID: a.id, metricID: "5h")])
+        let group = MenuBarLayout(rows: [MenuBarLine(accountID: c.id, metricID: "weekly"), MenuBarLine(accountID: a.id, metricID: "5h")])
         store.updateDisplay { $0.layouts = [group]; $0.setVisible(c.id, false) }
         let layouts = store.displayConfiguration.effectiveLayouts
         let appearances = store.displayConfiguration.accounts

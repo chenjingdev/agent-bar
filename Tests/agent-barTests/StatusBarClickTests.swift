@@ -89,9 +89,9 @@ struct StatusBarClickTests {
         try files.write(registry, to: files.registryURL)
         let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
         defer { store.shutdown() }
-        let first = MenuBarLayout(name: "Week", rows: [MenuBarLine(accountID: account.id, metricID: "weekly")])
-        let second = MenuBarLayout(name: "Session", rows: [MenuBarLine(accountID: account.id, metricID: "5h")])
-        let empty = MenuBarLayout(name: "Empty")
+        let first = MenuBarLayout(rows: [MenuBarLine(accountID: account.id, metricID: "weekly")])
+        let second = MenuBarLayout(rows: [MenuBarLine(accountID: account.id, metricID: "5h")])
+        let empty = MenuBarLayout()
         store.updateDisplay { $0.layouts = [first, second, empty] }
         let coordinator = StatusBarCoordinator(store: store, providers: [.claude, .codex])
         defer { coordinator.removeAll() }
@@ -101,7 +101,7 @@ struct StatusBarClickTests {
         #expect(coordinator.popoverGroupID(for: empty.id) == empty.id)
 
         store.selectMenuBarGroup(try #require(coordinator.popoverGroupID(for: second.id)))
-        store.updateDisplay { $0.editLayout(second.id) { $0.name = "Renamed"; $0.rows[0].accountID = other.id } }
+        store.updateDisplay { $0.editLayout(second.id) { $0.rows[0].accountID = other.id } }
         try await waitFor { coordinator.popoverAccountIDs(for: second.id) == [other.id] }
         #expect(coordinator.popoverGroupID(for: second.id) == second.id)
         #expect(store.selectedMenuBarGroupID == second.id)
@@ -129,7 +129,7 @@ struct StatusBarClickTests {
         let store = UsageStore(settings: settings, files: files, autoRefresh: false)
         defer { store.shutdown() }
         let groups = ["weekly", "5h", "model:fable"].map {
-            MenuBarLayout(name: $0, rows: [MenuBarLine(accountID: account.id, metricID: $0)])
+            MenuBarLayout(rows: [MenuBarLine(accountID: account.id, metricID: $0)])
         }
         store.updateDisplay { $0.layouts = groups }
         let coordinator = StatusBarCoordinator(store: store, providers: [.claude])

@@ -90,9 +90,19 @@ final class StatusBarCoordinator {
                 moveGroup: { [weak self] source, target in self?.moveFromMenuBar(source, to: target) ?? false })
             controllers[group.id]?.applyTheme(theme)
         }
-        for group in groups {
-            controllers[group.id]?.apply(store.entries(for: group), config: group.renderingConfiguration(config), explicitRows: true, name: group.name)
+        // Each common badge shows its group's emails. When the full emails make AgentBar take too much of the menu bar,
+        // every badge keeps only the part before "@"; the tooltip always has the full emails.
+        func render(short: Bool) {
+            for group in groups {
+                controllers[group.id]?.apply(store.entries(for: group),
+                    config: group.renderingConfiguration(config, badge: store.groupTitle(group, short: short)),
+                    explicitRows: true, name: store.groupTitle(group))
+            }
         }
+        let screenWidth = controllers.values.compactMap(\.screenWidth).first ?? NSScreen.main?.frame.width ?? 1440
+        var width: CGFloat { controllers.values.reduce(CGFloat(0)) { $0 + $1.width } }
+        render(short: false)
+        if width > screenWidth * 0.4 { render(short: true) }
         if !positions.isEmpty {
             store.updateDisplay { config in
                 config.editLayouts { layouts in
@@ -102,8 +112,6 @@ final class StatusBarCoordinator {
                 }
             }
         }
-        let width = controllers.values.reduce(CGFloat(0)) { $0 + $1.width }
-        let screenWidth = controllers.values.compactMap(\.screenWidth).first ?? NSScreen.main?.frame.width ?? 1440
         let warning = width > screenWidth * 0.4
         if store.displayWidthWarning != warning { store.displayWidthWarning = warning }
     }
@@ -177,7 +185,8 @@ final class StatusBarController {
         statusItem.button?.image = image
         dragSurface?.badgeImage = image
         let description = entries.isEmpty ? "\(name) · Click to add a usage line" : entries.map { "\($0.account.title) · \($0.metric.title): \($0.percentage)\($0.stale ? " (cached)" : "")" }.joined(separator: "\n")
-        let common = config.commonBadgeText.flatMap { $0.isEmpty ? nil : $0 }
+        // The badge may show shortened emails; the tooltip names the group in full.
+        let common = config.commonBadgeText.flatMap { $0.isEmpty ? nil : name }
         let accessibleDescription = common.map { $0 + "\n" + description } ?? description
         statusItem.button?.toolTip = accessibleDescription
         dragSurface?.toolTip = accessibleDescription

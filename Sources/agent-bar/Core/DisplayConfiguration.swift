@@ -183,7 +183,7 @@ struct DisplayConfiguration: Codable, Equatable {
             for i in layouts!.indices { layouts![i].rows.removeAll { !ids.contains($0.accountID) } }
             normalizeTextLineSlots()
             for account in live where accounts[account.id.uuidString] == nil {
-                layouts!.append(MenuBarLayout(name: account.title, rows: [MenuBarLine(accountID: account.id, metricID: "weekly")]))
+                layouts!.append(MenuBarLayout(rows: [MenuBarLine(accountID: account.id, metricID: "weekly")]))
             }
         }
         order.removeAll { !ids.contains($0) }

@@ -7,7 +7,7 @@ import Testing
 struct BadgeDisplayModeTests {
     @Test func oldGroupsDecodeAndCommonBadgesRoundTrip() throws {
         // Stored groups still carry the removed showBadge key and may lack badgeMode.
-        var old = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(MenuBarLayout(name: "Old"))) as? [String: Any])
+        var old = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(MenuBarLayout())) as? [String: Any])
         old["showBadge"] = false
         let decoded = try JSONDecoder().decode(MenuBarLayout.self, from: JSONSerialization.data(withJSONObject: old))
         #expect(decoded.badgeMode == nil && decoded.effectiveBadgeMode == .none)
@@ -16,12 +16,12 @@ struct BadgeDisplayModeTests {
         var config = DisplayConfiguration()
         let account = UsageAccount(id: UUID(), provider: .claude, name: "Work")
         config.sync([account])
-        var group = MenuBarLayout(name: "Mixed", rows: [MenuBarLine(accountID: account.id, metricID: "weekly", badgeText: "Week")])
-        group.badgeMode = .common; group.commonBadgeText = "Team"; group.commonBadgeColor = .orange
+        var group = MenuBarLayout(rows: [MenuBarLine(accountID: account.id, metricID: "weekly", badgeText: "Week")])
+        group.badgeMode = .common; group.commonBadgeColor = .orange
         config.layouts = [group]
         let roundTrip = try JSONDecoder().decode(DisplayConfiguration.self, from: JSONEncoder().encode(config))
         #expect(roundTrip == config)
-        let render = group.renderingConfiguration(config)
+        let render = group.renderingConfiguration(config, badge: "Team")
         #expect(group.effectiveBadgeMode == .common)
         #expect(render.commonBadgeText == "Team" && render.commonBadgeColor == .orange)
     }
@@ -34,10 +34,9 @@ struct BadgeDisplayModeTests {
                 metric: DisplayMetric(id: "weekly", title: "Weekly Limit", window: window),
                 stale: false, requiresLogin: false, badgeText: label)
         }
-        var group = MenuBarLayout(name: "Team", showBar: false, showPercent: false)
-        group.commonBadgeText = "Team"
+        var group = MenuBarLayout(showBar: false, showPercent: false)
         group.badgeMode = .common
-        let common = group.renderingConfiguration(DisplayConfiguration())
+        let common = group.renderingConfiguration(DisplayConfiguration(), badge: "Team")
         let commonOne = DisplayStatusRenderer.render(entries: Array(entries.prefix(1)), config: common, explicitRows: true)
         let commonThree = DisplayStatusRenderer.render(entries: entries, config: common, explicitRows: true)
         #expect(commonOne.size.width == commonThree.size.width)
@@ -59,9 +58,9 @@ struct BadgeDisplayModeTests {
         if let output { try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true) }
         for style in MenuBarStyle.selectableCases {
             for mode in BadgeDisplayMode.allCases {
-                var group = MenuBarLayout(name: "Team", style: style)
+                var group = MenuBarLayout(style: style)
                 group.badgeMode = mode; group.commonBadgeColor = .teal
-                let config = group.renderingConfiguration(DisplayConfiguration())
+                let config = group.renderingConfiguration(DisplayConfiguration(), badge: "Team")
                 #expect((config.commonBadgeText != nil) == mode.includesCommon)
                 let image = DisplayStatusRenderer.render(entries: entries, config: config, explicitRows: true)
                 #expect(image.size.height == 22 && image.size.width > 0)
