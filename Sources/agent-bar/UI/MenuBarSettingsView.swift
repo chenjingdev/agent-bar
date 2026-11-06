@@ -31,7 +31,7 @@ struct MenuBarSettingsView: View {
                             groupLabel(group)
                         }
                         .buttonStyle(ChoiceButtonStyle(selected: selected?.id == group.id))
-                        .help(store.groupTitle(group) + (group.enabled ? "" : " · hidden"))
+                        .help(group.name + (group.enabled ? "" : " · hidden"))
                         .accessibilityAddTraits(selected?.id == group.id ? .isSelected : [])
                         .highPriorityGesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("group-order"))
                             .onChanged { value in
@@ -53,7 +53,7 @@ struct MenuBarSettingsView: View {
                         .animation(.snappy(duration: 0.18), value: groupDrag?.target)
                     }
                     Button {
-                        let group = MenuBarLayout()
+                        let group = MenuBarLayout(name: "Group \(groups.count + 1)")
                         store.updateDisplay { $0.editLayouts { $0.append(group) } }
                         store.selectMenuBarGroup(group.id)
                     } label: { Label("Add Group", systemImage: "plus").frame(maxWidth: .infinity) }
@@ -77,11 +77,7 @@ struct MenuBarSettingsView: View {
     private func groupLabel(_ group: MenuBarLayout) -> some View {
         HStack(spacing: 4) {
             if !group.enabled { Image(systemName: "eye.slash") }
-            // The full emails, or only the parts before "@" where they do not fit.
-            ViewThatFits(in: .horizontal) {
-                Text(store.groupTitle(group)).lineLimit(1)
-                Text(store.groupTitle(group, short: true)).lineLimit(1)
-            }
+            Text(group.name.isEmpty ? "Untitled" : group.name).lineLimit(1)
         }.frame(maxWidth: .infinity)
     }
 
@@ -132,9 +128,7 @@ private struct MenuBarGroupEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(store.groupTitle(group)).font(.headline).lineLimit(1).truncationMode(.middle)
-                    .textSelection(.enabled).help(store.groupTitle(group))
-                Spacer()
+                LabeledContent("Group name") { TextField("Group name", text: binding(\.name)).labelsHidden() }
                 Toggle("Show", isOn: binding(\.enabled)).toggleStyle(.switch).fixedSize()
                 Button { deleting = true } label: { Image(systemName: "trash") }.help("Delete this group")
             }
@@ -167,6 +161,7 @@ private struct MenuBarGroupEditor: View {
                         let color = group.rows.first.flatMap { store.menuBarEntry(for: $0.accountID)?.display.color } ?? .blue
                         store.updateDisplay { $0.editLayout(group.id) { value in
                             value.badgeMode = mode
+                            if mode.includesCommon, value.commonBadgeText == nil { value.commonBadgeText = String(value.name.prefix(24)) }
                             if mode.includesCommon, value.commonBadgeColor == nil { value.commonBadgeColor = color }
                         } }
                     } label: { Text(mode.title).font(.caption).frame(maxWidth: .infinity) }
@@ -181,7 +176,9 @@ private struct MenuBarGroupEditor: View {
                     BadgeColorButton(title: "Common badge color", color: Binding(get: { group.commonBadgeColor ?? .blue }, set: { color in
                         store.updateDisplay { $0.editLayout(group.id) { $0.commonBadgeColor = color } }
                     }))
-                    Text(store.groupTitle(group)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    TextField("Common badge", text: Binding(get: { group.commonBadgeLabel }, set: { text in
+                        store.updateDisplay { $0.editLayout(group.id) { $0.commonBadgeText = String(text.prefix(24)) } }
+                    })).textFieldStyle(.roundedBorder).frame(width: 112)
                 }
             }
             HStack {
@@ -229,7 +226,7 @@ private struct MenuBarGroupEditor: View {
         .onPreferenceChange(SlotFrames.self) { slotFrames = $0 }
         .overlay(alignment: .topLeading) { lineDragOverlay.allowsHitTesting(false) }
         .onDisappear { clearLineDrag() }
-        .alert("Delete \(store.groupTitle(group))?", isPresented: $deleting) {
+        .alert("Delete \(group.name)?", isPresented: $deleting) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) { store.updateDisplay { $0.editLayouts { $0.removeAll { $0.id == group.id } } } }
         } message: { Text("Only this display group is removed. Its accounts remain available. To keep its layout for later, switch Show off instead.") }

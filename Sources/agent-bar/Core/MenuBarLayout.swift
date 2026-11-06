@@ -25,11 +25,14 @@ enum BadgeDisplayMode: String, Codable, CaseIterable, Identifiable {
 struct MenuBarLayout: Codable, Equatable, Identifiable {
     static let maximumLines = 3
     var id = UUID()
+    var name = "Group"
     var enabled = true
     var style: MenuBarStyle = .bars
     var badgeMode: BadgeDisplayMode? = nil
+    var commonBadgeText: String? = nil
     var commonBadgeColor: AccountColor? = nil
     var effectiveBadgeMode: BadgeDisplayMode { badgeMode ?? .none }
+    var commonBadgeLabel: String { commonBadgeText ?? name }
     var showBar = true
     var showPercent = true
     var percentageLineID: String? = nil
@@ -52,7 +55,7 @@ struct MenuBarLayout: Codable, Equatable, Identifiable {
         }
         return displayedRows.first?.id
     }
-    var showsAnything: Bool { (style.selection == .bars && !displayedRows.isEmpty) || style == .capsule || style == .ring || style == .text || effectiveBadgeMode.includesCommon || showPercent }
+    var showsAnything: Bool { (style.selection == .bars && !displayedRows.isEmpty) || style == .capsule || style == .ring || style == .text || (effectiveBadgeMode.includesCommon && !commonBadgeLabel.isEmpty) || showPercent }
     var valid: Bool {
         (style == .text || rows.count <= Self.maximumLines) && (1...3).contains(rowsPerColumn) && Set(rows.map(\.id)).count == rows.count
             && rows.allSatisfy { !$0.metricID.isEmpty }
@@ -81,22 +84,10 @@ struct MenuBarLayout: Codable, Equatable, Identifiable {
         rows[i].slot = target
         rows.sort { ($0.slot ?? 0) < ($1.slot ?? 0) }
     }
-    // A group has no name of its own: it is named by the login emails of its accounts, in line order, once each. Where
-    // the full emails do not fit, `short` keeps only the part before "@".
-    static func title(for accounts: [UsageAccount], short: Bool = false) -> String {
-        var parts: [String] = []
-        for account in accounts {
-            let title = account.title
-            let part = short ? String(title.split(separator: "@", maxSplits: 1).first ?? Substring(title)) : title
-            if !parts.contains(part) { parts.append(part) }
-        }
-        return parts.isEmpty ? "Empty group" : parts.joined(separator: " · ")
-    }
-    // `badge` is the common badge's text, from the group's accounts.
-    func renderingConfiguration(_ base: DisplayConfiguration, badge: String? = nil) -> DisplayConfiguration {
+    func renderingConfiguration(_ base: DisplayConfiguration) -> DisplayConfiguration {
         var value = base
         value.style = style
-        value.commonBadgeText = effectiveBadgeMode.includesCommon ? badge : nil
+        value.commonBadgeText = effectiveBadgeMode.includesCommon ? commonBadgeLabel : nil
         value.commonBadgeColor = commonBadgeColor ?? .blue
         value.showBar = style.selection == .bars ? true : showBar
         value.showPercent = style == .text ? true : showPercent
@@ -129,7 +120,8 @@ extension DisplayConfiguration {
             let lines = metrics.map { MenuBarLine(id: id.uuidString + ":" + $0, accountID: id, metricID: $0) }
             if let index = result.firstIndex(where: { $0.id == key }) { result[index].rows += lines }
             else {
-                result.append(MenuBarLayout(id: key, style: style, showBar: showBar, showPercent: showPercent,
+                result.append(MenuBarLayout(id: key, name: display.group > 0 ? "Group \(display.group)" : display.badge,
+                    style: style, showBar: showBar, showPercent: showPercent,
                     rowsPerColumn: min(3, max(1, rowsPerColumn)), rows: lines))
             }
         }
@@ -147,7 +139,7 @@ extension DisplayConfiguration {
             result.append(group)
             for start in stride(from: 0, to: excess.count, by: MenuBarLayout.maximumLines) {
                 var saved = group
-                saved.id = UUID(); saved.enabled = false
+                saved.id = UUID(); saved.name += " · saved lines"; saved.enabled = false
                 saved.statusItemPositionID = nil
                 saved.rows = Array(excess[start..<min(start + MenuBarLayout.maximumLines, excess.count)])
                 result.append(saved)
@@ -201,12 +193,6 @@ extension DisplayConfiguration {
 }
 
 extension UsageStore {
-    func groupAccounts(_ layout: MenuBarLayout) -> [UsageAccount] {
-        layout.displayedRows.compactMap { line in accounts.first { $0.id == line.accountID && !$0.deletionPending } }
-    }
-    func groupTitle(_ layout: MenuBarLayout, short: Bool = false) -> String {
-        MenuBarLayout.title(for: groupAccounts(layout), short: short)
-    }
     func entries(for layout: MenuBarLayout) -> [MenuBarEntry] {
         layout.displayedRows.compactMap { line in
             guard displayConfiguration.isVisible(line.accountID), var entry = menuBarEntry(for: line.accountID) else { return nil }

@@ -6,9 +6,9 @@ import Testing
 @MainActor
 struct MenuBarLayoutTests {
     @Test func movingGroupsPreservesTheirSettingsAndHiddenGroups() {
-        let a = MenuBarLayout()
-        let hidden = MenuBarLayout(enabled: false)
-        let b = MenuBarLayout(style: .text)
+        let a = MenuBarLayout(name: "A")
+        let hidden = MenuBarLayout(name: "Hidden", enabled: false)
+        let b = MenuBarLayout(name: "B", style: .text)
         var config = DisplayConfiguration(); config.layouts = [a, hidden, b]
         config.moveLayout(a.id, to: b.id)
         #expect(config.layouts == [hidden, b, a])
@@ -134,7 +134,7 @@ struct MenuBarLayoutTests {
         #expect(Set(groups.map(\.id)).count == 2)
         #expect(groups[0].rows.map(\.accountID) == [claudeID])
         #expect(groups[1].rows.map(\.accountID) == [codexID])
-        config.editLayouts { $0[0].showPercent = false }
+        config.editLayouts { $0[0].name = "Claude" }
         #expect(config.valid)
     }
 
@@ -149,7 +149,7 @@ struct MenuBarLayoutTests {
         #expect(groups.count == 1)
         #expect(groups[0].rows.map(\.metricID) == ["model:fable", "weekly", "5h"])
         #expect(groups == config.effectiveLayouts)
-        config.editLayouts { $0[0].showPercent = false }
+        config.editLayouts { $0[0].name = "Mixed" }
         #expect(config.refreshAccountIDs == [a.id])
         config.setVisible(b.id, true)
         #expect(config.refreshAccountIDs == [a.id, b.id])
@@ -157,7 +157,7 @@ struct MenuBarLayoutTests {
 
     @Test func selectedMissingLimitStaysUnknownAndGroupPopoverDeduplicatesAccounts() async throws {
         let f = try LayoutFixture(); defer { f.close() }
-        let group = MenuBarLayout(rows: [
+        let group = MenuBarLayout(name: "Mixed", rows: [
             MenuBarLine(accountID: f.a.id, metricID: "weekly"),
             MenuBarLine(accountID: f.b.id, metricID: "5h"),
             MenuBarLine(accountID: f.a.id, metricID: "model:future")
@@ -178,7 +178,7 @@ struct MenuBarLayoutTests {
     @Test func ringUsesOnlyTheFirstConfiguredLineAndMultiBarRestoresAllThree() async throws {
         let f = try LayoutFixture(); defer { f.close() }
         await f.store.refresh()
-        var group = MenuBarLayout(style: .ring, rows: [
+        var group = MenuBarLayout(name: "Ring", style: .ring, rows: [
             MenuBarLine(accountID: f.a.id, metricID: "weekly", slot: 0, badgeText: "A"),
             MenuBarLine(accountID: f.b.id, metricID: "weekly", slot: 1, badgeText: "B"),
             MenuBarLine(accountID: f.a.id, metricID: "5h", slot: 2, badgeText: "C")
@@ -314,7 +314,7 @@ struct MenuBarLayoutTests {
     @Test func mixedGroupAndSettingsRenderWithEveryStyle() async throws {
         let f = try LayoutFixture(); defer { f.close() }
         await f.store.refresh()
-        var group = MenuBarLayout(rows: [
+        var group = MenuBarLayout(name: "Mixed", rows: [
             MenuBarLine(accountID: f.a.id, metricID: "weekly"), MenuBarLine(accountID: f.b.id, metricID: "weekly"),
             MenuBarLine(accountID: f.a.id, metricID: "5h")])
         let out = ProcessInfo.processInfo.environment["AGENTBAR_QA_ARTIFACT_DIR"].map { URL(fileURLWithPath: $0) }

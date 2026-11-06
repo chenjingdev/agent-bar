@@ -91,16 +91,13 @@ struct DisplayConfigurationTests {
         #expect(value.showBar && value.showPercent && value.display(b).group == 1 && value.display(a).bars == AccountDisplay.defaultBars)
         let groups = try #require(value.layouts)
         #expect(groups.map(\.id) == [first, second] && groups.map(\.style) == [.bars, .capsule])
-        #expect(groups.map(\.effectiveBadgeMode) == [.common, .common] && groups[0].commonBadgeColor == .teal)
+        #expect(groups.map(\.effectiveBadgeMode) == [.common, .common] && groups[0].commonBadgeText == "W" && groups[0].commonBadgeColor == .teal)
         #expect(groups[0].percentageLineID == "r2" && groups.map(\.statusItemPositionID) == [slotA, slotB])
         #expect(groups.flatMap(\.rows).map(\.badgeText) == ["CL·5H", "CX·WK", "CL"] && groups[1].rows[0].showLimitLabel == false)
         // The removed keys change nothing and are no longer written.
         let stripped = json.replacingOccurrences(of: "\"showBadge\":true,", with: "").replacingOccurrences(of: "\"showBadge\":false,", with: "")
         #expect(try JSONDecoder().decode(DisplayConfiguration.self, from: Data(stripped.utf8)) == value)
         #expect(try !String(decoding: JSONEncoder().encode(value), as: UTF8.self).contains("showBadge"))
-        // Groups are named by their accounts' emails; a stored group name or badge text is neither read nor written.
-        let written = try String(decoding: JSONEncoder().encode(value), as: UTF8.self)
-        #expect(!written.contains("\"name\"") && !written.contains("commonBadgeText"))
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-stored-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
