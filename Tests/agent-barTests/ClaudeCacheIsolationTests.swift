@@ -13,6 +13,7 @@ struct ClaudeCacheIsolationTests {
             apiError: "rate-limited", usageSource: .oauthApi, weeklyWindowLabel: nil)
         try cache.write(data: failure, timestamp: now, credentialCacheKey: "account-A", rateLimitedCount: 1,
                         retryAfterUntil: now.addingTimeInterval(120))
+        cache.expire()
         let limited = try cache.readState(now: now.addingTimeInterval(65), credentialCacheKey: "account-A")
         #expect(limited.isFresh)
         #expect(limited.data.weeklyUsedPercent == nil)

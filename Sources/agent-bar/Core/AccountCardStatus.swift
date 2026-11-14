@@ -21,10 +21,15 @@ struct AccountCardStatus: Equatable {
             if refreshing || snapshot.note == ProviderSnapshot.notLoadedNote { return Self(tone: .quiet, text: String(localized: "Loading usage…")) }
             return Self(tone: .attention, text: snapshot.note ?? String(localized: "Could not load usage"))
         }
-        let updated = TokenFormatters.relativeUpdateString(from: now, updatedAt: snapshot.updatedAt)
         if snapshot.isStale {
+            guard snapshot.hasKnownUpdateTime else {
+                return Self(tone: .attention, text: String(localized: "Couldn't refresh"), detail: snapshot.note)
+            }
+            let updated = TokenFormatters.relativeUpdateString(from: now, updatedAt: snapshot.updatedAt)
             return Self(tone: .attention, text: String(localized: "Couldn't refresh · updated \(updated)"), detail: snapshot.note)
         }
+        guard snapshot.hasKnownUpdateTime else { return Self(tone: .ok, text: "") }
+        let updated = TokenFormatters.relativeUpdateString(from: now, updatedAt: snapshot.updatedAt)
         return Self(tone: .ok, text: String(localized: "Updated \(updated)"))
     }
 }

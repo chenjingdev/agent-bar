@@ -134,6 +134,10 @@ struct GroupAccountListView: View {
                     guard let id = new.first(where: { !old.contains($0) }) else { return }
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id) }
                 }
+                .onChange(of: accounts.filter { store.couponPanel(for: $0).line == .choosing }.map(\.id)) { old, new in
+                    guard let id = new.first(where: { !old.contains($0) }) else { return }
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id) }
+                }
                 // Dragged near the top or bottom, the list scrolls toward that edge.
                 .task(id: autoScroll) { await scrollWhileDragging(proxy) }
             }
@@ -317,6 +321,7 @@ struct GroupAccountListView: View {
                            decline: { store.cancelClaudeCodeConfirmation() },
                            openLog: { store.openClaudeCodeLog() },
                            useCoupon: { store.askToUseCoupon(account) },
+                           chooseCoupon: { store.chooseCoupon($0, for: account) },
                            confirmCoupon: { store.confirmCoupon(account) },
                            cancelCoupon: { store.cancelCoupon(account) }))
     }
@@ -425,7 +430,8 @@ struct GroupAccountListView: View {
     // could not be refreshed say so in their own rows.
     private func updated(_ accounts: [UsageAccount], now: Date) -> String {
         if store.isRefreshing { return String(localized: "Refreshing…") }
-        guard let oldest = accounts.map({ store.snapshot(for: $0) }).filter({ !$0.isStale }).map(\.updatedAt).min() else { return "" }
+        let freshSnapshots = accounts.map { store.snapshot(for: $0) }.filter { !$0.isStale && $0.hasKnownUpdateTime }
+        guard let oldest = freshSnapshots.map(\.updatedAt).min() else { return "" }
         return String(localized: "Updated \(TokenFormatters.relativeUpdateString(from: now, updatedAt: oldest))")
     }
 }

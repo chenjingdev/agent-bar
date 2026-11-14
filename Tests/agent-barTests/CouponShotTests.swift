@@ -65,8 +65,8 @@ struct CouponShotTests {
         // Usage that fits each state: none left after a full reset, well under the limits when there is nothing to reset.
         func row(_ panel: CouponPanel, provider: ProviderKind = .codex) -> GroupAccountRow {
             let usage = switch panel.line {
-            case .result(.reset, _): (fiveHour: 0, weekly: 0)
-            case .result(.nothingToReset, _): (fiveHour: 12, weekly: 5)
+            case .result(.reset, _, _): (fiveHour: 0, weekly: 0)
+            case .result(.nothingToReset, _, _): (fiveHour: 12, weekly: 5)
             default: (fiveHour: 96, weekly: 41)
             }
             return GroupAccountRow(provider: provider, badge: provider == .codex ? "CX" : "CL",
@@ -76,7 +76,7 @@ struct CouponShotTests {
         return [
             ShotState(id: "none", title: "쿠폰 없음 (지금과 같음)", row: row(.none)),
             ShotState(id: "offer", title: "쿠폰 있음", row: row(CouponPanel(coupons: codex, line: nil))),
-            ShotState(id: "confirm", title: "[초기화] 누름 → 확인", row: row(CouponPanel(coupons: codex, line: .confirmation))),
+            ShotState(id: "confirm", title: "[초기화] 누름 → 확인", row: row(CouponPanel(coupons: codex, line: .confirmation()))),
             ShotState(id: "progress", title: "[확인] 누름 → 도는 중", row: row(CouponPanel(coupons: codex, line: .progress))),
             ShotState(id: "done", title: "끝남", row: row(CouponPanel(coupons: codex, line: .result(.reset, left: 2)))),
             ShotState(id: "nothing", title: "초기화할 것 없음", row: row(CouponPanel(coupons: codex, line: .result(.nothingToReset, left: nil)))),

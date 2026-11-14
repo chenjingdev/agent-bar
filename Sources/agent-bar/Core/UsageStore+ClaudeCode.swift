@@ -527,7 +527,12 @@ extension UsageStore {
         if claudeCodeConfirmationShown { claudeCodeConfirmation = nil }
         claudeCodeConfirmationShown = false
         // A coupon question goes with the panel too; a coupon being used goes on.
-        couponLines = couponLines.filter { $0.value != .confirmation }
+        couponLines = couponLines.filter { entry in
+            switch entry.value {
+            case .choosing, .confirmation: return false
+            case .progress, .result: return true
+            }
+        }
     }
 
     // A new result has not been on screen yet, unless the open panel shows its account right now.

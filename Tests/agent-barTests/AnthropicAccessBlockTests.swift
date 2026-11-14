@@ -39,16 +39,19 @@ struct AnthropicAccessBlockTests {
         #expect(try Data(contentsOf: file) == before)
     }
 
-    @Test func theUsageReadNamesLimiRatherThanClaudeCode() async throws {
+    @Test func theUsageReadNamesTheInstalledClaudeCode() async throws {
         let directory = try credentialDirectory(expiresAt: 4_102_444_800_000); defer { try? FileManager.default.removeItem(at: directory) }
         let agents = SentAgents()
         let provider = ClaudeUsageProvider(directory: directory, transport: { request in
             agents.append(request.value(forHTTPHeaderField: "User-Agent"))
             return reply(request, status: 200, body: #"{"five_hour":{"utilization":10,"resets_at":null}}"#)
-        })
+        }, couponUserAgent: { "claude-cli/2.1.330 (external, cli)" })
+        #expect(ClaudeCouponClient.userAgent(installed: ClaudeCodeVersion(major: 2, minor: 1, patch: 340)) == "claude-cli/2.1.340 (external, cli)")
+        // An older or unreadable Claude Code sends the oldest version the reset program accepts.
+        #expect(ClaudeCouponClient.userAgent(installed: ClaudeCodeVersion(major: 2, minor: 1, patch: 200)) == "claude-cli/2.1.295 (external, cli)")
+        #expect(ClaudeCouponClient.userAgent(installed: nil) == "claude-cli/2.1.295 (external, cli)")
         _ = await provider.load()
-        #expect(agents.all == [AppInfo.userAgent])
-        #expect(agents.all.allSatisfy { $0?.localizedCaseInsensitiveContains("claude") == false })
+        #expect(agents.all == ["claude-cli/2.1.330 (external, cli)"])
     }
 
     @Test func anExpiredSignInStillAsksToReconnect() async throws {

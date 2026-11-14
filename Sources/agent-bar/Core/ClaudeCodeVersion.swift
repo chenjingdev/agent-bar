@@ -49,3 +49,24 @@ enum ClaudeCodeVersionCheck: Equatable, Sendable {
         }
     }
 }
+
+// Every Claude request (usage, coupons, reset) names the installed Claude Code the way Claude Code itself does, as
+// agent-bar does. The reset program reads `cli_version` and `surface` from this header: without it the account is
+// ineligible ("surface") and lists no grants, and below some version it is ineligible ("cli_version"; 2.1.200 was refused
+// and 2.1.295 accepted on 2026-10-09). An older or unreadable install sends that version.
+enum ClaudeCouponClient {
+    static let minimumVersion = ClaudeCodeVersion(major: 2, minor: 1, patch: 295)
+
+    // Read the installed version once at launch on the provider's background task.
+    static let userAgent: String = userAgent(installed: {
+        guard let output = try? SystemClaudeCLI().run(["--version"],
+            environment: ProviderCLI.processEnvironment(),
+            directory: FileManager.default.homeDirectoryForCurrentUser, timeout: 5),
+            output.status == 0 else { return nil }
+        return ClaudeCodeVersion(output: output.text)
+    }())
+
+    static func userAgent(installed: ClaudeCodeVersion?) -> String {
+        "claude-cli/\(max(installed ?? minimumVersion, minimumVersion)) (external, cli)"
+    }
+}

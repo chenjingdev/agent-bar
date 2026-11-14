@@ -28,6 +28,11 @@ struct AccountCardStatusTests {
                                             detail: "The request timed out."))
     }
 
+    @Test func invalidLastUpdateTimeDoesNotAppearInARefreshWarning() {
+        let result = status(snapshot(updatedSecondsAgo: now.timeIntervalSince1970, stale: true, note: "The request timed out."))
+        #expect(result == AccountCardStatus(tone: .attention, text: "Couldn't refresh", detail: "The request timed out."))
+    }
+
     @Test func signInAndDeletionComeBeforeUsage() {
         #expect(status(snapshot(signIn: true)).text == "Sign-in required")
         #expect(status(snapshot(signIn: true)).tone == .attention)

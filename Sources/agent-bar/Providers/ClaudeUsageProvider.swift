@@ -20,6 +20,7 @@ struct ClaudeUsageProvider: UsageProviding {
     var transport: @Sendable (URLRequest) async throws -> (Data, URLResponse) = {
         try await URLSession.shared.data(for: $0)
     }
+    var couponUserAgent: @Sendable () -> String = { ClaudeCouponClient.userAgent }
 
     func load() async -> ProviderSnapshot {
         await Task.detached(priority: .utility) {
@@ -38,8 +39,8 @@ struct ClaudeUsageProvider: UsageProviding {
                     try control.checkCancellation()
                     credentials = try readCredentials()
                 }
-                let couponsDue = couponsDue()
-                let remoteResult = try await resolveRemoteUsage(credentials: credentials, withCoupons: couponsDue)
+                let remoteResult = try await resolveRemoteUsage(credentials: credentials, withCoupons: couponsDue())
+                try control.checkCancellation()
                 guard credentials.cacheKey == (try readCredentials().cacheKey) else {
                     throw AccountError.message(String(localized: "The CLI account changed during the request. Refresh again."))
                 }
@@ -73,7 +74,9 @@ struct ClaudeUsageProvider: UsageProviding {
                     isStale: remoteResult.isStale,
                     requiresLogin: Self.requiresLogin(for: remoteResult.data.apiError)
                 )
-                if !remoteResult.isStale { snapshot.resetCoupons = noteCoupons(answer: remoteResult.couponAnswer) }
+                if !remoteResult.isStale {
+                    snapshot.resetCoupons = noteCoupons(answer: remoteResult.couponAnswer, subscriptionType: credentials.subscriptionType)
+                }
                 return snapshot
             } catch {
                 let requiresLogin = Self.requiresLogin(for: error)
@@ -96,7 +99,7 @@ struct ClaudeUsageProvider: UsageProviding {
         }.value
     }
 
-    private func resolveRemoteUsage(credentials: ClaudeCredentials, withCoupons: Bool = false) async throws -> RemoteUsageResult {
+    private func resolveRemoteUsage(credentials: ClaudeCredentials, withCoupons: Bool) async throws -> RemoteUsageResult {
         try control.checkCancellation()
         let cache = ClaudeUsageCache(overrideURL: cacheURL, enabled: cacheURL != nil)
         let now = Date.now
@@ -115,6 +118,7 @@ struct ClaudeUsageProvider: UsageProviding {
         let planName = planName(from: credentials.subscriptionType)
         try control.checkCancellation()
         let apiResult = await fetchUsageApi(accessToken: credentials.accessToken, withCoupons: withCoupons)
+        try control.checkCancellation()
 
         if let payload = apiResult.data {
             let selectedWeeklyWindow = Self.selectWeeklyWindow(from: payload)
@@ -192,7 +196,9 @@ struct ClaudeUsageProvider: UsageProviding {
         }
 
         if !isRateLimited {
-            try? cache.write(data: failureData, timestamp: now, credentialCacheKey: credentials.cacheKey)
+            let goodState = cache.makeLastGoodState(from: previousCache, credentialCacheKey: credentials.cacheKey)
+            try? cache.write(data: failureData, timestamp: now, credentialCacheKey: credentials.cacheKey,
+                             lastGoodData: goodState?.data, lastGoodTimestamp: goodState?.updatedAt)
         }
         return RemoteUsageResult(
             data: failureData,
@@ -238,7 +244,7 @@ struct ClaudeUsageProvider: UsageProviding {
         }
     }
 
-    private func fetchUsageApi(accessToken: String, withCoupons: Bool = false) async -> UsageApiResult {
+    private func fetchUsageApi(accessToken: String, withCoupons: Bool) async -> UsageApiResult {
         do {
             let request = try makeUsageRequest(accessToken: accessToken, withCoupons: withCoupons)
             try control.checkCancellation()
@@ -274,8 +280,9 @@ struct ClaudeUsageProvider: UsageProviding {
     }
 
     // With `withCoupons` the same read also brings the account's coupons: the answer holds the usage as well. A second
-    // read right after the first is refused (429), so the coupons never get a request of their own.
-    private func makeUsageRequest(accessToken: String, withCoupons: Bool = false) throws -> URLRequest {
+    // read right after the first is refused (429), so the coupons never get a request of their own. Every read names
+    // the installed Claude Code (`ClaudeCouponClient`).
+    private func makeUsageRequest(accessToken: String, withCoupons: Bool) throws -> URLRequest {
         guard let url = withCoupons ? ClaudeCedar.readURL : URL(string: "https://api.anthropic.com/api/oauth/usage") else {
             throw ClaudeUsageError.invalidURL
         }
@@ -285,9 +292,7 @@ struct ClaudeUsageProvider: UsageProviding {
         request.timeoutInterval = 15
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        // Limi names itself rather than posing as Claude Code: it tells people
-        // how it reads Claude usage, and says the same to Anthropic.
-        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(couponUserAgent(), forHTTPHeaderField: "User-Agent")
         return request
     }
 
@@ -832,34 +837,45 @@ extension ClaudeUsageProvider {
     func couponRecord() -> ClaudeCouponRecord? {
         guard let url = couponRecordURL, let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(ClaudeCouponRecord.self, from: data)
+        guard let record = try? decoder.decode(ClaudeCouponRecord.self, from: data),
+              record.userAgent == couponUserAgent(), record.includesConditions == true else { return nil }
+        return record
     }
 
     // Whether this read should also ask for the coupons. Never without a usage cache, so tests and the claim do not.
     func couponsDue(now: Date = .now) -> Bool {
         guard cacheURL != nil else { return false }
-        return couponRecord().map { now >= $0.nextCheck } ?? true
+        guard let record = couponRecord() else { return true }
+        return now >= record.nextCheck || (record.coupons != nil && record.coupons?.options == nil)
     }
 
     // The coupons to show after a read: from its answer when it asked for them, else what was last known, less any
     // whose last day has passed.
-    func noteCoupons(answer: Data?, now: Date = .now) -> UsageResetCoupons? {
+    func noteCoupons(answer: Data?, subscriptionType: String = "", now: Date = .now) -> UsageResetCoupons? {
+        let agent = couponUserAgent()
+        let plan = subscriptionType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // The usage response can omit the 5h window before it has data.
+        let planHasFiveHour = plan == "max" || plan == "pro"
         let previous = couponRecord()
-        var record = ClaudeCouponRecord(coupons: previous?.coupons, nextCheck: previous?.nextCheck ?? now)
-        if var coupons = record.coupons {
-            coupons.count -= coupons.expiries.filter { $0 <= now }.count
-            coupons.expiries.removeAll { $0 <= now }
-            record.coupons = coupons.usable
-        }
+        var record = ClaudeCouponRecord(coupons: previous?.coupons, nextCheck: previous?.nextCheck ?? now,
+                                        userAgent: agent, includesConditions: true)
+        record.coupons = record.coupons?.pruningExpired(now: now)
         if let answer {
             let block = ClaudeCedar.block(from: answer)
             if let block, block.eligible != true, block.ineligibleReason == "unavailable" {
                 // A service fault says nothing about the coupons; keep what was known.
                 record.nextCheck = now.addingTimeInterval(ClaudeCouponRecord.failureInterval)
             } else {
-                record.coupons = block.flatMap { ClaudeCedar.coupons($0, now: now) }
-                record.nextCheck = now.addingTimeInterval(block?.eligible == true ? ClaudeCouponRecord.interval
-                                                                                  : ClaudeCouponRecord.ineligibleInterval)
+                let hasFiveHour = (try? JSONDecoder().decode(UsageApiResponse.self, from: answer))?.fiveHour != nil
+                    || planHasFiveHour
+                record.coupons = block.flatMap { ClaudeCedar.coupons($0, hasFiveHour: hasFiveHour, now: now) }
+                if block?.eligible == true {
+                    let waiting = record.coupons?.options?.contains(where: { !$0.canRedeem }) == true
+                    record.nextCheck = now.addingTimeInterval(waiting ? ClaudeCouponRecord.failureInterval
+                                                                    : ClaudeCouponRecord.interval)
+                } else {
+                    record.nextCheck = now.addingTimeInterval(ClaudeCouponRecord.ineligibleInterval)
+                }
             }
         }
         if record != previous, let url = couponRecordURL {
@@ -875,9 +891,12 @@ extension ClaudeUsageProvider {
     // Uses the grant in `coupons.claim` for the account in `directory`. Its organization comes from the account's own
     // config file, the way Claude Code finds it.
     func useCoupon(_ coupons: UsageResetCoupons) async -> CouponOutcome {
-        guard case .claudeGrant(let grant) = coupons.claim else { return .tryLater }
+        guard coupons.canRedeem, case .claudeGrant(let grant) = coupons.claim else { return .tryLater }
+        let couponAgent = couponUserAgent()
         return await Task.detached(priority: .userInitiated) { () -> CouponOutcome in
-            guard let organization = (try? ProviderCLI.claudeLocalIdentity(directory: directory))?.organizationID,
+            guard let identity = try? statusReader(directory, control),
+                  expectedIdentity?.comparison(to: identity) != .different,
+                  let organization = identity.organizationID,
                   let url = ClaudeCedar.claimURL(organization: organization) else { return .signInAgain }
             let credentials: ClaudeCredentials
             do {
@@ -890,14 +909,35 @@ extension ClaudeUsageProvider {
             } catch {
                 return Self.requiresLogin(for: error) ? .signInAgain : .tryLater
             }
-            let requestID = await ClaudeClaimMemory.shared.requestID(for: grant)
+            let claimKey = organization + ":" + grant
+            let retryID = await ClaudeClaimMemory.shared.pendingRequestID(for: claimKey)
+            if retryID == nil {
+                do {
+                    let check = try makeUsageRequest(accessToken: credentials.accessToken, withCoupons: true)
+                    try control.checkCancellation()
+                    let (data, response) = try await transport(check)
+                    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    if status == 401 { return .signInAgain }
+                    guard status == 200, let block = ClaudeCedar.block(from: data) else { return .tryLater }
+                    let current = noteCoupons(answer: data, subscriptionType: credentials.subscriptionType)
+                    let options = current.map { $0.options ?? [$0.selectedOption] } ?? []
+                    guard ClaudeCedar.canRedeem(grant, in: block),
+                          let selected = options.first(where: { $0.claim == coupons.claim && $0.scope == coupons.scope }),
+                          selected.canRedeem,
+                          selected.affectedUsagePercent != 0 || coupons.affectedUsagePercent == 0 else { return .conditionsChanged }
+                } catch {
+                    return .tryLater
+                }
+            }
+            guard (try? readCredentials().cacheKey) == credentials.cacheKey else { return .signInAgain }
+            let requestID = retryID ?? UUID().uuidString
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = 25
             request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
             request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
+            request.setValue(couponAgent, forHTTPHeaderField: "User-Agent")
             request.httpBody = try? JSONSerialization.data(withJSONObject: ["program": "cedar_ember", "grant_id": grant, "request_id": requestID])
             do {
                 try control.checkCancellation()
@@ -906,19 +946,19 @@ extension ClaudeUsageProvider {
                 switch status {
                 case 200...299:
                     let answer = ClaudeCedar.outcome(data)
-                    if answer.unconfirmed { await ClaudeClaimMemory.shared.remember(requestID, for: grant) }
-                    else { await ClaudeClaimMemory.shared.forget(grant) }
+                    if answer.unconfirmed { await ClaudeClaimMemory.shared.remember(requestID, for: claimKey) }
+                    else { await ClaudeClaimMemory.shared.forget(claimKey) }
                     return answer.outcome
                 case 401: return .signInAgain
                 case 403: return AnthropicAccessBlock.matches(status: status, body: data) ? .tryLater : .signInAgain
                 case 429: return .tryLater
                 default:
                     // It may have gone through; a second press sends the same request id.
-                    await ClaudeClaimMemory.shared.remember(requestID, for: grant)
+                    await ClaudeClaimMemory.shared.remember(requestID, for: claimKey)
                     return .tryLater
                 }
             } catch {
-                await ClaudeClaimMemory.shared.remember(requestID, for: grant)
+                await ClaudeClaimMemory.shared.remember(requestID, for: claimKey)
                 return .tryLater
             }
         }.value

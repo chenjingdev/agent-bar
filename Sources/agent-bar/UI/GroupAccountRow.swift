@@ -11,8 +11,9 @@ struct GroupAccountRow: View {
         var confirm: () -> Void = {}
         var decline: () -> Void = {}
         var openLog: (() -> Void)? = nil
-        // "Reset" on the coupon line, then OK and Cancel on its question.
+        // "Reset" on the coupon line, a choice of coupon, then OK or Cancel.
         var useCoupon: () -> Void = {}
+        var chooseCoupon: (UsageResetCoupons.Claim) -> Void = { _ in }
         var confirmCoupon: () -> Void = {}
         var cancelCoupon: () -> Void = {}
     }
@@ -42,7 +43,8 @@ struct GroupAccountRow: View {
                 titleLine
                 cells
                 if coupon.shows {
-                    CouponLineView(panel: coupon, use: actions.useCoupon, confirm: actions.confirmCoupon,
+                    CouponLineView(panel: coupon, use: actions.useCoupon, choose: actions.chooseCoupon,
+                                   confirm: actions.confirmCoupon,
                                    cancel: actions.cancelCoupon)
                 }
                 // Only what needs attention; a fresh account says nothing, and the footer says when the list was updated.

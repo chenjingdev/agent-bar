@@ -414,16 +414,28 @@ final class UsageStore: ObservableObject {
     // What a used coupon changes before the service is asked again: one fewer after a reset, none when the service has
     // none left. After a reset the account's usage is read again at once, past the usual wait and Claude's cache.
     func applyCouponOutcome(_ outcome: CouponOutcome, coupons: UsageResetCoupons, for account: UsageAccount) {
-        guard var snapshot = snapshots[account.id] else { return }
+        guard Self.acceptsResult(request: account, current: accounts.first(where: { $0.id == account.id })),
+              var snapshot = snapshots[account.id] else { return }
         switch outcome {
-        case .reset: snapshot.resetCoupons = coupons.usingOne()
-        case .noCoupon: snapshot.resetCoupons = nil
+        case .reset:
+            snapshot.resetCoupons = coupons.usingOne()
+            if account.provider == .claude {
+                snapshot.resetCoupons?.redeemable = false
+                snapshot.resetCoupons?.affectedUsagePercent = nil
+            }
+        case .noCoupon:
+            snapshot.resetCoupons = account.provider == .claude ? coupons.withholdingSelectedOption() : nil
+        case .conditionsChanged:
+            guard account.provider == .claude, let directory = credentialDirectory(for: account) else { return }
+            snapshot.resetCoupons = ClaudeUsageProvider(directory: directory, cacheURL: files.cache(account)).couponRecord()?.coupons
         case .nothingToReset, .signInAgain, .tryLater: return
         }
         snapshots[account.id] = snapshot
-        guard outcome == .reset else { return }
+        let refreshClaudeCoupons = account.provider == .claude && (outcome == .reset || outcome == .noCoupon)
+        guard outcome == .reset || refreshClaudeCoupons else { return }
         nextEligibleRefresh[account.id] = nil
-        if account.provider == .claude {
+        if refreshClaudeCoupons {
+            controls[account.id]?.cancel()
             let cache = files.cache(account)
             ClaudeUsageCache(overrideURL: cache, enabled: true).expire()
             try? FileManager.default.removeItem(at: ClaudeCouponRecord.url(nextTo: cache))

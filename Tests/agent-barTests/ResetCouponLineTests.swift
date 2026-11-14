@@ -22,18 +22,53 @@ struct ResetCouponLineTests {
     }
     static var states: [(String, CouponPanel)] {
         var states: [(String, CouponPanel)] = []
-        for scope in [UsageResetCoupons.Scope.fiveHourAndWeekly, .fiveHour, .weekly] {
+        let scopes: [UsageResetCoupons.Scope] = [.fiveHourAndWeekly, .fiveHour, .weekly, .fableWeekly, .fiveHourAndFableWeekly]
+        for scope in scopes {
             let coupons = coupons(scope)
             states += [("offer-\(scope)", CouponPanel(coupons: coupons, line: nil)),
-                       ("confirm-\(scope)", CouponPanel(coupons: coupons, line: .confirmation)),
+                       ("confirm-\(scope)", CouponPanel(coupons: coupons, line: .confirmation())),
                        ("done-\(scope)", CouponPanel(coupons: coupons, line: .result(.reset, left: 11)))]
         }
+        var blocked = coupons(.fableWeekly)
+        blocked.redeemable = false
+        states.append(("unavailable", CouponPanel(coupons: blocked, line: nil)))
         let coupons = coupons()
         states.append(("progress", CouponPanel(coupons: coupons, line: .progress)))
         for outcome in [CouponOutcome.nothingToReset, .noCoupon, .signInAgain, .tryLater] {
             states.append(("\(outcome)", CouponPanel(coupons: coupons, line: .result(outcome, left: nil))))
         }
         return states
+    }
+
+    @Test func mixedCouponsDescribeTheTotalFableCountAndNextScope() {
+        var mixed = Self.coupons(.weekly, count: 1)
+        mixed.totalCount = 4
+        mixed.fableCount = 3
+        let summary = CouponWords.summary(mixed, Self.korean)
+        #expect(summary.contains("쿠폰 4장(Fable 3장)"))
+        #expect(summary.contains("다음은 주간"))
+    }
+
+    @Test func chooserFitsBothKindsAndExplainsBlockedOption() throws {
+        let weekly = UsageResetCoupons.Option(scope: .weekly, claim: .claudeGrant(grantID: "weekly"), count: 1, redeemable: true)
+        let fable = UsageResetCoupons.Option(scope: .fiveHourAndFableWeekly, claim: .claudeGrant(grantID: "fable"),
+                                             count: 3, redeemable: false, blockReason: .noFableUsage)
+        var mixed = Self.coupons(.weekly, count: 1)
+        mixed.totalCount = 4
+        mixed.fableCount = 3
+        mixed.options = [weekly, fable]
+        let panel = CouponPanel(coupons: mixed, line: .choosing)
+        #expect(panel.selectionOptions == [weekly, fable])
+        #expect(CouponWords.selectionTitle(weekly, Self.korean) == "주간 (1장)")
+        #expect(CouponWords.selectionTitle(fable, Self.korean) == "5시간·Fable 주간 (3장)")
+        #expect(CouponWords.selectionDetail(fable, Self.korean) == "Fable 사용량 필요")
+        #expect(!CouponWords.summary(mixed, Self.korean).contains("다음은"))
+        for bundle in [Bundle.main, Self.korean] {
+            let chooser = CouponLineView(panel: panel, bundle: bundle)
+            let size = NSHostingView(rootView: chooser.frame(width: Self.column)).fittingSize
+            #expect(size.width <= Self.column)
+            #expect(size.height > CouponLineView.height * 2)
+        }
     }
 
     @Test func everyStateIsOneLineOfTheSameHeightThatFitsInEnglishAndKorean() throws {
@@ -74,7 +109,7 @@ struct ResetCouponLineTests {
         #expect(!store.couponPanel(for: fixture.claude).shows)
 
         store.askToUseCoupon(account)
-        #expect(store.couponPanel(for: account).line == .confirmation)
+        #expect(store.couponPanel(for: account).line == .confirmation())
         store.cancelCoupon(account)
         #expect(store.couponPanel(for: account).line == nil)
         #expect(await fixture.service.calls == 0)
@@ -115,8 +150,30 @@ struct ResetCouponLineTests {
         try await fixture.waitFor { !store.couponPanel(for: account).shows }
     }
 
-    nonisolated static func snapshot(_ coupons: UsageResetCoupons?, stale: Bool = false) -> ProviderSnapshot {
-        var snapshot = ProviderSnapshot(provider: .codex, updatedAt: .now,
+    @Test func claudeChooserConfirmsTheSelectedKindBeforeClaimingIt() async throws {
+        let weekly = UsageResetCoupons.Option(scope: .weekly, claim: .claudeGrant(grantID: "weekly"), count: 1, redeemable: true)
+        let fable = UsageResetCoupons.Option(scope: .fiveHourAndFableWeekly, claim: .claudeGrant(grantID: "fable"),
+                                             count: 2, redeemable: true, affectedUsagePercent: 26)
+        let coupons = UsageResetCoupons(count: 1, scope: weekly.scope, claim: weekly.claim,
+                                       totalCount: 3, fableCount: 2, options: [weekly, fable])
+        let fixture = try CouponStoreFixture(claudeCoupons: coupons)
+        defer { fixture.close() }
+        await fixture.store.refresh()
+        let store = fixture.store, account = fixture.claude
+        store.askToUseCoupon(account)
+        #expect(store.couponPanel(for: account).line == .choosing)
+        store.chooseCoupon(fable.claim, for: account)
+        #expect(store.couponPanel(for: account).coupons?.affectedUsagePercent == 26)
+        #expect(store.couponPanel(for: account).line == .confirmation(fable.claim, fable.scope))
+        #expect(await fixture.service.calls == 0)
+        await fixture.service.next(.nothingToReset)
+        store.confirmCoupon(account)
+        try await fixture.waitFor { await fixture.service.lastClaim == fable.claim }
+        #expect(await fixture.service.calls == 1)
+    }
+
+    nonisolated static func snapshot(_ coupons: UsageResetCoupons?, stale: Bool = false, provider: ProviderKind = .codex) -> ProviderSnapshot {
+        var snapshot = ProviderSnapshot(provider: provider, updatedAt: .now,
             fiveHour: WindowSummary(tokens: 64, limitTokens: 100, resetAt: .now.addingTimeInterval(3600), displayStyle: .percentage),
             weekly: WindowSummary(tokens: 22, limitTokens: 100, resetAt: .now.addingTimeInterval(86_400), displayStyle: .percentage),
             modelWeeklies: [], planName: "Team", sourceDescription: "Fixture", note: nil, isStale: stale, requiresLogin: false)
@@ -135,14 +192,17 @@ private final class CouponStoreFixture {
     let service = CouponService()
     let store: UsageStore
 
-    init() throws {
+    init(claudeCoupons: UsageResetCoupons? = nil) throws {
         var registry = AccountRegistry(accounts: [claude, codex]); registry.repairRepresentatives()
         try files.write(registry, to: files.registryURL)
         try files.write(DisplayConfiguration.initial(registry), to: files.root.appendingPathComponent("display-v2.json"))
         let loader = loader, service = service, codexID = codex.id
         store = UsageStore(settings: AppSettings(defaults: UserDefaults(suiteName: suite)!), files: files, autoRefresh: false,
-                           loadAccount: { account, _ in await loader.load(account, coupons: account.id == codexID) },
-                           useCoupon: { _, _ in await service.use() }, couponResultSeconds: 0.3)
+                           loadAccount: { account, _ in
+                               if account.id == codexID { return await loader.load(account, coupons: true) }
+                               return ResetCouponLineTests.snapshot(claudeCoupons, provider: .claude)
+                           },
+                           useCoupon: { _, coupons in await service.use(coupons.claim) }, couponResultSeconds: 0.3)
     }
     func close() { store.shutdown(); try? FileManager.default.removeItem(at: files.root); UserDefaults().removePersistentDomain(forName: suite) }
     func waitFor(_ condition: () async -> Bool) async throws {
@@ -166,13 +226,15 @@ private actor CouponLoader {
 
 private actor CouponService {
     private(set) var calls = 0
+    private(set) var lastClaim: UsageResetCoupons.Claim?
     private var held = false
     private var outcome = CouponOutcome.reset
     func hold() { held = true }
     func next(_ value: CouponOutcome) { outcome = value }
     func release(_ value: CouponOutcome) { outcome = value; held = false }
-    func use() async -> CouponOutcome {
+    func use(_ claim: UsageResetCoupons.Claim) async -> CouponOutcome {
         calls += 1
+        lastClaim = claim
         while held { try? await Task.sleep(for: .milliseconds(5)) }
         return outcome
     }

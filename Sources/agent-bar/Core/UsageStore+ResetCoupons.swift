@@ -5,33 +5,65 @@ extension UsageStore {
     // What an account's row shows. Coupons come only with fresh usage, so cached or failed usage offers none.
     func couponPanel(for account: UsageAccount) -> CouponPanel {
         let snapshot = snapshot(for: account)
-        let coupons = snapshot.isStale || snapshot.requiresLogin ? nil : snapshot.resetCoupons?.usable
+        var coupons = snapshot.isStale || snapshot.requiresLogin ? nil : snapshot.resetCoupons?.usable
         var line = couponLines[account.id]
-        // The question has nothing to ask about once the coupons are gone.
-        if line == .confirmation && coupons == nil { line = nil }
+        switch line {
+        case .choosing:
+            if (coupons?.options?.count ?? 0) < 2 { line = nil }
+        case .confirmation(let claim, let scope):
+            if let claim, let available = coupons {
+                let options = available.options ?? [available.selectedOption]
+                if let selected = options.first(where: { $0.claim == claim && $0.scope == scope && $0.canRedeem }) {
+                    coupons = available.selecting(selected)
+                } else {
+                    line = nil
+                }
+            } else if coupons?.canRedeem != true {
+                line = nil
+            }
+        default: break
+        }
         return CouponPanel(coupons: coupons, line: line)
     }
 
     // "Reset": the line turns into the question.
     func askToUseCoupon(_ account: UsageAccount) {
-        guard couponPanel(for: account).coupons != nil, couponLines[account.id] == nil || isResult(account.id) else { return }
-        couponLines[account.id] = .confirmation
+        let panel = couponPanel(for: account)
+        guard let coupons = panel.coupons, panel.line == nil || isResult(account.id) else { return }
+        if account.provider == .claude, let options = coupons.options, options.count > 1, options.contains(where: \.canRedeem) {
+            couponLines[account.id] = .choosing
+            return
+        }
+        guard coupons.canRedeem else { return }
+        couponLines[account.id] = account.provider == .claude
+            ? .confirmation(coupons.claim, coupons.scope) : .confirmation()
+    }
+
+    func chooseCoupon(_ claim: UsageResetCoupons.Claim, for account: UsageAccount) {
+        let panel = couponPanel(for: account)
+        guard case .choosing = panel.line,
+              let selected = panel.coupons?.options?.first(where: { $0.claim == claim && $0.canRedeem }) else { return }
+        couponLines[account.id] = .confirmation(selected.claim, selected.scope)
     }
 
     func cancelCoupon(_ account: UsageAccount) {
-        guard couponLines[account.id] == .confirmation else { return }
-        couponLines[account.id] = nil
+        switch couponLines[account.id] {
+        case .choosing, .confirmation: couponLines[account.id] = nil
+        default: break
+        }
     }
 
     // OK on the question: one coupon is used, then how it ended shows.
     func confirmCoupon(_ account: UsageAccount) {
-        guard couponLines[account.id] == .confirmation, let coupons = couponPanel(for: account).coupons else { return }
+        let panel = couponPanel(for: account)
+        guard case .confirmation = panel.line, let coupons = panel.coupons else { return }
         couponLines[account.id] = .progress
         Task { [weak self] in
             guard let self else { return }
             let outcome = await useCoupon(coupons, for: account)
-            let left: Int? = outcome == .reset ? coupons.count - 1 : nil
-            couponLines[account.id] = .result(outcome, left: left)
+            let left: Int? = outcome == .reset ? (coupons.totalCount ?? coupons.count) - 1 : nil
+            let displayedOutcome = account.provider == .claude && outcome == .noCoupon ? .conditionsChanged : outcome
+            couponLines[account.id] = .result(displayedOutcome, left: left, scope: account.provider == .claude ? coupons.scope : nil)
             applyCouponOutcome(outcome, coupons: coupons, for: account)
             let shown = couponLines[account.id]
             try? await Task.sleep(for: .seconds(couponResultSeconds))

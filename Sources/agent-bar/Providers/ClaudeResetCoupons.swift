@@ -19,19 +19,98 @@ enum ClaudeCedar {
         let atLimit: Bool?
         let exhausted: [String]?
         let grants: [Grant]?
+        let nextGrantId: String?
+        let cooldownUntil: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case eligible, ineligibleReason, atLimit, exhausted, grants, nextGrantId, cooldownUntil
+        }
+
+        init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: CodingKeys.self)
+            eligible = try fields.decodeIfPresent(Bool.self, forKey: .eligible)
+            ineligibleReason = try? fields.decodeIfPresent(String.self, forKey: .ineligibleReason)
+            atLimit = try? fields.decodeIfPresent(Bool.self, forKey: .atLimit)
+            exhausted = try? fields.decodeIfPresent([String].self, forKey: .exhausted)
+            grants = (try? fields.decodeIfPresent([DecodedGrant].self, forKey: .grants))?.compactMap(\.grant)
+            nextGrantId = try? fields.decodeIfPresent(String.self, forKey: .nextGrantId)
+            cooldownUntil = try? fields.decodeIfPresent(String.self, forKey: .cooldownUntil)
+        }
+    }
+
+    private struct DecodedGrant: Decodable {
+        let grant: Grant?
+
+        init(from decoder: Decoder) {
+            grant = try? Grant(from: decoder)
+        }
     }
 
     struct Grant: Decodable {
-        let id: String?
-        let resetsLeft: Int?
+        let id: String
+        let resetsLeft: Int
+        let startsAt: String?
         let endsAt: String?
         let clears: [String]?
         let paused: Bool?
         let type: String?
         let givesBackWeekly: Bool?
+        let usableNow: Bool?
+        let useRequiresLimit: Bool?
+        let unavailableReason: String?
+        let blocking: [String]?
+        let affectedUsagePercent: Int?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, resetsLeft, startsAt, endsAt, clears, paused, type, givesBackWeekly
+            case usableNow, useRequiresLimit, unavailableReason, blocking, percentUsed
+        }
+
+        init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: CodingKeys.self)
+            id = try fields.decode(String.self, forKey: .id)
+            resetsLeft = try fields.decode(Int.self, forKey: .resetsLeft)
+            startsAt = try? fields.decodeIfPresent(String.self, forKey: .startsAt)
+            endsAt = try? fields.decodeIfPresent(String.self, forKey: .endsAt)
+            clears = try? fields.decodeIfPresent([String].self, forKey: .clears)
+            paused = try? fields.decodeIfPresent(Bool.self, forKey: .paused)
+            type = try? fields.decodeIfPresent(String.self, forKey: .type)
+            givesBackWeekly = try? fields.decodeIfPresent(Bool.self, forKey: .givesBackWeekly)
+            if fields.contains(.usableNow) {
+                usableNow = (try? fields.decode(Bool.self, forKey: .usableNow)) ?? false
+            } else {
+                usableNow = nil
+            }
+            useRequiresLimit = try? fields.decodeIfPresent(Bool.self, forKey: .useRequiresLimit)
+            unavailableReason = try? fields.decodeIfPresent(String.self, forKey: .unavailableReason)
+            blocking = try? fields.decodeIfPresent([String].self, forKey: .blocking)
+            let percentages = (try? fields.decode([String: UsagePercent].self, forKey: .percentUsed)) ?? [:]
+            let clearedLimits = Set(clears ?? [])
+            affectedUsagePercent = percentages.filter { clearedLimits.contains($0.key) }.values.compactMap(\.value).max()
+        }
+
+        func clearsAny(_ limits: Set<String>) -> Bool {
+            !limits.isDisjoint(with: clears ?? []) || (givesBackWeekly == true && limits.contains("seven_day"))
+        }
+
+        private struct UsagePercent: Decodable {
+            let value: Int?
+
+            init(from decoder: Decoder) {
+                let percent = try? decoder.singleValueContainer().decode(Int.self)
+                value = percent.flatMap { (0...100).contains($0) ? $0 : nil }
+            }
+        }
     }
 
-    enum Kind: Equatable { case session, weekly, full, fable }
+    private struct AvailableGrant {
+        let grant: Grant
+        let ends: Date?
+
+        var kind: Kind { ClaudeCedar.kind(grant) }
+    }
+
+    enum Kind: CaseIterable, Hashable { case session, weekly, fable, full }
 
     // As Claude Code names a grant: what it gives back, else its type, else what it clears.
     static func kind(_ grant: Grant) -> Kind {
@@ -54,33 +133,118 @@ enum ClaudeCedar {
         return (try? decoder.decode(Response.self, from: data))?.cedarEmber
     }
 
-    // The coupons an account can use now: grants that are not paused, have resets left and have not ended. Fable
-    // grants are left out. Of several kinds, the one whose grant ends first is shown, and that kind's count.
-    static func coupons(_ block: Block, now: Date = .now) -> UsageResetCoupons? {
-        guard block.eligible == true else { return nil }
-        let usable = (block.grants ?? []).compactMap { grant -> (grant: Grant, id: String, left: Int, ends: Date?)? in
-            guard let id = grant.id, id.range(of: "^[a-z0-9_-]{1,40}$", options: .regularExpression) != nil,
-                  let left = grant.resetsLeft, left > 0, grant.paused != true, kind(grant) != .fable else { return nil }
-            let ends = grant.endsAt.flatMap(date)
-            if let ends, ends <= now { return nil }
-            return (grant, id, left, ends)
+    // Show the remaining coupons even when the server currently blocks redemption.
+    static func coupons(_ block: Block, hasFiveHour: Bool? = nil, now: Date = .now) -> UsageResetCoupons? {
+        let available = remaining(in: block, now: now)
+        let redeemable = offers(in: block, remaining: available, now: now)
+        let clearing = block.atLimit == true ? redeemable.filter { $0.grant.clearsAny(Set(block.exhausted ?? [])) } : []
+        let preferred = redeemable.first { $0.grant.id == block.nextGrantId }
+            ?? soonestExpiring(clearing.isEmpty ? redeemable : clearing)
+        guard let selected = preferred ?? soonestExpiring(available) else { return nil }
+        let options = Kind.allCases.compactMap { kind -> UsageResetCoupons.Option? in
+            let matching = available.filter { $0.kind == kind }
+            let actionable = redeemable.filter { $0.kind == kind }
+            let target = actionable.first { $0.grant.id == block.nextGrantId }
+                ?? (preferred?.kind == kind ? preferred : nil)
+                ?? soonestExpiring(actionable)
+            guard let representative = target ?? soonestExpiring(matching) else { return nil }
+            return option(for: representative, matching: matching, target: target, in: block, hasFiveHour: hasFiveHour, now: now)
         }
-        // At a limit, a grant that clears it.
-        let exhausted = Set(block.exhausted ?? [])
-        let clearing = block.atLimit == true && !exhausted.isEmpty
-            ? usable.filter { !exhausted.isDisjoint(with: $0.grant.clears ?? []) } : []
-        let candidates = clearing.isEmpty ? usable : clearing
-        guard let first = candidates.min(by: { ($0.ends ?? .distantFuture) < ($1.ends ?? .distantFuture) }) else { return nil }
-        let chosenKind = kind(first.grant)
-        let same = usable.filter { kind($0.grant) == chosenKind }
-        let scope: UsageResetCoupons.Scope = switch chosenKind {
+        guard let selectedOption = options.first(where: { $0.claim == .claudeGrant(grantID: selected.grant.id) }) else { return nil }
+        return UsageResetCoupons(
+            count: selectedOption.count, scope: selectedOption.scope, expiries: selectedOption.expiries,
+            claim: selectedOption.claim, totalCount: options.reduce(0) { $0 + $1.count },
+            fableCount: available.filter { $0.kind == .fable }.reduce(0) { $0 + $1.grant.resetsLeft },
+            redeemable: selectedOption.redeemable, blockReason: selectedOption.blockReason,
+            affectedUsagePercent: selectedOption.affectedUsagePercent, options: options
+        )
+    }
+
+    private static func option(
+        for selected: AvailableGrant, matching: [AvailableGrant], target: AvailableGrant?,
+        in block: Block, hasFiveHour: Bool?, now: Date
+    ) -> UsageResetCoupons.Option {
+        let scope: UsageResetCoupons.Scope = switch selected.kind {
         case .session: .fiveHour
         case .weekly: .weekly
-        case .full, .fable: .fiveHourAndWeekly
+        case .full: .fiveHourAndWeekly
+        case .fable:
+            hasFiveHour == true || selected.grant.clears?.contains("five_hour") == true
+                ? .fiveHourAndFableWeekly : .fableWeekly
         }
-        return UsageResetCoupons(count: same.reduce(0) { $0 + $1.left }, scope: scope,
-                                 expiries: same.flatMap { item in item.ends.map { Array(repeating: $0, count: item.left) } ?? [] }.sorted(),
-                                 claim: .claudeGrant(grantID: first.id))
+        let expiries = matching.flatMap { item in
+            item.ends.map { Array(repeating: $0, count: item.grant.resetsLeft) } ?? []
+        }.sorted()
+        return UsageResetCoupons.Option(
+            scope: scope, claim: .claudeGrant(grantID: selected.grant.id),
+            count: matching.reduce(0) { $0 + $1.grant.resetsLeft }, expiries: expiries,
+            redeemable: target != nil,
+            blockReason: target == nil ? blockReason(for: selected.grant, in: block, now: now) : nil,
+            affectedUsagePercent: target?.grant.affectedUsagePercent
+        )
+    }
+
+    // Recheck the exact grant the user confirmed against the server's current offers.
+    static func canRedeem(_ grantID: String, in block: Block, now: Date = .now) -> Bool {
+        offers(in: block, remaining: remaining(in: block, now: now), now: now).contains { $0.grant.id == grantID }
+    }
+
+    private static func remaining(in block: Block, now: Date) -> [AvailableGrant] {
+        guard block.eligible == true else { return [] }
+        return (block.grants ?? []).compactMap { grant in
+            guard grant.id.range(of: "^[a-z0-9_-]{1,40}$", options: .regularExpression) != nil,
+                  grant.resetsLeft > 0, grant.paused != true else { return nil }
+            if let starts = grant.startsAt.flatMap(date), starts > now { return nil }
+            let ends = grant.endsAt.flatMap(date)
+            if let ends, ends <= now { return nil }
+            return AvailableGrant(grant: grant, ends: ends)
+        }
+    }
+
+    private static func offers(in block: Block, remaining: [AvailableGrant], now: Date) -> [AvailableGrant] {
+        guard !isCoolingDown(block, now: now) else { return [] }
+        // The current Claude Code offers the first usable grant of each kind in the server's order.
+        var kindsSeen = Set<Kind>()
+        let legacyNext = block.nextGrantId.flatMap { next in
+            block.grants?.contains { $0.id == next } == true ? next : nil
+        }
+        return remaining.filter { item in
+            let grant = item.grant
+            guard grant.unavailableReason == nil else { return false }
+            if let usableNow = grant.usableNow {
+                guard usableNow else { return false }
+                let firstOfKind = kindsSeen.insert(item.kind).inserted
+                return firstOfKind || grant.id == block.nextGrantId
+            }
+            // Older replies either specify the only next grant or leave the order to the client.
+            if let next = legacyNext, grant.id != next { return false }
+            return grant.blocking?.isEmpty != false && !needsLimit(grant, in: block)
+        }
+    }
+
+    private static func blockReason(for grant: Grant, in block: Block, now: Date) -> UsageResetCoupons.BlockReason {
+        if isCoolingDown(block, now: now) || grant.unavailableReason == "cooldown" { return .cooldown }
+        if kind(grant) == .fable, grant.unavailableReason == "blocked_seven_day"
+            || (grant.unavailableReason == nil && grant.blocking?.contains("seven_day") == true) {
+            return .noFableUsage
+        }
+        if grant.unavailableReason == "needs_limit" || (grant.unavailableReason == nil && needsLimit(grant, in: block)) {
+            return .limitRequired
+        }
+        return .unavailable
+    }
+
+    private static func isCoolingDown(_ block: Block, now: Date) -> Bool {
+        block.cooldownUntil.flatMap(date).map { $0 > now } ?? false
+    }
+
+    private static func needsLimit(_ grant: Grant, in block: Block) -> Bool {
+        let exhausted = Set(block.exhausted ?? [])
+        return grant.useRequiresLimit == true && (block.atLimit != true || (!exhausted.isEmpty && !grant.clearsAny(exhausted)))
+    }
+
+    private static func soonestExpiring(_ grants: [AvailableGrant]) -> AvailableGrant? {
+        grants.min { ($0.ends ?? .distantFuture) < ($1.ends ?? .distantFuture) }
     }
 
     // The answer to a claim.
@@ -110,6 +274,8 @@ enum ClaudeCedar {
 struct ClaudeCouponRecord: Codable, Equatable {
     var coupons: UsageResetCoupons?
     var nextCheck: Date
+    var userAgent: String? = nil
+    var includesConditions: Bool? = nil
 
     static let interval: TimeInterval = 30 * 60
     static let ineligibleInterval: TimeInterval = 6 * 60 * 60
@@ -126,9 +292,10 @@ actor ClaudeClaimMemory {
     static let shared = ClaudeClaimMemory()
     private var pending: [String: (id: String, at: Date)] = [:]
 
-    func requestID(for grant: String, now: Date = .now) -> String {
+    func pendingRequestID(for grant: String, now: Date = .now) -> String? {
         if let held = pending[grant], now.timeIntervalSince(held.at) < 600 { return held.id }
-        return UUID().uuidString
+        pending[grant] = nil
+        return nil
     }
     func remember(_ id: String, for grant: String, now: Date = .now) { pending[grant] = (id, now) }
     func forget(_ grant: String) { pending[grant] = nil }

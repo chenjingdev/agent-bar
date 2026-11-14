@@ -129,6 +129,9 @@ struct ProviderSnapshot: Equatable, Codable, Sendable {
     /// Usage-reset coupons the service reported with this usage. Dropped when the usage is only cached.
     var resetCoupons: UsageResetCoupons? = nil
 
+    // Older Claude caches used the Unix epoch to force a refresh.
+    var hasKnownUpdateTime: Bool { updatedAt.timeIntervalSince1970 > 0 }
+
     var displayedModelWeeklies: [ModelWeeklySummary] {
         guard provider == .claude else { return modelWeeklies }
 
