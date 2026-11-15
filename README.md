@@ -165,7 +165,7 @@ Then set up the menu bar in **Settings › Menu Bar**: add groups, put accounts 
 Requires macOS 14 or later and Swift 6.2 or later (Xcode 26 or later).
 
 ```sh
-git clone https://github.com/kalti-lab/limi.git
+git clone https://github.com/jsiksn/limi.git
 cd limi
 swift test
 ./scripts/build-app.sh

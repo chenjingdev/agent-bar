@@ -7,15 +7,18 @@
 # with every release (Sparkle compares it), commit, then run this.
 # Without --publish it stops after build/release/Limi.zip, so a release can be
 # tried first. With --publish it also:
-#   1. tags v<version> and pushes the tag with origin;
+#   1. tags v<version> and pushes the tag with origin, jsiksn/limi (the source);
 #   2. creates the GitHub release on kalti-lab/limi with Limi.zip, so
 #      https://github.com/kalti-lab/limi/releases/latest/download/Limi.zip is
-#      always the newest one (the site's download button);
+#      always the newest one (the site's download button). kalti-lab/limi holds
+#      only a README and the releases, so the release makes a tag of the same
+#      name there, on that repository's main;
 #   3. adds the version to the update feed, static/limi/appcast.xml in the
 #      kalti-site repository. The site also shows the version from that feed.
 # Then build, deploy and commit the site (its README).
-# A notes file, if given, is HTML: the release notes on GitHub and in the update
-# window. Without one GitHub writes notes from the commits.
+# A notes file, if given, is HTML: the release notes in the update window, and on
+# GitHub followed by a link to the source at this tag. Without one the GitHub
+# release has only that link.
 # Settings (environment):
 #   LIMI_SIGN_IDENTITY    default "Developer ID Application: Jinsik Son (WCP8ASK9HD)"
 #   LIMI_NOTARY_PROFILE   notarytool keychain profile, default kalti-notary
@@ -23,6 +26,7 @@
 #   LIMI_UPDATE_KEY       Sparkle EdDSA private key, default ~/.kalti/signing/limi-sparkle-ed25519.key
 #   LIMI_SITE             kalti-site repository, default ~/Desktop/study/kalti-site
 #   LIMI_REPO             GitHub repository for releases, default kalti-lab/limi
+#   LIMI_SOURCE_REPO      GitHub repository with the source, default jsiksn/limi
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -46,6 +50,7 @@ notary_keychain="${LIMI_NOTARY_KEYCHAIN:-$HOME/.kalti/signing/kalti-signing.keyc
 update_key="${LIMI_UPDATE_KEY:-$HOME/.kalti/signing/limi-sparkle-ed25519.key}"
 site="${LIMI_SITE:-$HOME/Desktop/study/kalti-site}"
 gh_repo="${LIMI_REPO:-kalti-lab/limi}"
+source_repo="${LIMI_SOURCE_REPO:-jsiksn/limi}"
 
 setting() { sed -n "s/^$1=\"\(.*\)\"$/\1/p" "$script_dir/build-app.sh"; }
 version=$(setting app_version)
@@ -101,15 +106,14 @@ fi
 echo "== Publishing $tag"
 git -C "$repo_dir" tag -a "$tag" -m "Limi $version"
 git -C "$repo_dir" push origin "$tag"
-# The release goes on kalti-lab/limi; wait until the tag is there (origin pushes
-# to it directly, and the mirror workflow copies it too).
-for _ in {1..30}; do
-  gh api "repos/$gh_repo/git/ref/tags/$tag" >/dev/null 2>&1 && break
-  sleep 2
-done
-release_notes=(--generate-notes)
-if [[ -n "$notes" ]]; then release_notes=(--notes-file "$notes"); fi
-gh release create "$tag" "$zip" --repo "$gh_repo" --verify-tag --title "Limi $version" "${release_notes[@]}"
+# The release repository has no source: the release makes its own tag there, on
+# its main, and its notes link to the source at this tag.
+github_notes="$out/github-notes.html"
+{
+  if [[ -n "$notes" ]]; then cat "$notes"; echo; fi
+  echo "<p>Source code: <a href=\"https://github.com/$source_repo/tree/$tag\">$source_repo at $tag</a></p>"
+} > "$github_notes"
+gh release create "$tag" "$zip" --repo "$gh_repo" --target main --title "Limi $version" --notes-file "$github_notes"
 
 url="https://github.com/$gh_repo/releases/download/$tag/Limi.zip"
 minimum_system=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$app/Contents/Info.plist")

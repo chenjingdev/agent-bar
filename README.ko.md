@@ -165,7 +165,7 @@ Limi를 처음 열면 계정이 없으므로 **설정 › 계정**이 열립니�
 macOS 14 이상과 Swift 6.2 이상(Xcode 26 이상)이 필요합니다.
 
 ```sh
-git clone https://github.com/kalti-lab/limi.git
+git clone https://github.com/jsiksn/limi.git
 cd limi
 swift test
 ./scripts/build-app.sh
