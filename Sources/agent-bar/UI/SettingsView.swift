@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var restoring = false
     @State private var tab: SettingsTab
     @StateObject private var launchAtLogin = LaunchAtLogin()
+    @ObservedObject private var updates = UpdateStatus.shared
     /// The tallest a tab's content may grow before it scrolls; the window
     /// controller fits it to the display Settings opens on.
     private let maxContentHeight: CGFloat
@@ -145,6 +146,11 @@ struct SettingsView: View {
                         Text("Version")
                         Spacer()
                         Text(Self.version).foregroundStyle(.secondary).textSelection(.enabled)
+                        // Only a build that updates itself has the button.
+                        if updates.isAvailable {
+                            Button("Check for Updates…") { Updates.checkNow() }
+                                .disabled(!updates.canCheck)
+                        }
                     }
                 }
             }

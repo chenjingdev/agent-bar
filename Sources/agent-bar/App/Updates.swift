@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 #if canImport(Sparkle)
 import Sparkle
 #endif
@@ -12,13 +13,31 @@ import Sparkle
 /// Limi lives in the menu bar and never takes focus from the app a person is
 /// using, and an update must not either: with gentle reminders declared, Sparkle
 /// (2.2 and later) shows an update it found by itself behind the other apps
-/// instead of bringing Limi to the front.
+/// instead of bringing Limi to the front. A check someone starts with
+/// Check for Updates… in Settings › General answers in front, up to date or not.
 enum Updates {
     @MainActor static func start() {
         #if canImport(Sparkle)
         UpdateDriver.shared.start()
         #endif
     }
+
+    /// Looks for a new version now: Check for Updates… in Settings › General.
+    @MainActor static func checkNow() {
+        #if canImport(Sparkle)
+        UpdateDriver.shared.checkNow()
+        #endif
+    }
+}
+
+/// What Check for Updates… in Settings needs: whether this build updates itself
+/// at all (a build without Sparkle, or without a feed and key, shows no button),
+/// and whether a check can start now (not while one is under way).
+@MainActor
+final class UpdateStatus: ObservableObject {
+    static let shared = UpdateStatus()
+    @Published fileprivate(set) var isAvailable = false
+    @Published fileprivate(set) var canCheck = false
 }
 
 #if canImport(Sparkle)
@@ -32,7 +51,16 @@ private final class UpdateDriver: NSObject, SPUStandardUserDriverDelegate {
         guard controller == nil,
               Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil,
               Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") != nil else { return }
-        controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: self)
+        let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: self)
+        self.controller = controller
+        UpdateStatus.shared.isAvailable = true
+        controller.updater.publisher(for: \.canCheckForUpdates)
+            .receive(on: DispatchQueue.main)
+            .assign(to: &UpdateStatus.shared.$canCheck)
+    }
+
+    func checkNow() {
+        controller?.checkForUpdates(nil)
     }
 
     nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }

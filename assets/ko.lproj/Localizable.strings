@@ -69,6 +69,7 @@
 "Cancel" = "취소";
 "Cancelling sign-in…" = "로그인을 취소하는 중…";
 "Capsule Fill" = "캡슐 채우기";
+"Check for Updates…" = "업데이트 확인…";
 "Choose an account in your browser, or select Sign in with another account. Return here to confirm. (Up to 5 minutes)" = "브라우저에서 계정을 선택하거나 다른 계정으로 로그인하세요. 그다음 여기로 돌아와 확인하세요. (최대 5분)";
 "Claude did not return a valid sign-in URL with a local callback." = "Claude가 올바른 로그인 주소를 보내 주지 않았습니다.";
 "Claude login required. Sign in to Claude Code, then refresh." = "Claude 로그인이 필요합니다. Claude Code에 로그인한 다음 새로 고치세요.";
