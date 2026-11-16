@@ -576,6 +576,11 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
             run.step("giveBack", "unreadable")
             return lost()
         }
+        // ~/.claude.json may name this account while the default slot holds another one's token. The account's own
+        // unused login is kept aside, so a hand-back that turns out to be someone else's puts it back instead of losing it.
+        let own = hasLendLogin(for: account)
+            ? (try? keychain.readSecret(service: slot.service, account: slot.account)).flatMap { $0 }.flatMap(ClaudeLoginCredential.init(keychainData:))
+            : nil
         var unreadable = false
         for delay in [0] + Self.giveBackRetryDelays {
             if delay > 0 { pause(delay) }
@@ -586,7 +591,13 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
                     if result != .ok { run.step("giveBack", "finishedDespiteError") }
                     return []
                 }
-                run.step("giveBack", "wrongAccount")
+                run.step("giveBack", "wrongAccount", ["account": String(id.uuidString.prefix(4)),
+                                                      "found": String((now.identity.accountUUID ?? "?").prefix(4)),
+                                                      "org": String((now.identity.organizationUUID ?? "?").prefix(4))])
+                if let own, putLogin(own, into: slot, run, step: "restoreOwnLogin") != .invalid, hasLendLogin(for: account) {
+                    run.step("giveBack", "restoredOwnLogin")
+                    return []
+                }
                 try? dropLend(id)
                 return [id]
             }
