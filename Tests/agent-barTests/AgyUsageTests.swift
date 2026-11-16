@@ -63,7 +63,7 @@ struct AgyUsageTests {
         #expect(!live.isStale && live.limitGroups?.count == 2 && live.weekly?.utilization == 0)
         let other = await provider(as: "other@gmail.com", run: signedIn).load()
         #expect(other.isStale && other.note?.contains("Someone@gmail.com") == true)
-        // Signed out: a note to sign in to agy, not a Limi reconnect.
+        // Signed out: a note to sign in to agy, not an AgentBar reconnect.
         let signedOut = await provider(as: "someone@gmail.com", run: .init(output: Data(), log: "", signedOut: true)).load()
         #expect(signedOut.isStale && !signedOut.requiresLogin && signedOut.note == AntigravityUsageProvider.agySignInMessage)
     }

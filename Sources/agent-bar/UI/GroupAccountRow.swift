@@ -7,7 +7,7 @@ struct GroupAccountRow: View {
     struct Actions {
         var use: () -> Void = {}
         var setUp: () -> Void = {}
-        // "Switch" and "Cancel" on the question about a login Limi does not have.
+        // "Switch" and "Cancel" on the question about a login AgentBar does not have.
         var confirm: () -> Void = {}
         var decline: () -> Void = {}
         var openLog: (() -> Void)? = nil

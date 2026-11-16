@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-// The store's side of switching the login Claude Code itself uses to a Limi account ("Use" beside the account). The
+// The store's side of switching the login Claude Code itself uses to an AgentBar account ("Use" beside the account). The
 // engine (ClaudeCodeSwitcher) does the work and blocks, so it always runs on a background task; this file keeps what the
 // panels and Settings › Accounts show about it. Adapted from the original AgentBar.
 
@@ -20,7 +20,7 @@ enum ClaudeCodeAvailability: Equatable, Sendable {
 struct ClaudeCodeActivity {
     let id = UUID()
     let targetID: UUID
-    // The account Claude Code was signed in to when the button was pressed, if Limi has it.
+    // The account Claude Code was signed in to when the button was pressed, if AgentBar has it.
     let previousID: UUID?
     var message: String
 }
@@ -40,7 +40,7 @@ struct ClaudeCodePreparation {
     var failure: String?
 }
 
-// The question asked before a login Limi does not have is removed from Claude Code.
+// The question asked before a login AgentBar does not have is removed from Claude Code.
 struct ClaudeCodeConfirmation: Equatable {
     var accountID: UUID
     var login: ClaudeCodeUnknownLogin
@@ -218,7 +218,7 @@ extension UsageStore {
         startClaudeCodeSwitch(to: account, confirmed: nil)
     }
 
-    // "Switch" on the question about a login Limi does not have. The yes belongs to the login that was shown.
+    // "Switch" on the question about a login AgentBar does not have. The yes belongs to the login that was shown.
     func confirmClaudeCodeSwitch() {
         guard let confirmation = claudeCodeConfirmation else { return }
         claudeCodeConfirmation = nil
@@ -513,7 +513,7 @@ extension UsageStore {
     }
 
     // A result line goes once panels that showed it have closed twice, so it can still be read after the panel closed
-    // by accident; one that was never on screen waits. The question about a login Limi does not have goes with the
+    // by accident; one that was never on screen waits. The question about a login AgentBar does not have goes with the
     // panel that showed it.
     func claudeCodePanelDidClose(group: UUID) {
         guard claudeCodeOpenPanel == group else { return }

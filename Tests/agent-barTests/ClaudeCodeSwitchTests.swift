@@ -913,7 +913,7 @@ struct ClaudeCodeSwitchTests {
             let recovery = f.switcher.recoverInterruptedSwitch(among: f.accounts)
 
             #expect(recovery == ClaudeCodeRecovery(kind: .finished, accountID: target.id, needsLogin: [prev.id],
-                                                   message: "Limi quit while switching."))
+                                                   message: "AgentBar quit while switching."))
             #expect(!f.world.hasItem(f.lendSlot(target)) && !f.lendFolderExists(target))
             #expect(f.defaultEmail == "target@example.test")
             #expect(f.journal == nil)

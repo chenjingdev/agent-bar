@@ -28,7 +28,7 @@ struct ClaudeSlot: Equatable, Sendable {
     }
 
     // The minimal environment, plus both folder variables for a folder. The default login never gets them,
-    // whatever the environment Limi itself was started with.
+    // whatever the environment AgentBar itself was started with.
     var environment: [String: String] { makeEnvironment(from: ProcessInfo.processInfo.environment) }
     func makeEnvironment(from source: [String: String]) -> [String: String] {
         directory.map { ProviderCLI.environment(provider: .claude, directory: $0, from: source) }

@@ -19,7 +19,7 @@ struct ClaudeCodePanel: Equatable {
     enum Line: Equatable {
         // A switch is running.
         case progress(String)
-        // Claude Code holds a login Limi does not have; switching would remove it.
+        // Claude Code holds a login AgentBar does not have; switching would remove it.
         case confirmation(email: String?)
         // How the last switch ended.
         case result(succeeded: Bool, message: String)

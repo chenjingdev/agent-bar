@@ -196,7 +196,7 @@ struct GroupListSortTests {
     @Test func thePanelListsAGroupsAccountsInItsSort() async throws {
         let work = account(.claude, "Claude Work"), personal = account(.codex, "Codex Personal"), side = account(.claude, "Claude Side")
         let hidden = account(.claude, "Claude Hidden")
-        // Never signed in to Limi, so its row reads "--".
+        // Never signed in to AgentBar, so its row reads "--".
         let old = UsageAccount(id: UUID(), provider: .codex, name: "Codex Old")
         let f = try SortFixture([work, personal, side, old, hidden], usage: [
             work.id: snapshot(fiveHour: window(30, resetsIn: 200), weekly: window(40, resetsIn: 3_000)),

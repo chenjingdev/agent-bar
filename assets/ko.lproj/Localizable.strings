@@ -252,7 +252,7 @@
 "agy on this Mac isn't signed in. Run agy in Terminal and sign in, then try again." = "이 Mac의 agy에 로그인되어 있지 않습니다. 터미널에서 agy를 실행해 로그인한 다음 다시 시도하세요.";
 "just now" = "방금";
 
-/* Use and In use: switching the login Claude Code uses to a Limi account. */
+/* Use and In use: switching the login Claude Code uses to an AgentBar account. */
 "Checking Claude Code…" = "Claude Code를 확인하는 중…";
 "Reading the current Claude Code login…" = "지금 Claude Code 로그인을 읽는 중…";
 "Switching Claude Code…" = "Claude Code 계정을 바꾸는 중…";

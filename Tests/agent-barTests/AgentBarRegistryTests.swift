@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import agent_bar
 
-// agent-bar saves accounts without a name and calls each by its login email. Limi reads that file as it is.
+// agent-bar saves accounts without a name and calls each by its login email. AgentBar reads that file as it is.
 struct AgentBarRegistryTests {
     @Test func anAccountWithoutANameIsCalledByItsEmail() throws {
         let json = #"""
@@ -41,7 +41,7 @@ struct AgentBarRegistryTests {
         var config = try JSONDecoder().decode(DisplayConfiguration.self, from: Data(json.utf8))
         config.adoptAgentBarPanels(raw: Data(json.utf8), accounts: [one, two, hidden])
         #expect(config.layouts?.first?.memberIDs == [one, two])
-        // A group Limi saved keeps its own members.
+        // A group AgentBar saved keeps its own members.
         let limi = try JSONEncoder().encode(config)
         var again = try JSONDecoder().decode(DisplayConfiguration.self, from: limi)
         again.layouts![0].memberIDs = nil

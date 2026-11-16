@@ -296,7 +296,7 @@ struct UsageStoreClaudeCodeTests {
     @Test func aSwitchCutShortIsFinishedAtLaunchAndShownOnItsPanel() async throws {
         let f = try SwitchFixture()
         let prev = f.addAccount("prev"), target = f.addAccount("target")
-        // Limi quit after Claude Code was switched, before the previous login was saved.
+        // AgentBar quit after Claude Code was switched, before the previous login was saved.
         f.signInDefault(target)
         try f.files.write(ClaudeCodeSwitchJournal(targetID: target.id, previousID: prev.id, stage: .slotSwitched, startedAt: .now),
                           to: f.files.claudeCodeSwitchJournalURL)
@@ -306,7 +306,7 @@ struct UsageStoreClaudeCodeTests {
         await store.runClaudeCodeStartup()
 
         #expect(store.claudeCodeResults[target.id]
-                == ClaudeCodeResult(succeeded: true, message: "Limi quit while switching. Claude Code now uses target. prev needs to be set up for Claude Code again in Settings › Accounts."))
+                == ClaudeCodeResult(succeeded: true, message: "AgentBar quit while switching. Claude Code now uses target. prev needs to be set up for Claude Code again in Settings › Accounts."))
         #expect(store.claudeCodeAccountID == target.id)
         #expect(!FileManager.default.fileExists(atPath: f.files.claudeCodeSwitchJournalURL.path))
     }
@@ -327,8 +327,8 @@ struct UsageStoreClaudeCodeTests {
         defer { done() }
         store.claudeCodeStarting = true
         #expect(store.isClaudeCodeLocked(work))
-        #expect(store.claudeCodeLockNote(for: work) == "Delete and Reconnect wait until Limi has checked Claude Code.")
-        #expect(store.claudeCodeBusyMessage(for: .reconnect) == "Limi is still checking Claude Code. Reconnect this account in a moment.")
+        #expect(store.claudeCodeLockNote(for: work) == "Delete and Reconnect wait until AgentBar has checked Claude Code.")
+        #expect(store.claudeCodeBusyMessage(for: .reconnect) == "AgentBar is still checking Claude Code. Reconnect this account in a moment.")
     }
 
     @Test func aFailureWarnsThatTheLoginMayHaveChangedOnlyWhenItMayHave() {
@@ -425,7 +425,7 @@ struct UsageStoreClaudeCodeTests {
         let (store, done) = try makeStore(f)
         defer { done() }
         await store.runClaudeCodeStartup()
-        // A switch to b asks about the login Limi does not have; a, c and away have results nobody has seen.
+        // A switch to b asks about the login AgentBar does not have; a, c and away have results nobody has seen.
         store.useInClaudeCode(b)
         #expect(await waitUntil { store.claudeCodeActivity == nil && store.claudeCodeConfirmation?.accountID == b.id })
         for id in [a.id, c.id, away.id] { store.claudeCodeResults[id] = ClaudeCodeResult(succeeded: true, message: "Done.") }

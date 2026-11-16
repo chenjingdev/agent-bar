@@ -3,10 +3,10 @@ import Foundation
 /// The app's name as people see it. It comes from the bundle, which
 /// build-app.sh names from its `app_name` setting, so renaming the app is one
 /// build setting rather than a code change. Internal names (the bundle ID
-/// kr.co.kalti.limi, the ~/.agentbar data folder, the agent-bar module and
+/// dev.chenjing.agent-bar, the ~/.agentbar data folder, the agent-bar module and
 /// AGENTBAR_ variables) stay fixed, so a rename keeps settings and accounts.
 enum AppInfo {
-    static let defaultName = "Limi"
+    static let defaultName = "AgentBar"
 
     static let name: String = {
         // `swift run` and tests have no app bundle to name them.
@@ -24,7 +24,7 @@ enum AppInfo {
         return version
     }()
 
-    /// How the app names itself to the services it asks, such as "Limi/0.1.0":
+    /// How the app names itself to the services it asks, such as "AgentBar/0.1.0":
     /// its own name, never another app's.
     static var userAgent: String { userAgent(name: name, version: version) }
 

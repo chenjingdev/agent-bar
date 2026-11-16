@@ -1,10 +1,10 @@
 import Foundation
 
 /// Reads Antigravity limits without ever holding the Antigravity sign-in:
-/// Google's terms forbid third-party software using it, so Limi asks
-/// Antigravity's own software. With `agy` installed, Limi runs `agy -p /usage`,
+/// Google's terms forbid third-party software using it, so AgentBar asks
+/// Antigravity's own software. With `agy` installed, AgentBar runs `agy -p /usage`,
 /// which prints the quota report without starting a model turn. Without it,
-/// Limi asks the Antigravity app's local language server while the app runs.
+/// AgentBar asks the Antigravity app's local language server while the app runs.
 /// Either way only the one account signed in there can be read.
 ///
 /// Experimental: neither report is a documented interface and either may
@@ -47,16 +47,16 @@ struct AntigravityUsageProvider: Sendable {
     }
 
     /// `/usage` prints the quota report as JSON and starts no model turn, so
-    /// it uses no quota. The log goes to a file of Limi's own, which names the
+    /// it uses no quota. The log goes to a file of AgentBar's own, which names the
     /// account `agy` signed in with.
     static func usageArguments(log: URL) -> [String] {
         ["-p", "/usage", "--output-format", "json", "--print-timeout", "60s", "--log-file", log.path]
     }
 
     /// An `agy` that isn't signed in first fails to sign in silently from its
-    /// keyring. Without a terminal, as when Limi runs it, it then gives up at
+    /// keyring. Without a terminal, as when AgentBar runs it, it then gives up at
     /// once; from a terminal it starts a browser sign-in and waits a minute.
-    /// Limi's runs find no `open` on their PATH, so no browser opens either
+    /// AgentBar's runs find no `open` on their PATH, so no browser opens either
     /// way, and stop as soon as the log shows either line.
     static let signedOutLines = ["Print mode: silent auth failed", "Starting OAuth authentication flow"]
 
@@ -206,7 +206,7 @@ struct AntigravityUsageProvider: Sendable {
         return precise.date(from: text) ?? ISO8601DateFormatter().date(from: text)
     }
 
-    // MARK: For Limi
+    // MARK: For AgentBar
 
     /// The account signed in to `agy`, or to the running app, for connecting
     /// it, with the limits it reports when they can be read.

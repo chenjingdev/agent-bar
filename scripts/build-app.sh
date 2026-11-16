@@ -10,12 +10,13 @@ repo_dir=$(cd "$script_dir/.." && pwd)
 # bundle). Change it here, or with AGENTBAR_APP_NAME, to rename the app.
 # Internal names (bundle ID, ~/.agentbar data, agent-bar module) stay fixed so a
 # rename keeps settings and accounts.
-app_name="${AGENTBAR_APP_NAME:-Limi}"
-# The version people see, and the build number Sparkle compares to offer an
-# update: raise app_build with every release. scripts/release.sh reads both here.
-app_version="1.4.2"
-app_build="12"
-bundle_id="kr.co.kalti.limi"
+app_name="${AGENTBAR_APP_NAME:-AgentBar}"
+# The version people see is VERSION plus the commit count, and the build number
+# Sparkle compares is the commit count (scripts/version.sh), as agent-bar always
+# numbered them, so every installed AgentBar finds a newer build.
+app_version="${AGENTBAR_VERSION:-$("$script_dir/version.sh")}"
+app_build="${AGENTBAR_BUILD_NUMBER:-$("$script_dir/version.sh" --build)}"
+bundle_id="dev.chenjing.agent-bar"
 bundle_name="$app_name.app"
 bundle_path="$repo_dir/$bundle_name"
 install_dir="$HOME/Applications"
@@ -26,21 +27,26 @@ should_install=0
 # the hardened runtime and a secure timestamp, ready for notarization. Any other
 # identity signs as given; none means ad-hoc, for building on your own Mac.
 signing_identity="${AGENTBAR_CODE_SIGN_IDENTITY:-}"
+# Without one, the Developer ID in this Mac's keychain signs, as agent-bar did.
+if [[ -z "$signing_identity" ]]; then
+  signing_identity=$(security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
+fi
 # Automatic updates (Sparkle, Sources/agent-bar/App/Updates.swift). Sparkle is
 # fetched once into .build/vendor and used only if it is the archive checked
 # below. Info.plist gets the feed and the public key updates must be signed with
-# (scripts/update-public-key.txt, made once by scripts/make-update-key.swift).
+# (scripts/update-public-key.txt; the private half is in the keychain under the
+# account dev.chenjing.agent-bar, see scripts/release.sh).
 sparkle_version="2.10.1"
 sparkle_sha256="1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27"
 sparkle_dir="${AGENTBAR_VENDOR_DIR:-$repo_dir/.build/vendor}/Sparkle-$sparkle_version"
-# This fork takes no updates from the official Limi feed (kalti.co.kr): a build
-# updates itself only when AGENTBAR_SPARKLE_FEED names a feed of its own.
-sparkle_feed="${AGENTBAR_SPARKLE_FEED:-}"
+# AgentBar's own feed on its GitHub releases, the one every AgentBar reads.
+sparkle_feed="${AGENTBAR_SPARKLE_FEED:-https://github.com/chenjingdev-archive/agent-bar/releases/latest/download/appcast.xml}"
 update_key_file="$repo_dir/scripts/update-public-key.txt"
 usage="Usage: ./scripts/build-app.sh [--install]
   --install                    also install to ~/Applications (the running app must be closed)
   AGENTBAR_CODE_SIGN_IDENTITY  sign with this identity; a Developer ID makes a release build
-  AGENTBAR_APP_NAME            the app's name (default Limi)
+  AGENTBAR_APP_NAME            the app's name (default AgentBar)
 Releases (sign, notarize, publish): scripts/release.sh"
 
 while (( $# > 0 )); do
@@ -163,6 +169,8 @@ if [[ -n "$sparkle_feed" && -s "$update_key_file" ]]; then
   plutil -insert SUPublicEDKey -string "$(tr -d '[:space:]' < "$update_key_file")" "$info_plist"
   plutil -insert SUEnableAutomaticChecks -bool true "$info_plist"
   plutil -insert SUScheduledCheckInterval -integer 86400 "$info_plist"
+  plutil -insert SURequireSignedFeed -bool true "$info_plist"
+  plutil -insert SUVerifyUpdateBeforeExtraction -bool true "$info_plist"
 else
   echo "note: no AGENTBAR_SPARKLE_FEED (or no $update_key_file), so this build does not update itself" >&2
 fi

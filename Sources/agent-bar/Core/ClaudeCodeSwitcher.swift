@@ -1,10 +1,10 @@
 import Foundation
 
-// Changes the login Claude Code uses by default to an Limi account, and takes the login that was
+// Changes the login Claude Code uses by default to an AgentBar account, and takes the login that was
 // there back into that account's own folder. Everything here blocks: call it from a background task.
 //
 // Each account has one "lend" folder (lend/<account id>/) where Claude Code keeps a login that
-// Limi may hand to the default slot. The browser sign-in that makes that login is done once per account,
+// AgentBar may hand to the default slot. The browser sign-in that makes that login is done once per account,
 // in Settings (`prepareLendLogin`); a switch never opens a browser. Handing a login over uses it up (its
 // refresh token rotates), so the copy left behind is removed, and the login that was in the default slot is
 // lent back to its own account. Only Claude Code writes a login (`claude auth login`, fed a refresh token or
@@ -65,7 +65,7 @@ struct ClaudeCodeSwitchFailure: Equatable, Sendable {
     var needsLogin: [UUID] = []
 }
 
-// The login of an account Limi does not have, as it was shown to the person who was asked about losing it.
+// The login of an account AgentBar does not have, as it was shown to the person who was asked about losing it.
 struct ClaudeCodeUnknownLogin: Equatable, Sendable {
     var email: String?
     var accountUUID: String?
@@ -75,7 +75,7 @@ struct ClaudeCodeUnknownLogin: Equatable, Sendable {
 enum ClaudeCodeSwitchOutcome: Equatable, Sendable {
     case switched(ClaudeCodeSwitched)
     case alreadyInUse
-    // Claude Code holds a login of an account Limi does not have. Nothing was changed; ask, then call again
+    // Claude Code holds a login of an account AgentBar does not have. Nothing was changed; ask, then call again
     // with `confirmedLosing:` set to this login. A yes belongs to the login that was asked about: if the default
     // login is a different unknown one by then, this comes back again.
     case needsConfirmation(ClaudeCodeUnknownLogin)
@@ -314,7 +314,7 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         return Abort(String(localized: "Claude Code's login changed unexpectedly. Check it in Claude Code."), needsLogin: needsLogin + lent)
     }
 
-    // Already there, or a login of someone Limi does not know would disappear without a yes.
+    // Already there, or a login of someone AgentBar does not know would disappear without a yes.
     private func gate(_ current: DefaultLogin, _ run: Run) -> ClaudeCodeSwitchOutcome? {
         if current.identity.hasLogin, current.identity.matches(run.target) { return .alreadyInUse }
         if current.identity.hasLogin, current.accountID == nil {
@@ -668,7 +668,7 @@ final class ClaudeCodeSwitcher: @unchecked Sendable {
         catch { throw Abort(String(localized: "Could not record the switch on this Mac.")) }
     }
 
-    // Call once when Limi starts. Finishes or drops a switch that was cut short; nil when there was none.
+    // Call once when AgentBar starts. Finishes or drops a switch that was cut short; nil when there was none.
     func recoverInterruptedSwitch(among accounts: [UsageAccount]) -> ClaudeCodeRecovery? {
         guard beginOperation() else { return nil }
         defer { endOperation() }

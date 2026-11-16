@@ -2,7 +2,7 @@ import Foundation
 
 // The two programs the switch talks to, behind protocols so a test can stand in for both.
 // Claude Code is the only thing that writes a login; /usr/bin/security is the only thing that reads
-// or removes a Keychain item. Limi never touches the Keychain through the Security API for this.
+// or removes a Keychain item. AgentBar never touches the Keychain through the Security API for this.
 
 struct ClaudeCLIOutput: Sendable {
     // nil when the command did not finish in time.
