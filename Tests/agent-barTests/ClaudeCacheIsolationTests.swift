@@ -33,4 +33,26 @@ struct ClaudeCacheIsolationTests {
         #expect(cache.makeLastGoodState(from: raw, credentialCacheKey: "account-B") == nil)
         #expect(cache.makeLastGoodState(from: raw, credentialCacheKey: nil) == nil)
     }
+    // After a coupon, the cache asks again at the next refresh but keeps when its numbers were read: a refusal right
+    // after shows them with that time, not 1970 ("56 years ago").
+    @Test func expiringAsksAgainButKeepsWhenTheNumbersWereRead() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("agentbar-cache-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = ClaudeUsageCache(overrideURL: directory.appendingPathComponent("usage.json"), enabled: true)
+        let read = Date(timeIntervalSince1970: 1_800_000_000)
+        let good = RemoteUsageData(planName: "Pro", fiveHourUsedPercent: 25, weeklyUsedPercent: 40,
+            fiveHourResetAt: nil, weeklyResetAt: nil, modelWeeklies: nil, apiUnavailable: false,
+            apiError: nil, usageSource: .oauthApi, weeklyWindowLabel: nil)
+        try cache.write(data: good, timestamp: read, credentialCacheKey: "account-A", lastGoodData: good, lastGoodTimestamp: read)
+        #expect(try cache.readState(now: read.addingTimeInterval(10), credentialCacheKey: "account-A").isFresh)
+        cache.expire()
+        let expired = try cache.readState(now: read.addingTimeInterval(10), credentialCacheKey: "account-A")
+        #expect(!expired.isFresh)
+        #expect(expired.updatedAt == read)
+        #expect(cache.makeLastGoodState(from: try cache.readRaw(), credentialCacheKey: "account-A")?.updatedAt == read)
+        // The next read written is fresh again.
+        let next = read.addingTimeInterval(20)
+        try cache.write(data: good, timestamp: next, credentialCacheKey: "account-A", lastGoodData: good, lastGoodTimestamp: next)
+        #expect(try cache.readState(now: next.addingTimeInterval(10), credentialCacheKey: "account-A").isFresh)
+    }
 }

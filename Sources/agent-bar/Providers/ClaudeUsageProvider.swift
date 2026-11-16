@@ -637,6 +637,8 @@ struct ClaudeUsageCacheRecord: Codable {
     let retryAfterUntil: Date?
     let lastGoodData: RemoteUsageData?
     let lastGoodTimestamp: Date?
+    /// Read again at the next refresh whatever the age (`expire()`); the next write drops it.
+    var forceRefresh: Bool? = nil
 }
 
 private struct LegacyClaudeUsageCacheRecord: Decodable {
@@ -724,7 +726,7 @@ struct ClaudeUsageCache {
         return ClaudeUsageCacheState(
             data: displayState.data,
             updatedAt: displayState.updatedAt,
-            isFresh: now.timeIntervalSince(cache.timestamp) < ttl
+            isFresh: cache.forceRefresh != true && now.timeIntervalSince(cache.timestamp) < ttl
         )
     }
 
@@ -752,7 +754,8 @@ struct ClaudeUsageCache {
         rateLimitedCount: Int? = nil,
         retryAfterUntil: Date? = nil,
         lastGoodData: RemoteUsageData? = nil,
-        lastGoodTimestamp: Date? = nil
+        lastGoodTimestamp: Date? = nil,
+        forceRefresh: Bool? = nil
     ) throws {
         guard enabled else { return }
         let record = ClaudeUsageCacheRecord(
@@ -762,7 +765,8 @@ struct ClaudeUsageCache {
             rateLimitedCount: rateLimitedCount,
             retryAfterUntil: retryAfterUntil,
             lastGoodData: lastGoodData,
-            lastGoodTimestamp: lastGoodTimestamp
+            lastGoodTimestamp: lastGoodTimestamp,
+            forceRefresh: forceRefresh
         )
         let directory = cacheURL.deletingLastPathComponent()
         if fileManager.fileExists(atPath: directory.path) == false {
@@ -776,11 +780,12 @@ struct ClaudeUsageCache {
     }
 
     // After a coupon cleared the limits: the next refresh asks again instead of showing the last minute's numbers. A
-    // wait the service asked for still holds.
+    // wait the service asked for still holds. The time of the last read stays, so if that next read is refused (429)
+    // the numbers still say when they are from, not "56 years ago" (jsiksn/limi#1 by chenjingdev).
     func expire() {
         guard let cache = try? readRaw(), cache.data.apiError != "rate-limited" else { return }
-        try? write(data: cache.data, timestamp: Date(timeIntervalSince1970: 0), credentialCacheKey: cache.credentialCacheKey,
-                   lastGoodData: cache.lastGoodData, lastGoodTimestamp: cache.lastGoodTimestamp)
+        try? write(data: cache.data, timestamp: cache.timestamp, credentialCacheKey: cache.credentialCacheKey,
+                   lastGoodData: cache.lastGoodData, lastGoodTimestamp: cache.lastGoodTimestamp, forceRefresh: true)
     }
 
     private func displayState(from cache: ClaudeUsageCacheRecord) -> ClaudeUsageCacheState {

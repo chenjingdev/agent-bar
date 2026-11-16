@@ -95,7 +95,10 @@ struct ClaudeResetCouponTests {
         fixture.transport.answer = (429, Data())
         ClaudeUsageCache(overrideURL: fixture.cacheURL, enabled: true).expire()
         try FileManager.default.removeItem(at: ClaudeCouponRecord.url(nextTo: fixture.cacheURL))
-        #expect(await fixture.provider.load().resetCoupons == nil)
+        let refused = await fixture.provider.load()
+        #expect(refused.resetCoupons == nil)
+        // The numbers shown keep the time they were read (whole seconds in the cache), not 1970.
+        #expect(abs(refused.updatedAt.timeIntervalSince(second.updatedAt)) < 1)
         #expect(fixture.provider.couponsDue())
     }
 
