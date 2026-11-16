@@ -74,3 +74,16 @@ test('time spans', () => {
   assert.equal(span(27 * 60_000, KO), '27분');
   assert.equal(span((5 * 24 + 6) * 3600_000, KO), '5일 6시간');
 });
+
+test('accounts that do not fit scroll between the top and bottom rows, which stay', () => {
+  const many = Array.from({ length: 9 }, (_, index) => account({ id: `a${index}`, email: `a${index}@example.com`, inUse: index === 0, canSwitch: index > 0 }));
+  const { ui, drawn } = surface();
+  Object.assign(ui, { maxHeight: 600, scroll: 200 });
+  const height = drawPanel(ui, state(many), { asking: null }, { dark: false, T: EN });
+  assert.ok(height <= 600, `the panel is ${height} high`);
+  assert.ok(ui.scrollRange > 0);
+  assert.ok(drawn.hits.some((action) => action.do === 'add-menu') && drawn.hits.some((action) => action.do === 'quit'), 'Add account and Quit are there');
+  const { ui: all } = surface();
+  assert.ok(drawPanel(all, state(many), { asking: null }, { dark: false, T: EN }) > 600, 'without a limit it is taller');
+  assert.equal(all.scrollRange, 0);
+});
