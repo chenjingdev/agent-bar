@@ -51,6 +51,9 @@ const gdi32 = ffi.dlopen('gdi32.dll', {
   CreateFontW: { arguments: [I, I, I, I, I, U, U, U, U, U, U, U, U, P], return: P },
   SetBkMode: { arguments: [P, I], return: I },
   SetTextColor: { arguments: [P, U], return: U },
+  SaveDC: { arguments: [P], return: I },
+  RestoreDC: { arguments: [P, I], return: I },
+  IntersectClipRect: { arguments: [P, I, I, I, I], return: I },
 }).functions;
 const gdiplus = ffi.dlopen('gdiplus.dll', {
   GdiplusStartup: { arguments: [P, P, P], return: I },
@@ -69,6 +72,8 @@ const gdiplus = ffi.dlopen('gdiplus.dll', {
   GdipClosePathFigure: { arguments: [P], return: I },
   GdipFillPath: { arguments: [P, P, P], return: I },
   GdipDrawPath: { arguments: [P, P, P], return: I },
+  GdipSetClipRectI: { arguments: [P, I, I, I, I, I], return: I },
+  GdipResetClip: { arguments: [P], return: I },
 }).functions;
 const shell32 = ffi.dlopen('shell32.dll', { Shell_NotifyIconW: { arguments: [U, P], return: I } }).functions;
 const dwmapi = ffi.dlopen('dwmapi.dll', { DwmSetWindowAttribute: { arguments: [P, U, P, U], return: I } }).functions;
@@ -202,7 +207,7 @@ const DT_RIGHT = 0x2, DT_CENTER = 0x1, DT_VCENTER = 0x4, DT_SINGLELINE = 0x20, D
 // it comes from `draw(ui)`, which is called with a small drawing surface in 96-dpi units and answers the height of
 // what it drew; `onAction` hears the action of whatever was clicked.
 export class Panel {
-  #fonts = new Map(); #hits = []; #mouse = null; #pressed = null; #height = 100; #tracking = false;
+  #fonts = new Map(); #hits = []; #mouse = null; #pressed = null; #height = 100; #tracking = false; #room = Infinity; #scroll = 0; #scrollRange = 0;
   hiddenAt = 0; visible = false;
 
   constructor({ width, draw, onAction, background }) {
@@ -223,6 +228,12 @@ export class Panel {
             const track = Buffer.alloc(24); track.writeUInt32LE(24, 0); track.writeUInt32LE(2, 4); track.writeBigUInt64LE(address(this.window), 8);
             user32.TrackMouseEvent(track); this.#tracking = true;
           }
+          return 0n;
+        }
+        case 0x20a: { // WM_MOUSEWHEEL: the accounts scroll when they do not all fit
+          const notches = signed16(BigInt(wParam) >> 16n) / 120;
+          const scroll = Math.min(this.#scrollRange, Math.max(0, this.#scroll - notches * 48));
+          if (scroll !== this.#scroll) { this.#scroll = scroll; user32.InvalidateRect(this.window, null, 0); }
           return 0n;
         }
         case 0x2a3: this.#tracking = false; this.#mouse = null; user32.InvalidateRect(this.window, null, 0); return 0n; // WM_MOUSELEAVE
@@ -251,6 +262,7 @@ export class Panel {
     if (!point) return null;
     for (let index = this.#hits.length - 1; index >= 0; index--) {
       const hit = this.#hits[index];
+      if (hit.clip && (point.y < hit.clip.y || point.y >= hit.clip.y + hit.clip.h)) continue;
       if (point.x >= hit.x && point.x < hit.x + hit.w && point.y >= hit.y && point.y < hit.y + hit.h) return hit;
     }
     return null;
@@ -270,12 +282,12 @@ export class Panel {
     const rectOf = (x, y, w, h) => { const rect = Buffer.alloc(16); rect.writeInt32LE(Math.round(x * s), 0); rect.writeInt32LE(Math.round(y * s), 4); rect.writeInt32LE(Math.round((x + w) * s), 8); rect.writeInt32LE(Math.round((y + h) * s), 12); return rect; };
     const mouse = this.#mouse, pressed = this.#pressed;
     const ui = {
-      width: this.width,
+      width: this.width, maxHeight: this.#room, scroll: this.#scroll,
       // A filled, optionally outlined, rounded rectangle. What it answers can still be resized before the drawing ends.
-      rect: (x, y, w, h, { fill, stroke, radius = 0 } = {}) => { const shape = { x, y, w, h, fill, stroke, radius }; shapes.push(shape); return shape; },
+      rect: (x, y, w, h, { fill, stroke, radius = 0, clip } = {}) => { const shape = { x, y, w, h, fill, stroke, radius, clip }; shapes.push(shape); return shape; },
       // One line, cut with "…" when it does not fit. align: left, right or center.
-      text: (value, x, y, w, h, { size = 13, bold = false, color = 0, align = 'left' } = {}) => {
-        texts.push({ value: String(value), rect: rectOf(x, y, w, h), size, bold, color, flags: DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS | (align === 'right' ? DT_RIGHT : align === 'center' ? DT_CENTER : 0) });
+      text: (value, x, y, w, h, { size = 13, bold = false, color = 0, align = 'left', clip } = {}) => {
+        texts.push({ value: String(value), rect: rectOf(x, y, w, h), size, bold, color, clip, flags: DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS | (align === 'right' ? DT_RIGHT : align === 'center' ? DT_CENTER : 0) });
       },
       // The width one line needs.
       measure: (value, { size = 13, bold = false } = {}) => {
@@ -286,37 +298,46 @@ export class Panel {
         return Math.ceil(rect.readInt32LE(8) / s) + 1;
       },
       // Wrapped lines; answers the height they take.
-      paragraph: (value, x, y, w, { size = 12, bold = false, color = 0 } = {}) => {
+      paragraph: (value, x, y, w, { size = 12, bold = false, color = 0, clip } = {}) => {
         const rect = rectOf(x, y, w, 0), buffer = wide(String(value));
         const old = gdi32.SelectObject(dc, this.#font(size, bold));
         user32.DrawTextW(dc, buffer, -1, rect, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
         gdi32.SelectObject(dc, old);
         const height = Math.ceil((rect.readInt32LE(12) - rect.readInt32LE(4)) / s);
-        texts.push({ value: String(value), rect: rectOf(x, y, w, height + 2), size, bold, color, flags: DT_WORDBREAK | DT_NOPREFIX });
+        texts.push({ value: String(value), rect: rectOf(x, y, w, height + 2), size, bold, color, clip, flags: DT_WORDBREAK | DT_NOPREFIX });
         return height;
       },
       // Makes a place clickable; answers 'pressed', 'hover' or null so the caller can draw it that way.
-      hit: (x, y, w, h, action) => {
-        hits.push({ x, y, w, h, action });
-        const over = mouse && mouse.x >= x && mouse.x < x + w && mouse.y >= y && mouse.y < y + h;
+      hit: (x, y, w, h, action, clip) => {
+        hits.push({ x, y, w, h, action, clip });
+        const over = mouse && mouse.x >= x && mouse.x < x + w && mouse.y >= y && mouse.y < y + h
+          && (!clip || (mouse.y >= clip.y && mouse.y < clip.y + clip.h));
         return over ? (pressed && JSON.stringify(pressed.action) === JSON.stringify(action) ? 'pressed' : 'hover') : null;
       },
     };
     const height = this.draw(ui);
+    this.#scrollRange = Math.max(0, ui.scrollRange ?? 0);
+    const clipRect = (clip) => [0, Math.round(clip.y * s), Math.round(this.width * s), Math.round((clip.y + clip.h) * s)];
     if (paint) {
       const graphics = Buffer.alloc(8);
       gdiplus.GdipCreateFromHDC(dc, graphics);
       const g = graphics.readBigUInt64LE(0);
       gdiplus.GdipSetSmoothingMode(g, 4);
       gdiplus.GdipSetPixelOffsetMode(g, 4);
-      for (const shape of shapes) this.#shape(g, shape);
+      for (const shape of shapes) {
+        if (shape.clip) { const [left, top, right, bottom] = clipRect(shape.clip); gdiplus.GdipSetClipRectI(g, left, top, right - left, bottom - top, 0); }
+        else gdiplus.GdipResetClip(g);
+        this.#shape(g, shape);
+      }
       gdiplus.GdipDeleteGraphics(g);
       gdi32.SetBkMode(dc, 1);
       for (const text of texts) {
+        if (text.clip) { gdi32.SaveDC(dc); gdi32.IntersectClipRect(dc, ...clipRect(text.clip)); }
         const old = gdi32.SelectObject(dc, this.#font(text.size, text.bold));
         gdi32.SetTextColor(dc, colorref(text.color));
         user32.DrawTextW(dc, wide(text.value), -1, text.rect, text.flags);
         gdi32.SelectObject(dc, old);
+        if (text.clip) gdi32.RestoreDC(dc, -1);
       }
       this.#hits = hits;
     }
@@ -369,13 +390,16 @@ export class Panel {
   // Fits the window to what `draw` needs now, in the corner by the notification area, and paints it again.
   refresh() {
     if (!this.visible) return;
-    const dc = user32.GetDC(this.window);
-    const wanted = this.#run(dc, false);
-    user32.ReleaseDC(this.window, dc);
     const area = Buffer.alloc(16);
     user32.SystemParametersInfoW(0x30, 0, area, 0);
     const margin = Math.round(12 * this.scale);
-    this.#height = Math.min(wanted, (area.readInt32LE(12) - area.readInt32LE(4) - 2 * margin) / this.scale);
+    this.#room = Math.floor((area.readInt32LE(12) - area.readInt32LE(4) - 2 * margin) / this.scale);
+    const dc = user32.GetDC(this.window);
+    const wanted = this.#run(dc, false);
+    user32.ReleaseDC(this.window, dc);
+    // Fewer accounts than before may not scroll as far.
+    this.#scroll = Math.min(this.#scroll, this.#scrollRange);
+    this.#height = Math.min(wanted, this.#room);
     const width = Math.round(this.width * this.scale), height = Math.round(this.#height * this.scale);
     user32.SetWindowPos(this.window, null, area.readInt32LE(8) - width - margin, area.readInt32LE(12) - height - margin, width, height, 0x4 | 0x10);
     user32.InvalidateRect(this.window, null, 0);
@@ -383,6 +407,7 @@ export class Panel {
 
   show() {
     this.visible = true;
+    this.#scroll = 0;
     this.refresh();
     user32.ShowWindow(this.window, 5);
     user32.SetForegroundWindow(this.window);

@@ -145,7 +145,21 @@ function account(ui, c, T, state, local, item, top) {
   return top + card.h;
 }
 
-// Draws the whole panel and answers its height. `local` is what only the panel knows: { asking }.
+// The same surface with everything moved by `dy` and kept inside `clip` ({ y, h }): the scrolled list of accounts.
+function within(ui, dy, clip) {
+  return {
+    width: ui.width, measure: ui.measure,
+    rect: (x, y, w, h, style = {}) => ui.rect(x, y + dy, w, h, { ...style, clip }),
+    text: (value, x, y, w, h, style = {}) => ui.text(value, x, y + dy, w, h, { ...style, clip }),
+    paragraph: (value, x, y, w, style = {}) => ui.paragraph(value, x, y + dy, w, { ...style, clip }),
+    hit: (x, y, w, h, action) => ui.hit(x, y + dy, w, h, action, clip),
+  };
+}
+const FOOTER = 43;
+
+// Draws the whole panel and answers its height. The surface may say how tall the panel can be (`maxHeight`) and
+// how far the accounts are scrolled (`scroll`); the top and bottom rows stay, the accounts scroll between them, and
+// the panel sets `scrollRange` on the surface: how far they can scroll. `local` is what only the panel knows: { asking }.
 export function drawPanel(ui, state, local, { dark, T }) {
   const c = dark ? DARK : LIGHT, width = ui.width;
   const background = ui.rect(0, 0, width, 0, { fill: c.bg });
@@ -179,7 +193,18 @@ export function drawPanel(ui, state, local, { dark, T }) {
     const missing = [state.claudeInstalled ? '' : T.noClaude, state.codexInstalled ? '' : T.noCodex].filter(Boolean).join(' ');
     y += 22 + ui.paragraph(missing ? `${T.empty}\n\n${missing}` : T.empty, PAD + 14, y + 22, width - 2 * PAD - 28, { size: 13, color: c.muted }) + 26;
   }
-  for (const item of state.accounts) y = account(ui, c, T, state, local, item, y) + 8;
+  const listTop = y, scroll = ui.scroll ?? 0, clip = { y: listTop, h: Infinity };
+  const list = within(ui, -scroll, clip);
+  for (const item of state.accounts) y = account(list, c, T, state, local, item, y) + 8;
+  const listHeight = y - listTop, shown = Math.min(listHeight, Math.max(120, (ui.maxHeight ?? Infinity) - listTop - FOOTER));
+  clip.h = shown;
+  ui.scrollRange = listHeight - shown;
+  if (listHeight > shown) {
+    // A thin bar at the edge: where in the list the shown part is.
+    const thumb = Math.max(24, (shown * shown) / listHeight);
+    ui.rect(width - 6, listTop + ((shown - thumb) * Math.min(scroll, listHeight - shown)) / (listHeight - shown), 3, thumb, { fill: c.muted, radius: 1.5 });
+  }
+  y = listTop + shown;
 
   ui.rect(0, y + 2, width, 1, { fill: c.line });
   y += 9;
