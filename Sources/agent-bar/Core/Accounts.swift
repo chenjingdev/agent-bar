@@ -41,6 +41,24 @@ struct UsageAccount: Codable, Equatable, Identifiable, Sendable {
     var credentialID: UUID?
     var deletionPending = false
 
+    init(id: UUID, provider: ProviderKind, name: String, identity: AccountIdentity? = nil, credentialID: UUID? = nil,
+         deletionPending: Bool = false) {
+        self.id = id; self.provider = provider; self.name = name; self.identity = identity
+        self.credentialID = credentialID; self.deletionPending = deletionPending
+    }
+
+    // agent-bar keeps no name and calls every account by its login email; an account it saved reads the same way here.
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        id = try fields.decode(UUID.self, forKey: .id)
+        provider = try fields.decode(ProviderKind.self, forKey: .provider)
+        identity = try fields.decodeIfPresent(AccountIdentity.self, forKey: .identity)
+        credentialID = try fields.decodeIfPresent(UUID.self, forKey: .credentialID)
+        deletionPending = try fields.decodeIfPresent(Bool.self, forKey: .deletionPending) ?? false
+        name = try fields.decodeIfPresent(String.self, forKey: .name)
+            ?? identity?.email.flatMap { $0.isEmpty ? nil : $0 } ?? provider.displayName
+    }
+
     var isManaged: Bool { credentialID != nil }
     var isBuiltIn: Bool { id == Self.currentCLI(provider).id }
     var title: String { name }

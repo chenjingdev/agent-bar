@@ -242,3 +242,23 @@ extension UsageStore {
         }
     }
 }
+
+extension MenuBarLayout {
+    // A field a file leaves out keeps its default: agent-bar writes groups without `showBadge`.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init()
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) throws -> T { try c.decodeIfPresent(T.self, forKey: key) ?? fallback }
+        id = try value(.id, id); name = try value(.name, name); enabled = try value(.enabled, enabled)
+        style = try value(.style, style); showBadge = try value(.showBadge, showBadge)
+        badgeMode = try c.decodeIfPresent(BadgeDisplayMode.self, forKey: .badgeMode)
+        commonBadgeText = try c.decodeIfPresent(String.self, forKey: .commonBadgeText)
+        commonBadgeColor = try c.decodeIfPresent(AccountColor.self, forKey: .commonBadgeColor)
+        showBar = try value(.showBar, showBar); showPercent = try value(.showPercent, showPercent)
+        percentageLineID = try c.decodeIfPresent(String.self, forKey: .percentageLineID)
+        rowsPerColumn = try value(.rowsPerColumn, rowsPerColumn); rows = try value(.rows, rows)
+        memberIDs = try c.decodeIfPresent([UUID].self, forKey: .memberIDs)
+        listSort = try c.decodeIfPresent(GroupListSort.self, forKey: .listSort)
+        statusItemPositionID = try c.decodeIfPresent(UUID.self, forKey: .statusItemPositionID)
+    }
+}

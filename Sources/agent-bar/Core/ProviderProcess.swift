@@ -182,7 +182,7 @@ enum ProviderCLI {
         }
         // Homebrew's official executable precedes user launchers (e.g. OpenCodex).
         var paths = ["/opt/homebrew/bin/\(provider == .codex ? "codex" : "claude")", "/usr/local/bin/\(provider == .codex ? "codex" : "claude")"]
-        if provider == .claude { paths += [home.appendingPathComponent(".local/bin/claude").path] }
+        paths += [home.appendingPathComponent(".local/bin/\(provider == .codex ? "codex" : "claude")").path]
         paths += [home.appendingPathComponent(".bun/bin/\(provider == .codex ? "codex" : "claude")").path]
         guard let path = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             throw AccountError.message(String(localized: "Could not find the \(provider.displayName) CLI. Install the official CLI and try again."))
@@ -192,7 +192,7 @@ enum ProviderCLI {
     // `source` is the environment the app was started with; a test passes its own.
     static func processEnvironment(from source: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var env: [String: String] = ["HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-            "PATH": "/opt/homebrew/bin:/usr/local/bin:" + FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bun/bin").path + ":/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"]
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:" + FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin").path + ":" + FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bun/bin").path + ":/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"]
         for key in ["USER", "LOGNAME", "TMPDIR"] { env[key] = source[key] }
         return env
     }
