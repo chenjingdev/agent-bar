@@ -134,6 +134,18 @@ Apple Silicon 맥, macOS 14 이상에서 쓸 수 있습니다.
 
 Developer ID(aram kim)로 서명하고 Apple의 공증을 받은 앱입니다. [Sparkle](https://sparkle-project.org)로 스스로 업데이트하며, 새 버전은 하루에 한 번쯤 [GitHub 릴리스](https://github.com/chenjingdev/agent-bar/releases/latest)에서 확인합니다. 바로 확인하려면 **설정 › 일반**에서 버전 옆의 <b>업데이트 확인…</b>을 누릅니다.
 
+### Windows <sub>미리보기</sub>
+
+Windows 11(x64)용은 알림 영역(트레이)에 뜨는 작은 판입니다. Claude Code · Codex 계정의 한도, 초기화 시각, 초기화 쿠폰을 보고 Claude Code 계정을 바꿉니다. 그룹 · 모양 바꾸기 · Antigravity와 자동 업데이트는 아직 없습니다.
+
+PowerShell에서 한 줄로 설치합니다(관리자 권한 없이, 업데이트도 같은 줄).
+
+```powershell
+irm https://raw.githubusercontent.com/chenjingdev/agent-bar/main/windows/install.ps1 | iex
+```
+
+서명 없는 실행 파일이 하나도 없습니다. Node.js 재단이 서명한 공식 `node.exe`와 읽을 수 있는 스크립트뿐이라 Smart App Control이 켜진 PC에서도 막히지 않습니다. 지울 때는 **설정 › 앱 › 설치된 앱**에서 AgentBar를 제거합니다. 코드와 만드는 법은 [windows/](windows)에 있습니다.
+
 ## REQUIREMENTS<br>필요한 것
 
 <p>

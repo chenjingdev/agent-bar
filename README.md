@@ -134,6 +134,18 @@ Runs on Macs with Apple silicon and macOS 14 or later.
 
 AgentBar is signed with a Developer ID (aram kim) and notarized by Apple. It updates itself with [Sparkle](https://sparkle-project.org) and checks the [GitHub releases](https://github.com/chenjingdev/agent-bar/releases/latest) about once a day. To check right away, use **Check for Updates…** next to the version in **Settings › General**.
 
+### Windows <sub>preview</sub>
+
+The Windows 11 (x64) version is a small one that lives in the notification area. It shows the limits, reset times and reset coupons of your Claude Code and Codex accounts and switches the Claude Code account. Groups, styles, Antigravity and automatic updates aren't there yet.
+
+Install it with one line in PowerShell (no administrator rights; the same line updates it).
+
+```powershell
+irm https://raw.githubusercontent.com/chenjingdev/agent-bar/main/windows/install.ps1 | iex
+```
+
+It contains no unsigned program: only the official `node.exe` signed by the OpenJS Foundation and readable scripts, so PCs with Smart App Control on don't block it. To remove it, uninstall AgentBar in **Settings › Apps › Installed apps**. The code and how to build it are in [windows/](windows).
+
 ## REQUIREMENTS
 
 <p>
