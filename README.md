@@ -12,6 +12,10 @@
 </p>
 
 <p align="center">
+  Works with <b>Claude Code</b> (Claude Pro and Max), <b>Codex</b> (ChatGPT sign-in) and <b>Antigravity</b> (experimental).
+</p>
+
+<p align="center">
   <a href="https://github.com/kalti-lab/limi/releases/latest/download/Limi.zip"><img src="https://img.shields.io/badge/Download_for_Mac-Limi.zip-3b82f6?style=for-the-badge&logo=apple&logoColor=white&labelColor=0f1115" alt="Download Limi.zip for Mac"></a>
 </p>
 

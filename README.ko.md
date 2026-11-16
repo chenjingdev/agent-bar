@@ -12,6 +12,10 @@
 </p>
 
 <p align="center">
+  <b>Claude Code</b>(Claude Pro·Max), <b>Codex</b>(ChatGPT 로그인), <b>Antigravity</b>(실험 기능)와 함께 씁니다.
+</p>
+
+<p align="center">
   <a href="https://github.com/kalti-lab/limi/releases/latest/download/Limi.zip"><img src="https://img.shields.io/badge/Download_for_Mac-Limi.zip-3b82f6?style=for-the-badge&logo=apple&logoColor=white&labelColor=0f1115" alt="맥용 Limi.zip 내려받기"></a>
 </p>
 
