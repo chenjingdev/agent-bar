@@ -16,6 +16,10 @@ actor ClaudeCredentialRefresher {
         try await task.value
     }
 
+    /// The headers Claude Code's own renewal sends besides `Content-Type`, read from Claude Code 2.1.325
+    /// (`axios.post(TOKEN_URL, body, { headers: { "Content-Type": "application/json" } })` with axios 1.15.2's defaults).
+    static let claudeCodeHeaders = ["User-Agent": "axios/1.15.2", "Accept": "application/json, text/plain, */*"]
+
     private static func exchange(data: Data, file: URL, transport: Transport) async throws {
         // A newer credential may have arrived while this request was queued.
         guard try Data(contentsOf: file) == data else { return }
@@ -33,6 +37,9 @@ actor ClaudeCredentialRefresher {
         request.httpMethod = "POST"
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Claude Code renews its login with the HTTP client it bundles (axios), not with its `claude-cli/…` name,
+        // so the exchange carries that client's headers as Claude Code sends them.
+        for (field, value) in Self.claudeCodeHeaders { request.setValue(value, forHTTPHeaderField: field) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (responseData, response) = try await transport(request)
         guard let response = response as? HTTPURLResponse else {

@@ -59,6 +59,11 @@ struct ClaudeCredentialRefreshTests {
         try fixtureCredential.write(to: directory.appendingPathComponent(".credentials.json"))
         let refresher = ClaudeCredentialRefresher(), calls = RefreshCalls()
         let transport: ClaudeCredentialRefresher.Transport = { request in
+            // Named as Claude Code's own renewal names itself.
+            #expect(request.url?.absoluteString == "https://platform.claude.com/v1/oauth/token")
+            #expect(request.value(forHTTPHeaderField: "User-Agent") == "axios/1.15.2")
+            #expect(request.value(forHTTPHeaderField: "Accept") == "application/json, text/plain, */*")
+            #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
             await calls.record("POST")
             try await Task.sleep(for: .milliseconds(50))
             return reply(request, body: refreshed)
