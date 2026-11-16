@@ -3,7 +3,10 @@
 // request names the installed Claude Code, and the usage read brings the coupons too now and then.
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { runCLI } from './cli.mjs';
 import { cedarBlock, cedarCanRedeem, cedarCoupons, cedarOutcome, parseDate, pruneExpired } from './coupons.mjs';
 import { userHome, writeAtomic } from './paths.mjs';
@@ -123,19 +126,44 @@ export function renew(slot, credentials) {
   return task;
 }
 
+// Claude Code renews its login with the axios it bundles (Claude Code 2.1.325, axios 1.15.2,
+// `axios.post(TOKEN_URL, body, { headers: { "Content-Type": "application/json" } })`), not under its claude-cli name,
+// so the renewal goes out with the headers axios sends from Node. Node's fetch would add its own browser-like ones.
+function postLikeClaudeCode(address, text) {
+  const url = new URL(address);
+  return new Promise((resolve, reject) => {
+    const request = (url.protocol === 'http:' ? http : https).request(url, {
+      method: 'POST', timeout: 30_000,
+      headers: {
+        Accept: 'application/json, text/plain, */*', 'Content-Type': 'application/json', 'User-Agent': 'axios/1.15.2',
+        'Content-Length': Buffer.byteLength(text), 'Accept-Encoding': 'gzip, compress, deflate, br',
+      },
+    }, (response) => {
+      const encoding = String(response.headers['content-encoding'] ?? '').toLowerCase();
+      const body = encoding.includes('gzip') ? response.pipe(zlib.createGunzip()) : encoding.includes('deflate') ? response.pipe(zlib.createInflate())
+        : encoding.includes('br') ? response.pipe(zlib.createBrotliDecompress()) : response;
+      let answer = '';
+      body.setEncoding('utf8');
+      body.on('data', (chunk) => { answer += chunk; });
+      body.on('end', () => resolve({ status: response.statusCode, text: answer }));
+      body.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('timeout')));
+    request.on('error', reject);
+    request.end(text);
+  });
+}
+
 async function exchange(slot, credentials) {
   if (!credentials.refreshToken) throw failure('login');
   // Official Claude Code OAuth endpoint and client. The granted scope is kept, not widened.
   const body = { grant_type: 'refresh_token', refresh_token: credentials.refreshToken, client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e' };
   if (credentials.scopes.length) body.scope = credentials.scopes.join(' ');
-  let response, answer;
-  try {
-    response = await fetch(endpoints.token, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
-    answer = await response.text();
-  } catch { throw failure('network'); }
-  if (response.status !== 200) {
-    if ([400, 401, 403].includes(response.status)) throw failure(isAccessBlock(response.status, answer) ? 'blocked' : 'login');
-    throw failure(response.status === 429 ? 'rate-limited' : 'network');
+  let status, answer;
+  try { ({ status, text: answer } = await postLikeClaudeCode(endpoints.token, JSON.stringify(body))); } catch { throw failure('network'); }
+  if (status !== 200) {
+    if ([400, 401, 403].includes(status)) throw failure(isAccessBlock(status, answer) ? 'blocked' : 'login');
+    throw failure(status === 429 ? 'rate-limited' : 'network');
   }
   let result;
   try { result = JSON.parse(answer); } catch { throw failure('parse'); }
