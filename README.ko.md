@@ -138,7 +138,7 @@ Developer ID(aram kim)로 서명하고 Apple의 공증을 받은 앱입니다. [
 
 Windows 11(x64)용은 알림 영역(트레이)에 뜨는 작은 판입니다. Claude Code · Codex 계정의 한도, 초기화 시각, 초기화 쿠폰을 보고 Claude Code 계정을 바꿉니다. 그룹 · 모양 바꾸기 · Antigravity와 자동 업데이트는 아직 없습니다.
 
-PowerShell에서 한 줄로 설치합니다(관리자 권한 없이, 업데이트도 같은 줄).
+시작 메뉴에서 PowerShell 창을 열고 아래 한 줄을 붙여 넣어 실행합니다(관리자 권한 없이, 업데이트도 같은 줄). `powershell -Command "…"`처럼 다른 명령에 감싸 돌리면 Microsoft Defender가 막을 수 있습니다.
 
 ```powershell
 irm https://raw.githubusercontent.com/chenjingdev/agent-bar/main/windows/install.ps1 | iex

@@ -138,7 +138,7 @@ AgentBar is signed with a Developer ID (aram kim) and notarized by Apple. It upd
 
 The Windows 11 (x64) version is a small one that lives in the notification area. It shows the limits, reset times and reset coupons of your Claude Code and Codex accounts and switches the Claude Code account. Groups, styles, Antigravity and automatic updates aren't there yet.
 
-Install it with one line in PowerShell (no administrator rights; the same line updates it).
+Open a PowerShell window from the Start menu and paste this line into it (no administrator rights; the same line updates it). Wrapped in another command, such as `powershell -Command "…"`, it may be blocked by Microsoft Defender.
 
 ```powershell
 irm https://raw.githubusercontent.com/chenjingdev/agent-bar/main/windows/install.ps1 | iex
