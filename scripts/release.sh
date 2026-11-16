@@ -1,13 +1,12 @@
 #!/bin/zsh
-# Releases AgentBar from this Mac to https://github.com/chenjingdev-archive/agent-bar/releases:
+# Releases AgentBar from this Mac to https://github.com/chenjingdev/agent-bar/releases:
 #
 #   1. builds AgentBar.app signed with the Developer ID in this Mac's keychain
 #      (hardened runtime, secure timestamp; scripts/build-app.sh);
 #   2. has Apple notarize it and staples the ticket to the app;
 #   3. zips it and writes appcast.xml, both signed with AgentBar's Sparkle key
 #      (the keychain item of account dev.chenjing.agent-bar, never printed), so
-#      every installed AgentBar takes it from releases/latest/download/appcast.xml
-#      (older ones ask chenjingdev/agent-bar, which GitHub sends here);
+#      every installed AgentBar takes it from releases/latest/download/appcast.xml;
 #   4. tags v<version>, pushes main and the tag to the agent-bar repository and
 #      publishes the release with the zip, appcast.xml and SHA256SUMS.txt.
 #
@@ -16,13 +15,13 @@
 #   AGENTBAR_NOTARY_KEY_ID     its key ID
 #   AGENTBAR_NOTARY_ISSUER     its issuer ID
 # or a notarytool keychain profile in AGENTBAR_NOTARY_PROFILE.
-# AGENTBAR_REMOTE names the git remote of chenjingdev-archive/agent-bar (default agentbar).
+# AGENTBAR_REMOTE names the git remote of chenjingdev/agent-bar (default agentbar).
 
 set -euo pipefail
 
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_dir"
-gh_repo="chenjingdev-archive/agent-bar"
+gh_repo="chenjingdev/agent-bar"
 remote="${AGENTBAR_REMOTE:-agentbar}"
 sparkle_account="dev.chenjing.agent-bar"
 sparkle_bin="$repo_dir/.build/vendor/Sparkle-2.10.1/bin"

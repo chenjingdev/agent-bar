@@ -6,7 +6,7 @@ import Sparkle
 
 /// Automatic updates (Sparkle). scripts/build-app.sh links Sparkle and writes
 /// AgentBar's feed (SUFeedURL, the appcast.xml of the latest GitHub release of
-/// chenjingdev-archive/agent-bar) and the public key every update must be signed with
+/// chenjingdev/agent-bar) and the public key every update must be signed with
 /// (SUPublicEDKey) into Info.plist. Sparkle then looks once a day without asking first. A plain `swift build` or `swift test` has no
 /// Sparkle and none of this.
 ///

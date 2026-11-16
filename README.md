@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/chenjingdev-archive/agent-bar/releases/latest"><img src="https://img.shields.io/badge/Download_for_Mac-AgentBar.zip-3b82f6?style=for-the-badge&logo=apple&logoColor=white&labelColor=0f1115" alt="Download AgentBar.zip for Mac"></a>
+  <a href="https://github.com/chenjingdev/agent-bar/releases/latest"><img src="https://img.shields.io/badge/Download_for_Mac-AgentBar.zip-3b82f6?style=for-the-badge&logo=apple&logoColor=white&labelColor=0f1115" alt="Download AgentBar.zip for Mac"></a>
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/chenjingdev-archive/agent-bar/releases/latest"><img src="https://img.shields.io/github/v/release/chenjingdev-archive/agent-bar" alt="Latest release"></a>
+  <a href="https://github.com/chenjingdev/agent-bar/releases/latest"><img src="https://img.shields.io/github/v/release/chenjingdev/agent-bar" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-555?logo=apple" alt="macOS 14 or later">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
@@ -121,7 +121,7 @@ Also in AgentBar:
       </ul>
       <p><b>$0</b> / free forever</p>
       <p>
-        <a href="https://github.com/chenjingdev-archive/agent-bar/releases/latest"><img src="https://img.shields.io/badge/Download-0f1115?style=for-the-badge&logo=apple&logoColor=white" alt="Download"></a>
+        <a href="https://github.com/chenjingdev/agent-bar/releases/latest"><img src="https://img.shields.io/badge/Download-0f1115?style=for-the-badge&logo=apple&logoColor=white" alt="Download"></a>
       </p>
     </td>
   </tr>
@@ -129,10 +129,10 @@ Also in AgentBar:
 
 Runs on Macs with Apple silicon and macOS 14 or later.
 
-1. Download **AgentBar-v<version>-macos-arm64.zip** from the [latest GitHub release](https://github.com/chenjingdev-archive/agent-bar/releases/latest).
+1. Download **AgentBar-v<version>-macos-arm64.zip** from the [latest GitHub release](https://github.com/chenjingdev/agent-bar/releases/latest).
 2. Unzip it, move **AgentBar.app** to Applications and open it.
 
-AgentBar is signed with a Developer ID (aram kim) and notarized by Apple. It updates itself with [Sparkle](https://sparkle-project.org) and checks the [GitHub releases](https://github.com/chenjingdev-archive/agent-bar/releases/latest) about once a day. To check right away, use **Check for Updates…** next to the version in **Settings › General**.
+AgentBar is signed with a Developer ID (aram kim) and notarized by Apple. It updates itself with [Sparkle](https://sparkle-project.org) and checks the [GitHub releases](https://github.com/chenjingdev/agent-bar/releases/latest) about once a day. To check right away, use **Check for Updates…** next to the version in **Settings › General**.
 
 ## REQUIREMENTS
 
@@ -168,7 +168,7 @@ Then set up the menu bar in **Settings › Menu Bar**: add groups, put accounts 
 Requires macOS 14 or later and Swift 6.2 or later (Xcode 26 or later).
 
 ```sh
-git clone https://github.com/chenjingdev-archive/agent-bar.git
+git clone https://github.com/chenjingdev/agent-bar.git
 cd agent-bar
 swift test
 ./scripts/build-app.sh --install   # into ~/Applications

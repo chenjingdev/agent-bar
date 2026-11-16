@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/chenjingdev-archive/agent-bar/releases/latest"><img src="https://img.shields.io/badge/Download_for_Mac-AgentBar.zip-3b82f6?style=for-the-badge&logo=apple&logoColor=white&labelColor=0f1115" alt="맥용 AgentBar.zip 내려받기"></a>
+  <a href="https://github.com/chenjingdev/agent-bar/releases/latest"><img src="https://img.shields.io/badge/Download_for_Mac-AgentBar.zip-3b82f6?style=for-the-badge&logo=apple&logoColor=white&labelColor=0f1115" alt="맥용 AgentBar.zip 내려받기"></a>
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/chenjingdev-archive/agent-bar/releases/latest"><img src="https://img.shields.io/github/v/release/chenjingdev-archive/agent-bar" alt="최신 릴리스"></a>
+  <a href="https://github.com/chenjingdev/agent-bar/releases/latest"><img src="https://img.shields.io/github/v/release/chenjingdev/agent-bar" alt="최신 릴리스"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-555?logo=apple" alt="macOS 14 이상">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 라이선스"></a>
 </p>
@@ -121,7 +121,7 @@
       </ul>
       <p><b>0원</b> / 계속 무료</p>
       <p>
-        <a href="https://github.com/chenjingdev-archive/agent-bar/releases/latest"><img src="https://img.shields.io/badge/Download-0f1115?style=for-the-badge&logo=apple&logoColor=white" alt="내려받기"></a>
+        <a href="https://github.com/chenjingdev/agent-bar/releases/latest"><img src="https://img.shields.io/badge/Download-0f1115?style=for-the-badge&logo=apple&logoColor=white" alt="내려받기"></a>
       </p>
     </td>
   </tr>
@@ -129,10 +129,10 @@
 
 Apple Silicon 맥, macOS 14 이상에서 쓸 수 있습니다.
 
-1. [GitHub 최신 릴리스](https://github.com/chenjingdev-archive/agent-bar/releases/latest)에서 **AgentBar-v<버전>-macos-arm64.zip**을 내려받습니다.
+1. [GitHub 최신 릴리스](https://github.com/chenjingdev/agent-bar/releases/latest)에서 **AgentBar-v<버전>-macos-arm64.zip**을 내려받습니다.
 2. 압축을 풀고 **AgentBar.app**을 응용 프로그램 폴더로 옮긴 뒤 엽니다.
 
-Developer ID(aram kim)로 서명하고 Apple의 공증을 받은 앱입니다. [Sparkle](https://sparkle-project.org)로 스스로 업데이트하며, 새 버전은 하루에 한 번쯤 [GitHub 릴리스](https://github.com/chenjingdev-archive/agent-bar/releases/latest)에서 확인합니다. 바로 확인하려면 **설정 › 일반**에서 버전 옆의 <b>업데이트 확인…</b>을 누릅니다.
+Developer ID(aram kim)로 서명하고 Apple의 공증을 받은 앱입니다. [Sparkle](https://sparkle-project.org)로 스스로 업데이트하며, 새 버전은 하루에 한 번쯤 [GitHub 릴리스](https://github.com/chenjingdev/agent-bar/releases/latest)에서 확인합니다. 바로 확인하려면 **설정 › 일반**에서 버전 옆의 <b>업데이트 확인…</b>을 누릅니다.
 
 ## REQUIREMENTS<br>필요한 것
 
@@ -168,7 +168,7 @@ AgentBar를 처음 열면 계정이 없으므로 **설정 › 계정**이 열립
 macOS 14 이상과 Swift 6.2 이상(Xcode 26 이상)이 필요합니다.
 
 ```sh
-git clone https://github.com/chenjingdev-archive/agent-bar.git
+git clone https://github.com/chenjingdev/agent-bar.git
 cd agent-bar
 swift test
 ./scripts/build-app.sh --install   # ~/Applications에 설치

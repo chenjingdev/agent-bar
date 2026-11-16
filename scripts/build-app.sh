@@ -41,7 +41,7 @@ sparkle_version="2.10.1"
 sparkle_sha256="1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27"
 sparkle_dir="${AGENTBAR_VENDOR_DIR:-$repo_dir/.build/vendor}/Sparkle-$sparkle_version"
 # AgentBar's own feed on its GitHub releases, the one every AgentBar reads.
-sparkle_feed="${AGENTBAR_SPARKLE_FEED:-https://github.com/chenjingdev-archive/agent-bar/releases/latest/download/appcast.xml}"
+sparkle_feed="${AGENTBAR_SPARKLE_FEED:-https://github.com/chenjingdev/agent-bar/releases/latest/download/appcast.xml}"
 update_key_file="$repo_dir/scripts/update-public-key.txt"
 usage="Usage: ./scripts/build-app.sh [--install]
   --install                    also install to ~/Applications (the running app must be closed)
