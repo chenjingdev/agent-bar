@@ -110,8 +110,12 @@ export class Store extends EventEmitter {
     this.emit('change');
     try {
       if (this.claudeVersion === undefined) this.claudeVersion = await installedVersion();
-      if (this.activity?.kind !== 'switch') this.reconcileLive();
-      await Promise.all(this.listed().map((account) => this.refreshOne(account, { force }).catch(() => {})));
+      // While Claude Code's account is being switched, its logins are not read (a read may renew one); the switch
+      // reads them all when it ends.
+      const switching = this.activity?.kind === 'switch';
+      if (!switching) this.reconcileLive();
+      const accounts = this.listed().filter((account) => !(switching && account.provider === 'claude'));
+      await Promise.all(accounts.map((account) => this.refreshOne(account, { force }).catch(() => {})));
       this.lastRefresh = Date.now();
     } finally {
       this.refreshing = false;
@@ -171,6 +175,8 @@ export class Store extends EventEmitter {
     if (!this.claudeVersion || !versionAtLeast(this.claudeVersion, SWITCH_MINIMUM)) return 'tooOld';
     this.reconcileLive();
     if (this.liveClaudeId === target.id) return 'already';
+    // A read going on may be renewing one of the two logins: the refresh token it holds is used up when it ends.
+    await Promise.all([target.id, this.liveClaudeId].map((id) => this.reading.get(id)?.catch(() => {})));
     const targetSlot = folderSlot(this.claudeFolder(target.id));
     const saved = readCredentials(targetSlot);
     if (!saved?.refreshToken) return 'needsLogin';
