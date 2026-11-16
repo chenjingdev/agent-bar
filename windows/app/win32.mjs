@@ -111,7 +111,8 @@ let pump = null;
 function startPump() {
   pump ??= setInterval(() => {
     while (user32.PeekMessageW(message, null, 0, 0, 1)) { user32.TranslateMessage(message); user32.DispatchMessageW(message); }
-    for (const work of later.splice(0)) work();
+    // One piece of work that fails does not end AgentBar.
+    for (const work of later.splice(0)) { try { work(); } catch (error) { console.error(error); } }
   }, 16);
 }
 export function stopPump() { clearInterval(pump); pump = null; }

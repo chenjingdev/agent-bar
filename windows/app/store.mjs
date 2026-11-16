@@ -31,6 +31,7 @@ export class Store extends EventEmitter {
     this.settings = { interval: 120, ...saved?.settings };
     this.memory = new Map();
     this.snapshots = new Map();
+    this.reading = new Map(); // id → the read of that account going on now
     this.liveClaudeId = null;
     this.activity = null; // { kind: 'switch' | 'add' | 'coupon', provider, id, control }
     this.notice = null; // { code, at, detail }
@@ -80,9 +81,14 @@ export class Store extends EventEmitter {
 
   async refreshOne(account, { force = false } = {}) {
     const memory = this.memoryOf(account.id);
-    const snapshot = account.provider === 'claude'
-      ? await loadClaude(this.slotOf(account), memory, { force })
-      : await loadCodex(this.codexFolder(account.id), account.identity ?? null, memory, { force });
+    const read = account.provider === 'claude'
+      ? loadClaude(this.slotOf(account), memory, { force })
+      : loadCodex(this.codexFolder(account.id), account.identity ?? null, memory, { force });
+    this.reading.set(account.id, read);
+    let snapshot;
+    try { snapshot = await read; } finally { if (this.reading.get(account.id) === read) this.reading.delete(account.id); }
+    // An account removed while it was read is not brought back.
+    if (!account.builtIn && !this.accounts.includes(account)) return;
     if (account.provider === 'codex' && snapshot.identity && !account.builtIn && !account.identity?.accountId) {
       account.identity = snapshot.identity;
       this.save();
@@ -293,13 +299,21 @@ export class Store extends EventEmitter {
   remove(id) {
     const account = this.accounts.find((item) => item.id === id);
     if (!account || id === this.liveClaudeId || this.activity) return false;
-    rmSync(account.provider === 'claude' ? this.claudeFolder(id) : this.codexFolder(id), { recursive: true, force: true });
-    rmSync(path.join(this.root, 'cache', `${id}.json`), { force: true });
     this.accounts = this.accounts.filter((item) => item.id !== id);
     this.memory.delete(id);
     this.snapshots.delete(id);
     this.save();
     this.emit('change');
+    // Its files go once a read of it has ended: on Windows the Codex app-server keeps its folder locked until then.
+    const folder = account.provider === 'claude' ? this.claudeFolder(id) : this.codexFolder(id);
+    const forget = () => {
+      try {
+        rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        rmSync(path.join(this.root, 'cache', `${id}.json`), { force: true });
+      } catch {}
+    };
+    const reading = this.reading.get(id);
+    if (reading) this.removed = reading.catch(() => {}).then(forget); else forget();
     return true;
   }
 
