@@ -2,12 +2,12 @@
 // Anthropic is asked the way the Mac app asks (Sources/agent-bar/Providers/ClaudeUsageProvider.swift): every
 // request names the installed Claude Code, and the usage read brings the coupons too now and then.
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { runCLI } from './cli.mjs';
+import { cleanEnvironment, runCLI } from './cli.mjs';
 import { cedarBlock, cedarCanRedeem, cedarCoupons, cedarOutcome, parseDate, pruneExpired } from './coupons.mjs';
 import { userHome, writeAtomic } from './paths.mjs';
 
@@ -47,6 +47,32 @@ export function readIdentity(slot) {
     email: account.emailAddress ?? null, organization: account.organizationName ?? null,
     organizationId: account.organizationUuid ?? null, accountId: account.accountUuid ?? null,
   };
+}
+
+// What a slot holds now: the login and the account recorded beside it. Answers a function that puts them back,
+// leaving the rest of Claude Code's config file as it is then.
+export function keepLogin(slot) {
+  const legacy = path.join(slot.directory, '.config.json');
+  const file = existsSync(legacy) ? legacy : slot.identityFile;
+  let credentials = null, account;
+  try { credentials = readFileSync(slot.credentialsFile, 'utf8'); } catch {}
+  try { account = JSON.parse(readFileSync(file, 'utf8')).oauthAccount; } catch {}
+  return () => {
+    if (credentials === null) rmSync(slot.credentialsFile, { force: true }); else writeAtomic(slot.credentialsFile, credentials);
+    try {
+      const config = JSON.parse(readFileSync(file, 'utf8'));
+      if (account === undefined) delete config.oauthAccount; else config.oauthAccount = account;
+      writeAtomic(file, JSON.stringify(config, null, 2));
+    } catch {}
+  };
+}
+
+// The environment Claude Code gets when it signs in where it keeps its own login: the folder the person pointed
+// it to with CLAUDE_CONFIG_DIR stays, so the login lands where AgentBar reads it.
+export function liveEnvironment(extra = {}) {
+  const kept = {};
+  for (const key of ['CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR']) if (process.env[key]) kept[key] = process.env[key];
+  return cleanEnvironment({ ...kept, ...extra });
 }
 
 // Email is display information, not an identifier the provider guarantees.

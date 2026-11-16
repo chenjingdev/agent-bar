@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { cleanEnvironment, findCLI, runCLI } from './cli.mjs';
 import {
-  compareIdentity, folderSlot, forgetInstalledVersion, installedVersion, liveSlot, loadClaude, readCredentials, readIdentity,
+  compareIdentity, folderSlot, forgetInstalledVersion, installedVersion, keepLogin, liveEnvironment, liveSlot, loadClaude, readCredentials, readIdentity,
   SWITCH_MINIMUM, useClaudeCoupon, versionAtLeast,
 } from './claude.mjs';
 import { defaultCodexHome, loadCodex, loginCodex, sameCodexAccount, useCodexCoupon } from './codex.mjs';
@@ -104,8 +104,17 @@ export class Store extends EventEmitter {
     return [...this.claudeAccounts(), ...codexDefault, ...this.accounts.filter((account) => account.provider === 'codex')];
   }
 
-  async refreshAll({ force = false } = {}) {
-    if (this.refreshing) return;
+  refreshAll({ force = false } = {}) {
+    if (this.refreshing) {
+      // A forced read asked for while one is going on (after a switch or a sign-in) comes right after it.
+      if (force) this.again ??= this.running.then(() => { this.again = null; return this.refreshAll({ force: true }); });
+      return this.again ?? this.running;
+    }
+    this.running = this.#refresh(force).catch(() => {});
+    return this.running;
+  }
+
+  async #refresh(force) {
     this.refreshing = true;
     this.emit('change');
     try {
@@ -191,7 +200,7 @@ export class Store extends EventEmitter {
 
     // The token only travels in the environment.
     const run = await runCLI('claude', ['auth', 'login', '--claudeai'], {
-      env: cleanEnvironment({ CLAUDE_CODE_OAUTH_REFRESH_TOKEN: saved.refreshToken, CLAUDE_CODE_OAUTH_SCOPES: saved.scopes.join(' ') }),
+      env: liveEnvironment({ CLAUDE_CODE_OAUTH_REFRESH_TOKEN: saved.refreshToken, CLAUDE_CODE_OAUTH_SCOPES: saved.scopes.join(' ') }),
       timeout: 60_000,
     }).catch(() => ({ status: 127, text: '' }));
 
@@ -230,17 +239,23 @@ export class Store extends EventEmitter {
     const intoLive = id !== null && id === this.liveClaudeId;
     const pending = path.join(this.root, 'claude', `pending-${randomUUID()}`);
     if (!intoLive) mkdirSync(pending, { recursive: true });
+    const putBack = intoLive ? keepLogin(liveSlot()) : null;
     let outcome = 'failed';
     try {
       const run = await runCLI('claude', ['auth', 'login', '--claudeai'], {
-        env: cleanEnvironment(intoLive ? {} : { CLAUDE_CONFIG_DIR: pending, CLAUDE_SECURESTORAGE_CONFIG_DIR: pending }), cwd: intoLive ? undefined : pending,
+        env: intoLive ? liveEnvironment() : cleanEnvironment({ CLAUDE_CONFIG_DIR: pending, CLAUDE_SECURESTORAGE_CONFIG_DIR: pending }), cwd: intoLive ? undefined : pending,
         // Claude Code opens the browser itself and waits for it; its input stays open as it expects.
         timeout: 300_000, control, keepInput: true,
       });
       const slot = folderSlot(pending);
       const identity = intoLive ? null : readIdentity(slot);
       if (run.cancelled) outcome = 'cancelled';
-      else if (intoLive) outcome = run.status === 0 ? 'renewed' : 'failed';
+      else if (intoLive && run.status !== 0) outcome = 'failed';
+      else if (intoLive) {
+        // The browser may be signed in to another account: then Claude Code goes back to the login it had.
+        const wanted = this.claudeAccounts().find((account) => account.id === id);
+        if (compareIdentity(readIdentity(liveSlot()), wanted?.identity) === 'different') { putBack(); outcome = 'wrongAccount'; } else outcome = 'renewed';
+      }
       else if (run.status === 0 && identity && readCredentials(slot)?.refreshToken) {
         const wanted = id ? this.claudeAccounts().find((account) => account.id === id) : null;
         let account = this.findClaude(identity);
