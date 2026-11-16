@@ -162,7 +162,7 @@ final class StatusBarController {
         // account, Settings to add a line.
         let empty = shown.isEmpty ? String(localized: "\(name) · Click to add a usage line") : name + " · " + GroupListWords.accounts(shown.count)
         let description = entries.isEmpty ? empty : entries.map {
-            "\($0.account.title) · \($0.metric.localizedTitle): \($0.percentage)" + ($0.stale ? " " + String(localized: "(cached)") : "")
+            "\(store.accountLabel(for: $0.account)) · \($0.metric.localizedTitle): \($0.percentage)" + ($0.stale ? " " + String(localized: "(cached)") : "")
         }.joined(separator: "\n")
         let common = config.commonBadgeText.flatMap { $0.isEmpty ? nil : $0 }
         let accessibleDescription = common.map { $0 + "\n" + description } ?? description

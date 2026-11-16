@@ -306,7 +306,7 @@ struct GroupAccountListView: View {
     private func row(_ account: UsageAccount, refreshed: Bool, claudeCode: ClaudeCodePanel) -> some View {
         GroupAccountRow(
             provider: account.provider,
-            badge: store.displayConfiguration.display(account).badge,
+            name: store.accountLabel(for: account),
             address: account.identity?.email.flatMap { $0.isEmpty ? nil : $0 } ?? store.accountLabel(for: account),
             snapshot: store.snapshot(for: account),
             refreshed: refreshed,

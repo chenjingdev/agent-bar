@@ -69,7 +69,7 @@ struct CouponShotTests {
             case .result(.nothingToReset, _, _): (fiveHour: 12, weekly: 5)
             default: (fiveHour: 96, weekly: 41)
             }
-            return GroupAccountRow(provider: provider, badge: provider == .codex ? "CX" : "CL",
+            return GroupAccountRow(provider: provider, name: provider == .codex ? "CX" : "CL",
                                    address: provider == .codex ? "team@example.com" : "me@example.com",
                                    snapshot: snapshot(provider, usage.fiveHour, usage.weekly), coupon: panel)
         }

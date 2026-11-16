@@ -309,11 +309,11 @@ final class UsageStore: ObservableObject {
         account.credentialID.map { files.credentials($0) }
     }
 
+    /// The account's name wherever AgentBar names it: the name given in Settings › Accounts, or, until one is given,
+    /// the short badge it got when it was added ("CL2"), so the panel, the menu bar and Settings all say the same.
     func accountLabel(for account: UsageAccount) -> String {
         guard account.name == account.identity?.email || account.name == "Current CLI account" else { return account.name }
-        let peers = accounts.filter { $0.provider == account.provider && !$0.deletionPending }
-        let number = (peers.firstIndex(where: { $0.id == account.id }) ?? 0) + 1
-        return account.provider.displayName + (number > 1 ? " \(number)" : "")
+        return displayConfiguration.display(account).badge
     }
     func rename(_ account: UsageAccount, name: String) {
         let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))

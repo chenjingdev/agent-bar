@@ -422,7 +422,7 @@ struct GroupAccountListRenderingTests {
         let useHelp = "Use this account in Claude Code. Open sessions switch within 30 s."
         func row(_ badge: String, _ address: String, _ snapshot: ProviderSnapshot, _ control: ClaudeCodePanel.Control = .hidden,
                  _ lines: [ClaudeCodePanel.Line] = [], pointer: Bool = false, refreshing: Bool = false) -> GroupAccountRow {
-            GroupAccountRow(provider: snapshot.provider, badge: badge, address: address, snapshot: snapshot, refreshing: refreshing,
+            GroupAccountRow(provider: snapshot.provider, name: badge, address: address, snapshot: snapshot, refreshing: refreshing,
                             claudeCode: ClaudeCodePanel(control: control, lines: lines), highlighted: pointer)
         }
         return [

@@ -89,7 +89,7 @@ struct ResetCouponLineTests {
 
     @Test func aRowIsAsTallInEveryCouponStateAndAsBeforeWithoutCoupons() throws {
         func height(_ coupon: CouponPanel) -> CGFloat {
-            let row = GroupAccountRow(provider: .codex, badge: "CX", address: "cx@example.test", snapshot: Self.snapshot(nil), coupon: coupon)
+            let row = GroupAccountRow(provider: .codex, name: "CX", address: "cx@example.test", snapshot: Self.snapshot(nil), coupon: coupon)
             return NSHostingView(rootView: row.frame(width: GroupAccountListView.width - 12)).fittingSize.height
         }
         let heights = Set(Self.states.map { height($0.1) })

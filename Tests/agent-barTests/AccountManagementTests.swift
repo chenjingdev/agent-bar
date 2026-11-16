@@ -303,3 +303,30 @@ struct AccountManagementTests {
         #expect(ProviderCLI.processEnvironment()["CODEX_HOME"] == nil)
     }
 }
+
+// The name given in Settings › Accounts is the name the panel's row, the group chips and the menu bar's tooltip use.
+extension AccountManagementTests {
+    @Test @MainActor func renamingAnAccountRenamesItEverywhereAndUnnamedOnesKeepTheirBadge() async throws {
+        let files = try temporaryFiles(); defer { try? FileManager.default.removeItem(at: files.root) }
+        let first = UsageAccount(id: UUID(), provider: .claude, name: "one@example.test",
+                                 identity: AccountIdentity(email: "one@example.test"), credentialID: UUID())
+        let second = UsageAccount(id: UUID(), provider: .claude, name: "two@example.test",
+                                  identity: AccountIdentity(email: "two@example.test"), credentialID: UUID())
+        var registry = AccountRegistry(accounts: [first, second]); registry.repairRepresentatives()
+        try files.write(registry, to: files.registryURL)
+        let suite = "account-name-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
+        defer { store.shutdown() }
+        // Before a name is given: the badge the panel showed before, not "Claude 2".
+        #expect(store.accountLabel(for: first) == store.displayConfiguration.display(first).badge)
+        #expect(store.accountLabel(for: second) == store.displayConfiguration.display(second).badge)
+        store.rename(second, name: "  회사 Max  ")
+        let renamed = try #require(store.accounts.first { $0.id == second.id })
+        #expect(store.accountLabel(for: renamed) == "회사 Max")
+        // Saved for the next launch too.
+        let reopened = UsageStore(settings: AppSettings(defaults: defaults), files: files, autoRefresh: false)
+        defer { reopened.shutdown() }
+        #expect(reopened.accountLabel(for: try #require(reopened.accounts.first { $0.id == second.id })) == "회사 Max")
+    }
+}

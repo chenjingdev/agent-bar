@@ -50,7 +50,7 @@ struct GroupMemberSection: View {
     }
 
     private func chip(_ account: UsageAccount, order: [UUID]) -> some View {
-        MemberChip(provider: account.provider, badge: store.displayConfiguration.display(account).badge,
+        MemberChip(provider: account.provider, badge: store.accountLabel(for: account),
                    title: account.provider.accountChoiceTitle(store.accountLabel(for: account))) {
             store.removeGroupMember(account.id, from: group.id)
         }
@@ -112,7 +112,7 @@ struct GroupMemberSection: View {
                 .frame(width: drag.placeholder.width, height: drag.placeholder.height)
                 .offset(x: drag.placeholder.minX, y: drag.placeholder.minY)
                 .animation(.snappy(duration: 0.18), value: drag.target)
-            MemberChipLabel(provider: account.provider, badge: store.displayConfiguration.display(account).badge)
+            MemberChipLabel(provider: account.provider, badge: store.accountLabel(for: account))
                 .frame(width: drag.floatingFrame.width, height: drag.floatingFrame.height)
                 .modifier(FloatingDragCard(settling: settling, cornerRadius: MemberChip.cornerRadius))
                 .offset(x: drag.floatingFrame.minX, y: drag.floatingFrame.minY)
@@ -146,7 +146,7 @@ struct GroupMemberSection: View {
     }
 }
 
-/// A member as its chip and the dragged copy draw it: the provider's tile and the menu bar badge.
+/// A member as its chip and the dragged copy draw it: the provider's tile and the account's name.
 struct MemberChipLabel: View {
     let provider: ProviderKind
     let badge: String

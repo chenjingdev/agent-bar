@@ -334,7 +334,7 @@ struct AccountEditSheet: View {
             }
             TextField("Account name", text: $name)
                 .textFieldStyle(.roundedBorder)
-            Text("Badge text and color are edited on usage lines in Menu Bar.")
+            Text("The menu bar panel and Settings show the account by this name.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Cancel") { dismiss() }

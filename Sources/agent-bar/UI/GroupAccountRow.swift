@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// One account in a group's account list: its mark, badge, plan and address, a cell for each limit the service reports,
+// One account in a group's account list: its mark, name, plan and address, a cell for each limit the service reports,
 // then what needs attention. Plain values, so every state can be drawn without a store, as `ClaudeCodePanel` is.
 struct GroupAccountRow: View {
     struct Actions {
@@ -23,7 +23,8 @@ struct GroupAccountRow: View {
     static let buttonFont = Font.caption.weight(.semibold)
 
     let provider: ProviderKind
-    let badge: String
+    /// The name given in Settings › Accounts, or the account's badge until it has one.
+    let name: String
     let address: String
     let snapshot: ProviderSnapshot
     // Whether the account is refreshed at all and whether it is being refreshed now, for the status line.
@@ -62,7 +63,7 @@ struct GroupAccountRow: View {
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(highlighted ? 0.06 : 0)))
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(Text(verbatim: badge + " · " + address))
+        .accessibilityLabel(Text(verbatim: name + " · " + address))
         // The button that waits for the pointer, as an action VoiceOver reaches without one.
         .accessibilityActions {
             if case .use(true, _) = claudeCode.control { Button(ClaudeCodeWords.use, action: actions.use) }
@@ -79,9 +80,10 @@ struct GroupAccountRow: View {
             // As tall as a line with the Claude Code button, so rows line up whether or not they have one.
             Self.buttonHeightTemplate
             HStack(spacing: 6) {
-                Text(verbatim: badge).font(.headline).lineLimit(1).fixedSize()
+                // A long name is cut short only after the address has given all its room.
+                Text(verbatim: name).font(.headline).lineLimit(1).truncationMode(.tail).layoutPriority(1)
                 if let plan = snapshot.planName, !plan.isEmpty { PlanTag(plan: plan).fixedSize() }
-                // The address gives way first: it is cut short before the badge, the plan or the button.
+                // The address gives way first: it is cut short before the name, the plan or the button.
                 Text(verbatim: address).font(.callout).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
