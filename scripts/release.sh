@@ -41,7 +41,7 @@ fi
 app="$repo_dir/AgentBar.app"
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
 tag="v$version"
-codesign -dv "$app" 2>&1 | grep -q "Authority=Developer ID Application" \
+[[ "$(codesign -dv "$app" 2>&1)" == *"Authority=Developer ID Application"* ]] \
   || { echo "AgentBar.app is not signed with a Developer ID." >&2; exit 1; }
 
 output="$repo_dir/work/release"
