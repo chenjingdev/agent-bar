@@ -13,7 +13,7 @@ const failure = (code, detail) => Object.assign(new Error(detail ?? code), { cod
 export const defaultCodexHome = () => process.env.CODEX_HOME || path.join(userHome, '.codex');
 
 export class CodexRPC {
-  #child; #buffer = ''; #waiting = new Map(); #nextId = 1; #onNotification = null; #closed = false;
+  #child; #buffer = ''; #waiting = new Map(); #nextId = 1; #onNotification = null; #closed = false; #gone;
 
   // `home` is the account's folder.
   static async open(home, { requestTimeout = 25_000 } = {}) {
@@ -21,7 +21,7 @@ export class CodexRPC {
     try {
       await rpc.request('initialize', { clientInfo: { name: 'agent-bar', version: '0.2.0' }, capabilities: { experimentalApi: true } });
       rpc.#send({ method: 'initialized' });
-    } catch (error) { rpc.stop(); throw error; }
+    } catch (error) { await rpc.stop(); throw error; }
     return rpc;
   }
 
@@ -41,6 +41,8 @@ export class CodexRPC {
     };
     this.#child.on('error', end);
     this.#child.on('close', end);
+    // Done when the app-server has let go of the account's folder: on Windows its files stay locked until then.
+    this.#gone = new Promise((resolve) => { this.#child.on('close', resolve); this.#child.on('error', resolve); });
   }
 
   #send(value) { if (!this.#closed) this.#child.stdin.write(`${JSON.stringify(value)}\n`); }
@@ -111,11 +113,14 @@ export class CodexRPC {
     return this.identity();
   }
 
+  // Ends the app-server. Answers when it has ended (5 seconds at most).
   stop() {
-    if (this.#closed) return;
-    this.#closed = true;
-    try { this.#child.stdin.end(); } catch {}
-    this.#child.kill();
+    if (!this.#closed) {
+      this.#closed = true;
+      try { this.#child.stdin.end(); } catch {}
+      this.#child.kill();
+    }
+    return Promise.race([this.#gone, new Promise((resolve) => setTimeout(resolve, 5000).unref())]);
   }
 }
 
@@ -153,7 +158,7 @@ export async function loadCodex(home, expectedIdentity, memory, { force = false 
     Object.assign(memory, { at: now, usageAt: now, error: null, usage, identity, retryUntil: 0 });
   } catch (error) {
     Object.assign(memory, { at: now, error: error.code ?? 'request', retryUntil: error.code === 'rate-limited' ? now + error.retryAfter * 1000 : 0 });
-  } finally { rpc?.stop(); }
+  } finally { await rpc?.stop(); }
   return codexSnapshot(memory);
 }
 
@@ -187,11 +192,11 @@ export async function useCodexCoupon(home, expectedIdentity, memory, claim) {
     return outcome;
   } catch (error) {
     return error.code === 'login' ? 'signInAgain' : 'tryLater';
-  } finally { rpc?.stop(); }
+  } finally { await rpc?.stop(); }
 }
 
 // Signs a new account in with the browser into `home`. Answers its identity.
 export async function loginCodex(home, control) {
   const rpc = await CodexRPC.open(home);
-  try { return await rpc.login(control); } finally { rpc.stop(); }
+  try { return await rpc.login(control); } finally { await rpc.stop(); }
 }
