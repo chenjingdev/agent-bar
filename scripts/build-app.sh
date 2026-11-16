@@ -33,7 +33,9 @@ signing_identity="${AGENTBAR_CODE_SIGN_IDENTITY:-}"
 sparkle_version="2.10.1"
 sparkle_sha256="1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27"
 sparkle_dir="${AGENTBAR_VENDOR_DIR:-$repo_dir/.build/vendor}/Sparkle-$sparkle_version"
-sparkle_feed="${AGENTBAR_SPARKLE_FEED:-https://kalti.co.kr/limi/appcast.xml}"
+# This fork takes no updates from the official Limi feed (kalti.co.kr): a build
+# updates itself only when AGENTBAR_SPARKLE_FEED names a feed of its own.
+sparkle_feed="${AGENTBAR_SPARKLE_FEED:-}"
 update_key_file="$repo_dir/scripts/update-public-key.txt"
 usage="Usage: ./scripts/build-app.sh [--install]
   --install                    also install to ~/Applications (the running app must be closed)
@@ -156,13 +158,13 @@ plutil -replace CFBundleVersion -string "$app_build" "$info_plist"
 plutil -insert NSAppTransportSecurity -json '{"NSAllowsLocalNetworking":true}' "$info_plist"
 # Sparkle: where to look for updates (once a day, without asking first) and the
 # key every update must be signed with.
-if [[ -s "$update_key_file" ]]; then
+if [[ -n "$sparkle_feed" && -s "$update_key_file" ]]; then
   plutil -insert SUFeedURL -string "$sparkle_feed" "$info_plist"
   plutil -insert SUPublicEDKey -string "$(tr -d '[:space:]' < "$update_key_file")" "$info_plist"
   plutil -insert SUEnableAutomaticChecks -bool true "$info_plist"
   plutil -insert SUScheduledCheckInterval -integer 86400 "$info_plist"
 else
-  echo "note: no $update_key_file, so this build does not update itself" >&2
+  echo "note: no AGENTBAR_SPARKLE_FEED (or no $update_key_file), so this build does not update itself" >&2
 fi
 
 printf 'APPL????' > "$bundle_path/Contents/PkgInfo"

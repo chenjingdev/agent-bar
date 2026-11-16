@@ -314,7 +314,58 @@ struct ClaudeResetCouponTests {
         #expect(await fixture.provider.useCoupon(offers.selecting(chosen)) == .reset)
         #expect(fixture.transport.requests.map(\.httpMethod) == ["GET", "POST"])
         #expect(try fixture.transport.lastBody()["grant_id"] == "fable")
+        // Claude Code sends its request id in lowercase.
+        let requestID = try #require(try fixture.transport.lastBody()["request_id"])
+        #expect(requestID == requestID.lowercased() && UUID(uuidString: requestID) != nil)
     }
+
+    // As in agent-bar: a refused coupon flag never costs the usage. The plain read follows, and the coupons are asked
+    // for again a little later instead of with every read.
+    @Test func aRefusedCouponFlagFallsBackToPlainUsage() async throws {
+        let fixture = try ClaudeFixture()
+        defer { fixture.close() }
+        let sent = SentURLs()
+        let provider = ClaudeUsageProvider(directory: fixture.root, cacheURL: fixture.cacheURL, transport: { request in
+            sent.append(request)
+            let refused = request.url == ClaudeCedar.readURL
+            let body = refused ? Data() : Data(#"{"five_hour":{"utilization":40,"resets_at":null}}"#.utf8)
+            return (body, HTTPURLResponse(url: request.url!, statusCode: refused ? 400 : 200, httpVersion: nil, headerFields: nil)!)
+        }, couponUserAgent: { ClaudeFixture.couponAgent })
+        let snapshot = await provider.load()
+        #expect(sent.all.map(\.url) == [ClaudeCedar.readURL, URL(string: "https://api.anthropic.com/api/oauth/usage")!])
+        #expect(sent.all.allSatisfy { $0.value(forHTTPHeaderField: "User-Agent") == ClaudeFixture.couponAgent })
+        #expect(!snapshot.isStale && snapshot.fiveHour?.utilization != nil && snapshot.resetCoupons == nil)
+        #expect(!provider.couponsDue())
+        #expect(provider.couponsDue(now: Date().addingTimeInterval(6 * 60)))
+    }
+}
+
+extension ClaudeResetCouponTests {
+    // The coupon line shows right after the panel's read, so the check before a claim comes seconds later and is
+    // refused (429). The claim still goes out (t1d1's bug report).
+    @Test func aClaimRightAfterARefreshStillSendsTheReset() async throws {
+        let fixture = try ClaudeFixture()
+        defer { fixture.close() }
+        let sent = SentURLs()
+        let usage = Self.body(atLimit: true, exhausted: ["seven_day"], nextGrantId: "g",
+                              grants: [["id": "g", "resets_left": 1, "ends_at": Self.at(9_000), "type": "full", "usable_now": true]])
+        let provider = ClaudeUsageProvider(directory: fixture.root, cacheURL: fixture.cacheURL, transport: { request in
+            sent.append(request)
+            let reply: (Int, Data) = request.httpMethod == "POST" ? (200, Data(#"{"result":"reset"}"#.utf8))
+                : sent.all.count == 1 ? (200, usage) : (429, Data())
+            return (reply.1, HTTPURLResponse(url: request.url!, statusCode: reply.0, httpVersion: nil, headerFields: nil)!)
+        }, couponUserAgent: { ClaudeFixture.couponAgent })
+        let coupons = try #require(await provider.load().resetCoupons)
+        _ = await provider.useCoupon(coupons)
+        #expect(sent.all.map(\.httpMethod) == ["GET", "GET", "POST"])
+    }
+}
+
+private final class SentURLs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests: [URLRequest] = []
+    var all: [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
+    func append(_ request: URLRequest) { lock.lock(); requests.append(request); lock.unlock() }
 }
 
 // An account folder with a sign-in that has not expired, its organization, and a fake transport.

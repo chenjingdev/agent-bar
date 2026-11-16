@@ -63,11 +63,13 @@ enum CouponWords {
                 parts.append(String(localized: "\(scope) next", bundle: bundle))
             }
         } else {
-            parts = [count(coupons.count, bundle)]
+            // With the limits named after it, "coupons" is enough and the line fits the panel.
+            let n = coupons.count
+            let short = n == 1 ? String(localized: "1 coupon", bundle: bundle) : String(localized: "\(n) coupons", bundle: bundle)
             switch coupons.scope {
-            case .fiveHourAndWeekly: break
-            case .fiveHour: parts.append(String(localized: "5-hour only", bundle: bundle))
-            case .weekly, .fableWeekly, .fiveHourAndFableWeekly: parts.append(scopeTitle(coupons.scope, bundle))
+            case .fiveHourAndWeekly: parts = [count(n, bundle)]
+            case .fiveHour: parts = [short, String(localized: "5-hour only", bundle: bundle)]
+            case .weekly, .fableWeekly, .fiveHourAndFableWeekly: parts = [short, scopeTitle(coupons.scope, bundle)]
             }
         }
         if let expiry = expiry(coupons, bundle) { parts.append(expiry) }

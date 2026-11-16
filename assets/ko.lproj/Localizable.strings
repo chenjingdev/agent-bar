@@ -338,6 +338,8 @@
 "Resetting…" = "초기화하는 중…";
 "1 reset coupon" = "초기화 쿠폰 1장";
 "%lld reset coupons" = "초기화 쿠폰 %lld장";
+"1 coupon" = "쿠폰 1장";
+"%lld coupons" = "쿠폰 %lld장";
 "%lld coupons total" = "쿠폰 총 %lld장";
 "%lld coupons (%lld Fable)" = "쿠폰 %lld장(Fable %lld장)";
 "%@ next" = "다음은 %@";

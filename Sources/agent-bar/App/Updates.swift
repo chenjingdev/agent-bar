@@ -4,9 +4,10 @@ import Combine
 import Sparkle
 #endif
 
-/// Automatic updates (Sparkle). scripts/build-app.sh links Sparkle and writes the
-/// feed (SUFeedURL, https://kalti.co.kr/limi/appcast.xml) and the public key every
-/// update must be signed with (SUPublicEDKey) into Info.plist. Sparkle then looks
+/// Automatic updates (Sparkle). scripts/build-app.sh links Sparkle and, only when
+/// AGENTBAR_SPARKLE_FEED names a feed, writes it (SUFeedURL) and the public key every
+/// update must be signed with (SUPublicEDKey) into Info.plist; this fork's builds
+/// have neither, so the official Limi feed never replaces them. Sparkle then looks
 /// once a day without asking first. A plain `swift build` or `swift test` has no
 /// Sparkle and none of this.
 ///

@@ -133,7 +133,7 @@ Runs on Macs with Apple silicon and macOS 14 or later.
 1. Download **Limi.zip** from [kalti.co.kr/limi](https://kalti.co.kr/limi) or the [latest GitHub release](https://github.com/kalti-lab/limi/releases/latest).
 2. Unzip it, move **Limi.app** to Applications and open it.
 
-Limi is signed with a Developer ID and notarized by Apple. It updates itself with [Sparkle](https://sparkle-project.org) and checks for a new version about once a day. To check right away, use **Check for Updates…** next to the version in **Settings › General**.
+> **This fork (chenjingdev/limi)** brings back agent-bar's way of asking Anthropic and does not update itself: a build from this repository has no update feed, so the official Limi never replaces it. Build it from source ([below](#build-from-source)).
 
 ## REQUIREMENTS
 
@@ -169,11 +169,11 @@ Then set up the menu bar in **Settings › Menu Bar**: add groups, put accounts 
 Requires macOS 14 or later and Swift 6.2 or later (Xcode 26 or later).
 
 ```sh
-git clone https://github.com/jsiksn/limi.git
+git clone https://github.com/chenjingdev/limi.git
 cd limi
 swift test
-./scripts/build-app.sh
-open Limi.app
+./scripts/build-app.sh --install   # into ~/Applications
+open ~/Applications/Limi.app
 ```
 
 The first build downloads [Sparkle](https://github.com/sparkle-project/Sparkle) and checks it against a fixed SHA-256. `./scripts/build-app.sh --help` lists the options. Signing is optional: unless you give the script a signing identity, it signs the app ad hoc, which is enough to run it on your own Mac.
@@ -183,10 +183,10 @@ The first build downloads [Sparkle](https://github.com/sparkle-project/Sparkle) 
 Limi has no server and no account of its own. It reads the sign-ins stored on this Mac and asks each service directly.
 
 - **Sign-ins.** Every account you add gets a private folder under `~/.agentbar/multi-account-v1/` that only your macOS user can read, and Limi reads the sign-in it keeps there. Limi never imports, follows or changes the logins of your own `claude`, `codex` or `agy`, except that **Use** changes your `claude` login when you press it ([below](#use-in-claude-code)). Deleting an account in Settings removes its sign-ins and cached usage.
-- **Claude.** Limi calls Anthropic's OAuth usage API (`api.anthropic.com/api/oauth/usage`) with the managed account's token. After sign-in it copies the credential from Keychain into the account's folder and renews the token there when needed. Regular usage requests identify as `Limi/<version>`. Coupon queries add `cedar_ember=1&skip_spend=1`, and coupon queries and reset requests send `User-Agent: claude-cli/<installed version> (external, cli)`. When you confirm a reset, Limi rechecks the selected coupon's eligibility before the first request to `POST api.anthropic.com/api/organizations/<organization>/reset_rate_limits`. The coupon interfaces are undocumented.
+- **Claude.** Limi calls Anthropic's OAuth usage API (`api.anthropic.com/api/oauth/usage`) with the managed account's token. After sign-in it copies the credential from Keychain into the account's folder and renews the token there when needed. As agent-bar does, every Claude request (usage, coupons and resets) sends `User-Agent: claude-cli/<installed version> (external, cli)`, the version `claude --version` prints when Limi starts; an older or unreadable Claude Code sends 2.1.295, the oldest version the reset program accepts. About every 30 minutes the usage read also asks for coupons by adding `cedar_ember=1&skip_spend=1`; if Claude refuses that flag, Limi reads plain usage and asks for coupons again 5 minutes later. When you confirm a reset, Limi reads the coupons again to check the one you chose (if that read is refused because it comes right after the last one, Limi goes ahead), then sends `POST api.anthropic.com/api/organizations/<organization>/reset_rate_limits` with a lowercase `request_id`. The coupon interfaces are undocumented.
 - **Codex.** Limi reads through the official `codex app-server` (`account/read` and `account/rateLimits/read`), started separately for each account with its own `CODEX_HOME`. It calls `account/rateLimitResetCredit/consume` only when you press **OK** on a reset coupon. The Codex CLI makes the network requests.
 - **Antigravity.** Limi never holds the Antigravity sign-in. It runs `agy -p /usage`, which prints the quota report without starting a model turn, so it uses no quota. Limi runs it without a terminal and with nothing it could open a browser with, so a signed-out `agy` stops at once and the account asks you to sign in. Without `agy`, Limi asks the Antigravity app's local server (`127.0.0.1`) while the app is open.
-- **Nothing goes to KALTI.** Limi has no analytics or telemetry. It connects to kalti.co.kr only to check for updates, and update files are downloaded from GitHub Releases.
+- **Nothing goes to KALTI.** Limi has no analytics or telemetry. A build of this fork never checks for updates, so it does not connect to kalti.co.kr or GitHub Releases.
 
 ### Use in Claude Code
 

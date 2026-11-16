@@ -133,7 +133,7 @@ Apple Silicon 맥, macOS 14 이상에서 쓸 수 있습니다.
 1. [kalti.co.kr/limi](https://kalti.co.kr/ko/limi/)나 [GitHub 최신 릴리스](https://github.com/kalti-lab/limi/releases/latest)에서 **Limi.zip**을 내려받습니다.
 2. 압축을 풀고 **Limi.app**을 응용 프로그램 폴더로 옮긴 뒤 엽니다.
 
-Developer ID로 서명하고 Apple의 공증을 받은 앱입니다. [Sparkle](https://sparkle-project.org)로 스스로 업데이트하며, 새 버전은 하루에 한 번쯤 확인합니다. 바로 확인하려면 **설정 › 일반**에서 버전 옆의 <b>업데이트 확인…</b>을 누릅니다.
+> **이 포크(chenjingdev/limi)** 는 agent-bar가 Anthropic에 묻던 방식을 되살렸고, 스스로 업데이트하지 않습니다. 이 저장소로 만든 앱에는 업데이트 피드가 없어서 공식 Limi로 덮이지 않습니다. 아래 **소스로 빌드하기**대로 빌드해서 씁니다.
 
 ## REQUIREMENTS<br>필요한 것
 
@@ -169,11 +169,11 @@ Limi를 처음 열면 계정이 없으므로 **설정 › 계정**이 열립니�
 macOS 14 이상과 Swift 6.2 이상(Xcode 26 이상)이 필요합니다.
 
 ```sh
-git clone https://github.com/jsiksn/limi.git
+git clone https://github.com/chenjingdev/limi.git
 cd limi
 swift test
-./scripts/build-app.sh
-open Limi.app
+./scripts/build-app.sh --install   # ~/Applications에 설치
+open ~/Applications/Limi.app
 ```
 
 처음 빌드할 때 [Sparkle](https://github.com/sparkle-project/Sparkle)을 내려받고, 정해 둔 SHA-256 값과 맞는지 확인합니다. 옵션은 `./scripts/build-app.sh --help`로 볼 수 있습니다. 서명은 하지 않아도 됩니다. 서명할 인증서를 따로 주지 않으면 임시(ad hoc) 서명을 하고, 내 맥에서 돌리기에는 이것으로 충분합니다.
@@ -183,10 +183,10 @@ open Limi.app
 Limi에는 서버가 없고, Limi에 따로 가입할 필요도 없습니다. 이 맥에 저장된 로그인 정보를 읽어 각 서비스에 직접 묻습니다.
 
 - **로그인 정보.** 추가한 계정마다 `~/.agentbar/multi-account-v1/` 안에 내 macOS 사용자만 읽을 수 있는 폴더가 생기고, Limi는 거기 둔 로그인 정보를 읽습니다. 평소 쓰는 `claude`, `codex`, `agy`의 로그인을 가져오거나 바꾸지 않습니다. 다만 **쓰기**를 누르면 `claude`의 로그인을 바꿉니다([아래](#claude-code에서-쓰기) 참고). 설정에서 계정을 지우면 그 계정의 로그인 정보와 저장된 사용량도 지워집니다.
-- **Claude.** Limi가 관리하는 계정의 토큰으로 Anthropic OAuth 사용량 API(`api.anthropic.com/api/oauth/usage`)를 호출합니다. 로그인 뒤 키체인의 로그인 정보를 계정 폴더에 복사하고 필요할 때 그 폴더의 토큰을 갱신합니다. 일반 사용량 요청에는 `Limi/<버전>`을 씁니다. 쿠폰 조회에는 `cedar_ember=1&skip_spend=1`을 붙이며, 쿠폰 조회와 사용 요청에는 `User-Agent: claude-cli/<설치된 버전> (external, cli)`를 보냅니다. **확인**을 누르면 고른 쿠폰의 사용 조건을 다시 확인한 뒤 `POST api.anthropic.com/api/organizations/<조직>/reset_rate_limits`로 첫 사용 요청을 보냅니다. 쿠폰 인터페이스는 공개 문서에 없습니다.
+- **Claude.** Limi가 관리하는 계정의 토큰으로 Anthropic OAuth 사용량 API(`api.anthropic.com/api/oauth/usage`)를 호출합니다. 로그인 뒤 키체인의 로그인 정보를 계정 폴더에 복사하고 필요할 때 그 폴더의 토큰을 갱신합니다. agent-bar처럼 사용량 조회 · 쿠폰 조회 · 쿠폰 사용 요청 모두에 `User-Agent: claude-cli/<설치된 버전> (external, cli)`를 보냅니다. 버전은 Limi가 켜질 때 `claude --version`으로 읽고, Claude Code가 너무 오래됐거나 버전을 못 읽으면 쿠폰 프로그램이 받는 가장 낮은 버전인 2.1.295를 씁니다. 30분쯤마다 사용량 조회에 `cedar_ember=1&skip_spend=1`을 붙여 쿠폰도 함께 묻고, Claude가 이 표시를 거절하면 표시 없이 사용량만 읽은 뒤 5분 뒤에 쿠폰을 다시 묻습니다. **확인**을 누르면 고른 쿠폰을 확인하려고 쿠폰을 한 번 더 읽고(바로 앞 조회에 이어져 거절되면 확인 없이 진행), `POST api.anthropic.com/api/organizations/<조직>/reset_rate_limits`로 사용 요청을 보냅니다. `request_id`는 소문자로 씁니다. 쿠폰 인터페이스는 공개 문서에 없습니다.
 - **Codex.** 공식 `codex app-server`(`account/read`, `account/rateLimits/read`)로 읽습니다. 초기화 쿠폰에서 **확인**을 눌렀을 때만 `account/rateLimitResetCredit/consume`을 부릅니다. 계정마다 `CODEX_HOME`을 따로 두고 띄우며, 네트워크 요청은 Codex CLI가 합니다.
 - **Antigravity.** Antigravity 로그인 정보는 Limi가 갖고 있지 않습니다. Limi는 `agy -p /usage`를 실행해 읽는데, 이 명령은 모델을 돌리지 않고 한도 보고만 출력하므로 한도를 쓰지 않습니다. 터미널 없이, 브라우저를 열 수 없는 상태로 실행하므로 `agy`가 로그인되어 있지 않으면 바로 멈추고 계정에 로그인하라는 안내가 뜹니다. `agy`가 없으면 Antigravity 앱이 열려 있는 동안 앱의 로컬 서버(`127.0.0.1`)에 묻습니다.
-- **칼티로 보내는 정보는 없습니다.** 분석 도구나 사용 통계 수집도 없습니다. kalti.co.kr에는 업데이트를 확인할 때만 접속하고, 업데이트 파일은 GitHub 릴리스에서 받습니다.
+- **칼티로 보내는 정보는 없습니다.** 분석 도구나 사용 통계 수집도 없습니다. 이 포크로 만든 앱은 업데이트를 확인하지 않으므로 kalti.co.kr이나 GitHub 릴리스에 접속하지 않습니다.
 
 ### Claude Code에서 쓰기
 

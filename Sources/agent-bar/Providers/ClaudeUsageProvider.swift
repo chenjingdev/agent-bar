@@ -75,7 +75,8 @@ struct ClaudeUsageProvider: UsageProviding {
                     requiresLogin: Self.requiresLogin(for: remoteResult.data.apiError)
                 )
                 if !remoteResult.isStale {
-                    snapshot.resetCoupons = noteCoupons(answer: remoteResult.couponAnswer, subscriptionType: credentials.subscriptionType)
+                    snapshot.resetCoupons = noteCoupons(answer: remoteResult.couponAnswer, subscriptionType: credentials.subscriptionType,
+                                                         refused: remoteResult.couponsRefused)
                 }
                 return snapshot
             } catch {
@@ -149,7 +150,8 @@ struct ClaudeUsageProvider: UsageProviding {
                 note: note(for: successData),
                 isStale: false,
                 sourceDescription: sourceDescription(for: successData),
-                couponAnswer: withCoupons ? apiResult.body : nil
+                couponAnswer: withCoupons && !apiResult.couponsRefused ? apiResult.body : nil,
+                couponsRefused: apiResult.couponsRefused
             )
         }
 
@@ -244,7 +246,19 @@ struct ClaudeUsageProvider: UsageProviding {
         }
     }
 
+    // Usage matters more than coupons, as in agent-bar: if the coupon flag is refused (a 4xx other than 401, 403 and
+    // 429), read plain usage instead.
     private func fetchUsageApi(accessToken: String, withCoupons: Bool) async -> UsageApiResult {
+        let result = await fetchUsageApiOnce(accessToken: accessToken, withCoupons: withCoupons)
+        guard withCoupons, let status = result.httpStatus, (400..<500).contains(status), ![401, 403, 429].contains(status) else {
+            return result
+        }
+        var plain = await fetchUsageApiOnce(accessToken: accessToken, withCoupons: false)
+        plain.couponsRefused = true
+        return plain
+    }
+
+    private func fetchUsageApiOnce(accessToken: String, withCoupons: Bool) async -> UsageApiResult {
         do {
             let request = try makeUsageRequest(accessToken: accessToken, withCoupons: withCoupons)
             try control.checkCancellation()
@@ -260,7 +274,8 @@ struct ClaudeUsageProvider: UsageProviding {
                 let retryAfterSeconds = httpResponse.statusCode == 429
                     ? Self.parseRetryAfterSeconds(httpResponse.value(forHTTPHeaderField: "Retry-After"))
                     : nil
-                return UsageApiResult(data: nil, error: error, retryAfterSeconds: retryAfterSeconds)
+                return UsageApiResult(data: nil, error: error, retryAfterSeconds: retryAfterSeconds,
+                                      httpStatus: httpResponse.statusCode)
             }
 
             do {
@@ -500,6 +515,7 @@ private struct RemoteUsageResult {
     let sourceDescription: String
     // The answer, when the read also asked for coupons.
     var couponAnswer: Data? = nil
+    var couponsRefused = false
 }
 
 enum ClaudeUsageSource: String, Codable {
@@ -589,6 +605,9 @@ private struct UsageApiResult {
     let error: String?
     let retryAfterSeconds: Int?
     var body: Data? = nil
+    var httpStatus: Int? = nil
+    // The coupon flag was refused and this is the plain read that followed.
+    var couponsRefused = false
 }
 
 private struct UsageWindowPayload: Decodable {
@@ -851,7 +870,7 @@ extension ClaudeUsageProvider {
 
     // The coupons to show after a read: from its answer when it asked for them, else what was last known, less any
     // whose last day has passed.
-    func noteCoupons(answer: Data?, subscriptionType: String = "", now: Date = .now) -> UsageResetCoupons? {
+    func noteCoupons(answer: Data?, subscriptionType: String = "", refused: Bool = false, now: Date = .now) -> UsageResetCoupons? {
         let agent = couponUserAgent()
         let plan = subscriptionType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         // The usage response can omit the 5h window before it has data.
@@ -860,6 +879,8 @@ extension ClaudeUsageProvider {
         var record = ClaudeCouponRecord(coupons: previous?.coupons, nextCheck: previous?.nextCheck ?? now,
                                         userAgent: agent, includesConditions: true)
         record.coupons = record.coupons?.pruningExpired(now: now)
+        // A refused coupon flag says nothing about the coupons; ask again a little later, not with every read.
+        if refused { record.nextCheck = now.addingTimeInterval(ClaudeCouponRecord.failureInterval) }
         if let answer {
             let block = ClaudeCedar.block(from: answer)
             if let block, block.eligible != true, block.ineligibleReason == "unavailable" {
@@ -918,19 +939,23 @@ extension ClaudeUsageProvider {
                     let (data, response) = try await transport(check)
                     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                     if status == 401 { return .signInAgain }
-                    guard status == 200, let block = ClaudeCedar.block(from: data) else { return .tryLater }
-                    let current = noteCoupons(answer: data, subscriptionType: credentials.subscriptionType)
-                    let options = current.map { $0.options ?? [$0.selectedOption] } ?? []
-                    guard ClaudeCedar.canRedeem(grant, in: block),
-                          let selected = options.first(where: { $0.claim == coupons.claim && $0.scope == coupons.scope }),
-                          selected.canRedeem,
-                          selected.affectedUsagePercent != 0 || coupons.affectedUsagePercent == 0 else { return .conditionsChanged }
+                    // A read right after the panel's own read is refused (429), and the coupons were chosen from that
+                    // fresh read: go on without the check, as Claude Code does. Claude still checks the grant itself.
+                    if status != 429 {
+                        guard status == 200, let block = ClaudeCedar.block(from: data) else { return .tryLater }
+                        let current = noteCoupons(answer: data, subscriptionType: credentials.subscriptionType)
+                        let options = current.map { $0.options ?? [$0.selectedOption] } ?? []
+                        guard ClaudeCedar.canRedeem(grant, in: block),
+                              let selected = options.first(where: { $0.claim == coupons.claim && $0.scope == coupons.scope }),
+                              selected.canRedeem,
+                              selected.affectedUsagePercent != 0 || coupons.affectedUsagePercent == 0 else { return .conditionsChanged }
+                    }
                 } catch {
                     return .tryLater
                 }
             }
             guard (try? readCredentials().cacheKey) == credentials.cacheKey else { return .signInAgain }
-            let requestID = retryID ?? UUID().uuidString
+            let requestID = retryID ?? UUID().uuidString.lowercased()
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = 25
