@@ -129,7 +129,7 @@ Runs on Macs with Apple silicon and macOS 14 or later.
 1. Download **Limi.zip** from [kalti.co.kr/limi](https://kalti.co.kr/limi) or the [latest GitHub release](https://github.com/kalti-lab/limi/releases/latest).
 2. Unzip it, move **Limi.app** to Applications and open it.
 
-Limi is signed with a Developer ID and notarized by Apple. It updates itself with [Sparkle](https://sparkle-project.org) and checks for a new version about once a day.
+Limi is signed with a Developer ID and notarized by Apple. It updates itself with [Sparkle](https://sparkle-project.org) and checks for a new version about once a day. To check right away, use **Check for Updates…** next to the version in **Settings › General**.
 
 ## REQUIREMENTS
 

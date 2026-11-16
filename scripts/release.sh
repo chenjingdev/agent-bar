@@ -11,8 +11,8 @@
 #   2. creates the GitHub release on kalti-lab/limi with Limi.zip, so
 #      https://github.com/kalti-lab/limi/releases/latest/download/Limi.zip is
 #      always the newest one (the site's download button). kalti-lab/limi holds
-#      only a README and the releases, so the release makes a tag of the same
-#      name there, on that repository's main;
+#      only a README and the releases, so the release gets an annotated tag of
+#      the same name there, on that repository's main, dated now;
 #   3. adds the version to the update feed, static/limi/appcast.xml in the
 #      kalti-site repository. The site also shows the version from that feed.
 # Then build, deploy and commit the site (its README).
@@ -106,14 +106,22 @@ fi
 echo "== Publishing $tag"
 git -C "$repo_dir" tag -a "$tag" -m "Limi $version"
 git -C "$repo_dir" push origin "$tag"
-# The release repository has no source: the release makes its own tag there, on
-# its main, and its notes link to the source at this tag.
+# The release repository has no source. Its tag for this release is an annotated
+# one on its main, dated now: every tag there points at the same commit, and
+# GitHub orders releases by their tag's date. It is made as the source's tagger
+# (a fresh clone has no identity of its own). The notes link to the source.
+release_clone=$(mktemp -d)
+git clone -q --depth 1 "https://github.com/$gh_repo.git" "$release_clone/repo"
+git -C "$release_clone/repo" -c user.name="$(git -C "$repo_dir" config user.name)" \
+  -c user.email="$(git -C "$repo_dir" config user.email)" tag -a "$tag" -m "Limi $version"
+git -C "$release_clone/repo" push -q origin "refs/tags/$tag"
+rm -rf "$release_clone"
 github_notes="$out/github-notes.html"
 {
   if [[ -n "$notes" ]]; then cat "$notes"; echo; fi
   echo "<p>Source code: <a href=\"https://github.com/$source_repo/tree/$tag\">$source_repo at $tag</a></p>"
 } > "$github_notes"
-gh release create "$tag" "$zip" --repo "$gh_repo" --target main --title "Limi $version" --notes-file "$github_notes"
+gh release create "$tag" "$zip" --repo "$gh_repo" --verify-tag --title "Limi $version" --notes-file "$github_notes"
 
 url="https://github.com/$gh_repo/releases/download/$tag/Limi.zip"
 minimum_system=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$app/Contents/Info.plist")

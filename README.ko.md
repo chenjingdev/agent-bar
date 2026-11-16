@@ -129,7 +129,7 @@ Apple Silicon 맥, macOS 14 이상에서 쓸 수 있습니다.
 1. [kalti.co.kr/limi](https://kalti.co.kr/ko/limi/)나 [GitHub 최신 릴리스](https://github.com/kalti-lab/limi/releases/latest)에서 **Limi.zip**을 내려받습니다.
 2. 압축을 풀고 **Limi.app**을 응용 프로그램 폴더로 옮긴 뒤 엽니다.
 
-Developer ID로 서명하고 Apple의 공증을 받은 앱입니다. [Sparkle](https://sparkle-project.org)로 스스로 업데이트하며, 새 버전은 하루에 한 번쯤 확인합니다.
+Developer ID로 서명하고 Apple의 공증을 받은 앱입니다. [Sparkle](https://sparkle-project.org)로 스스로 업데이트하며, 새 버전은 하루에 한 번쯤 확인합니다. 바로 확인하려면 **설정 › 일반**에서 버전 옆의 <b>업데이트 확인…</b>을 누릅니다.
 
 ## REQUIREMENTS<br>필요한 것
 
@@ -141,7 +141,7 @@ Developer ID로 서명하고 Apple의 공증을 받은 앱입니다. [Sparkle](h
 
 ## GETTING STARTED<br>처음 쓰기
 
-Limi를 처음 열면 계정이 없으므로 **설정 › 계정**이 열립니다. **계정 추가…**를 누르고 서비스를 고르세요. 추가하는 서비스마다 공식 명령줄 도구가 있어야 합니다.
+Limi를 처음 열면 계정이 없으므로 **설정 › 계정**이 열립니다. <b>계정 추가…</b>를 누르고 서비스를 고르세요. 추가하는 서비스마다 공식 명령줄 도구가 있어야 합니다.
 
 | 서비스 | 필요한 것 | 로그인하는 방법 |
 |---|---|---|
@@ -188,7 +188,7 @@ Limi에는 서버가 없고, Limi에 따로 가입할 필요도 없습니다. �
 
 그룹 목록의 Claude 계정 줄에서 **쓰기**(줄에 마우스를 올리면 보입니다)를 누르면, 평소 쓰는 `claude`의 로그인(기본 로그인, 키체인 항목 `Claude Code-credentials`)이 그 계정으로 바뀝니다. 모든 Claude Code 세션이 그 계정을 쓰게 되고, 열려 있는 세션도 30초쯤 안에 바뀝니다. Remote Control 연결은 끊깁니다. Claude Code가 지금 쓰는 계정에는 **사용 중**이 보입니다.
 
-- **계정마다 한 번 준비합니다.** **설정 › 계정**에서 **준비하기…**를 누르면 Claude Code가 브라우저로 그 계정에 로그인해 계정 전용 폴더(`~/.agentbar/multi-account-v1/lend/<계정 ID>/`)에 저장합니다. Limi가 사용량을 읽는 로그인과는 따로라서, 계정을 바꿔도 사용량 표시는 멈추지 않습니다.
+- **계정마다 한 번 준비합니다.** **설정 › 계정**에서 <b>준비하기…</b>를 누르면 Claude Code가 브라우저로 그 계정에 로그인해 계정 전용 폴더(`~/.agentbar/multi-account-v1/lend/<계정 ID>/`)에 저장합니다. Limi가 사용량을 읽는 로그인과는 따로라서, 계정을 바꿔도 사용량 표시는 멈추지 않습니다.
 - **로그인은 Claude Code만 씁니다.** Limi는 그 계정의 리프레시 토큰을 `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`([Claude Code 환경 변수](https://code.claude.com/docs/en/env-vars))에 넣어 `claude auth login`을 실행하고, 이때 키체인 항목은 `/usr/bin/security`로만 읽습니다. 그래서 키체인 허락 창이 뜨지 않습니다.
 - **리프레시 토큰은 한 번만 씁니다.** 로그인을 넘기면 그 토큰은 다 쓴 것이 되므로, 같은 토큰을 두 번 넘기지 않습니다. Claude Code에 있던 로그인은 원래 계정 몫으로 돌려받아서, 다시 돌아갈 때도 브라우저가 뜨지 않습니다. 바꾸는 사이에 열린 세션이 그 로그인을 갱신하면, 그 계정은 한 번 더 준비합니다.
 - **바꾼 뒤 확인합니다.** 바꾼 뒤 Claude Code 로그인을 다시 읽어, 고른 계정이 아니면 알려 줍니다. Claude Code가 Limi에 없는 계정으로 로그인되어 있으면, 바꾸는 순간 그 로그인이 Claude Code에서 사라지므로 먼저 묻습니다. 바꾸는 중에 종료하면 바꾸기가 끝날 때까지(최대 90초) 기다립니다. 그래도 중간에 꺼지면 다음에 켤 때 마저 끝내거나 되돌립니다.
