@@ -151,6 +151,7 @@ final class UsageStore: ObservableObject {
             if FileManager.default.fileExists(atPath: displayURL.path) {
                 var loaded = try files.read(DisplayConfiguration.self, at: displayURL)
                 let original = loaded
+                loaded.adoptAgentBarPanels(raw: try Data(contentsOf: displayURL), accounts: liveAccounts.map(\.id))
                 loaded.limitLayoutSizes()
                 loaded.normalizeTextLineSlots()
                 loaded.mergeGroupLabels()

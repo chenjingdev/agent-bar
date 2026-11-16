@@ -64,6 +64,17 @@ extension MenuBarLayout {
 extension DisplayConfiguration {
     /// Repairs each group's own accounts: the first of any repeat stays, unknown accounts go, every line's
     /// account is added at the end, and a group left with none uses its lines' accounts again.
+    /// agent-bar's panel lists every account, and it saves groups without `showBadge` or members. Such a group holds
+    /// every visible account here, in the account list's order, so its panel lists what agent-bar's did.
+    mutating func adoptAgentBarPanels(raw: Data, accounts ids: [UUID]) {
+        guard layouts != nil,
+              let object = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
+              let saved = object["layouts"] as? [[String: Any]], saved.count == layouts!.count else { return }
+        for index in layouts!.indices where saved[index]["showBadge"] == nil && saved[index]["memberIDs"] == nil {
+            layouts![index].memberIDs = ids.filter { isVisible($0) }
+        }
+    }
+
     mutating func normalizeMembers() {
         guard layouts != nil else { return }
         for index in layouts!.indices {

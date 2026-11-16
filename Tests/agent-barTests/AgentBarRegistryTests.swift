@@ -29,4 +29,23 @@ struct AgentBarRegistryTests {
         #expect(layout.name == "CL" && layout.showBadge && layout.rows.count == 1 && layout.rowsPerColumn == 2)
         #expect(layout.valid)
     }
+
+    @Test func agentBarsGroupListsEveryVisibleAccount() throws {
+        let one = UUID(), two = UUID(), hidden = UUID()
+        let json = """
+        {"version":2,"order":["\(one.uuidString)","\(two.uuidString)","\(hidden.uuidString)"],"accounts":{"\(one.uuidString)":{"visible":true,"badge":"A","color":"green","primary":"weekly","bars":["weekly"],"group":0},
+         "\(two.uuidString)":{"visible":true,"badge":"B","color":"green","primary":"weekly","bars":["weekly"],"group":0},
+         "\(hidden.uuidString)":{"visible":false,"badge":"C","color":"green","primary":"weekly","bars":["weekly"],"group":0}},
+         "layouts":[{"id":"\(UUID().uuidString)","name":"CL","rows":[{"id":"l","accountID":"\(two.uuidString)","metricID":"weekly"}]}]}
+        """
+        var config = try JSONDecoder().decode(DisplayConfiguration.self, from: Data(json.utf8))
+        config.adoptAgentBarPanels(raw: Data(json.utf8), accounts: [one, two, hidden])
+        #expect(config.layouts?.first?.memberIDs == [one, two])
+        // A group Limi saved keeps its own members.
+        let limi = try JSONEncoder().encode(config)
+        var again = try JSONDecoder().decode(DisplayConfiguration.self, from: limi)
+        again.layouts![0].memberIDs = nil
+        again.adoptAgentBarPanels(raw: limi, accounts: [one, two, hidden])
+        #expect(again.layouts?.first?.memberIDs == nil)
+    }
 }
