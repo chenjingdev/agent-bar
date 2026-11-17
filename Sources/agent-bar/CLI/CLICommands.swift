@@ -1003,7 +1003,9 @@ enum CLICommands {
     // MARK: - In the command itself
 
     static func version() -> CLIResult {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
+        // Run through a link on PATH, Bundle.main is the link's folder: read the app bundle the link leads to.
+        let info = CLIClient.appBundleURL.flatMap { Bundle(url: $0)?.infoDictionary } ?? Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "development"
         return CLIResult("agentbar \(version)", json: ["version": version, "executable": CLIClient.executableURL.path])
     }
 
