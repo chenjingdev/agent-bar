@@ -74,6 +74,7 @@ final class UsageStore: ObservableObject {
     private var loginAuthorizationURL: URL?
     private var controls: [UUID: OperationControl] = [:]
     private var nextEligibleRefresh: [UUID: Date] = [:]
+    private var providerRetry: [UUID: Date] = [:]
     // When each service last answered a usage request, for `requestSpacing`.
     private var lastAnswer: [ProviderKind: ContinuousClock.Instant] = [:]
     private var cleaning: Set<UUID> = []
@@ -334,7 +335,16 @@ final class UsageStore: ObservableObject {
         displayConfiguration.refreshAccountIDs.intersection(accounts.filter { $0.isManaged && !$0.deletionPending }.map(\.id))
     }
 
-    func refreshNow() { requestRefresh(refreshAccountIDs); refreshClaudeCodeState() }
+    // A refresh a person asks for reads every account again at once: only the wait a service asked for still holds,
+    // not the short pause the app keeps between its own rounds.
+    func refreshNow() {
+        for id in refreshAccountIDs {
+            if let retry = providerRetry[id], retry > Date() { nextEligibleRefresh[id] = retry } else { nextEligibleRefresh[id] = nil }
+        }
+        requestRefresh(refreshAccountIDs); refreshClaudeCodeState()
+    }
+    // When each account's service said to ask again, if it did.
+    func providerRetryDate(for id: UUID) -> Date? { providerRetry[id].flatMap { $0 > Date() ? $0 : nil } }
 
     // What the timer does: usage only, and nothing while the last round is still running. Which account Claude Code uses
     // is read when a person is there to see it (a panel, Settings, a refresh they asked for): reading it runs
@@ -386,7 +396,7 @@ final class UsageStore: ObservableObject {
             if let loadAccount {
                 result = await loadAccount(account, control)
             } else if provider == .antigravity {
-                result = await AntigravityUsageProvider(expectedIdentity: account.identity).load()
+                result = await AntigravityUsageProvider(expectedIdentity: account.identity, control: control).load()
             } else if provider == .codex {
                 result = await CodexUsageProvider(directory: directory, expectedIdentity: account.identity, control: control).load()
             } else {
@@ -400,6 +410,7 @@ final class UsageStore: ObservableObject {
             guard Self.acceptsResult(request: account, current: accounts.first(where: { $0.id == account.id })) else { continue }
             if let retryAt = result.retryAt {
                 nextEligibleRefresh[account.id] = max(nextEligibleRefresh[account.id] ?? .distantPast, retryAt)
+                providerRetry[account.id] = max(providerRetry[account.id] ?? .distantPast, retryAt)
             }
             guard !control.cancelled, refreshAccountIDs.contains(account.id) else { continue }
             var display = result
@@ -497,7 +508,7 @@ final class UsageStore: ObservableObject {
                     // No sign-in of its own: the account signed in to Antigravity is
                     // read, along with its model groups for the first menu bar lines.
                     if provider == .antigravity {
-                        let connected = try await AntigravityUsageProvider().connect()
+                        let connected = try await AntigravityUsageProvider(control: control).connect()
                         return .success((connected.identity, DisplayMetric.firstLines(connected.snapshot)))
                     }
                     if provider == .codex {

@@ -111,3 +111,34 @@ struct CLIFoundBugTests {
                                       AccountIdentity(email: "a@example.test", organizationID: "o", stableID: "2")))
     }
 }
+
+struct CLISecondBugTests {
+    @Test func antigravityGroupLinesGetReadableDistinctLabels() {
+        #expect(DisplayMetric(id: "group:claude-and-gpt-models:weekly", title: "x", window: nil).shortLabel == "CLA WK")
+        #expect(DisplayMetric(id: "group:gemini-pro:5h", title: "x", window: nil).shortLabel == "GEM 5H")
+        #expect(DisplayMetric(id: "weekly", title: "Weekly", window: nil).shortLabel == "WK")
+    }
+
+    @Test func aUsedCodexCreditIsNotNamedAgain() {
+        let coupons = UsageResetCoupons(count: 2, scope: .fiveHourAndWeekly, claim: .codex(creditID: "A"))
+        #expect(coupons.usingOne()?.claim == .codex(creditID: nil))
+        #expect(coupons.usingOne()?.count == 1)
+    }
+
+    @Test func cachedUsageBeingRefreshedIsNotAFailure() {
+        let window = WindowSummary(tokens: 10, limitTokens: 100, resetAt: nil, displayStyle: .percentage)
+        let cached = ProviderSnapshot(provider: .claude, updatedAt: .now.addingTimeInterval(-3 * 3600), fiveHour: window, weekly: window,
+                                      modelWeeklies: [], planName: nil, sourceDescription: "", note: "Cached", isStale: true, requiresLogin: false)
+        #expect(AccountCardStatus.make(snapshot: cached, deletionPending: false, refreshed: true, refreshing: true).tone == .quiet)
+        #expect(AccountCardStatus.make(snapshot: cached, deletionPending: false, refreshed: true, refreshing: false).tone == .attention)
+    }
+
+    @Test func anUnansweredCodexClaimIsRetriedUnderItsOwnKey() async {
+        let memory = CodexClaimMemory()
+        await memory.remember("key-1", for: "folder|A")
+        #expect(await memory.pendingKey(for: "folder|A") == "key-1")
+        #expect(await memory.pendingKey(for: "folder|A", now: .now.addingTimeInterval(601)) == nil)
+        await memory.remember("key-2", for: "folder|A"); await memory.forget("folder|A")
+        #expect(await memory.pendingKey(for: "folder|A") == nil)
+    }
+}

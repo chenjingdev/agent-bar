@@ -124,6 +124,8 @@ struct UsageResetCoupons: Equatable, Codable, Sendable {
         guard count > 1 else { return nil }
         var next = self
         next.count -= 1
+        // The credit just used is gone; until the next read names the next one, let Codex choose.
+        if case .codex = claim { next.claim = .codex(creditID: nil) }
         if let totalCount { next.totalCount = totalCount - 1 }
         if scope == .fableWeekly || scope == .fiveHourAndFableWeekly, let fableCount {
             next.fableCount = fableCount - 1

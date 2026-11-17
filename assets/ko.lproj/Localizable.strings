@@ -102,6 +102,7 @@
 "Couldn't read the Anthropic usage API (%@)." = "Anthropic 사용량 API를 읽지 못했습니다(%@).";
 "Couldn't refresh" = "새로 고치지 못함";
 "Couldn't refresh · updated %@" = "새로 고치지 못함 · %@ 업데이트";
+"Refreshing… · updated %@" = "새로 고치는 중 · %@ 업데이트";
 "Delete" = "삭제";
 "Delete %@?" = "‘%@’ 그룹을 삭제하시겠습니까?";
 "Delete Group…" = "그룹 삭제…";

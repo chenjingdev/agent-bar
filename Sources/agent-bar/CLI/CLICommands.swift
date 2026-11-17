@@ -241,7 +241,7 @@ enum CLICommands {
         value["plan"] = snapshot.planName ?? NSNull()
         value["note"] = snapshot.isStale ? (snapshot.note ?? NSNull()) : NSNull()
         value["updatedAt"] = snapshot.note == ProviderSnapshot.notLoadedNote ? NSNull() : date(snapshot.updatedAt)
-        value["retryAt"] = date(snapshot.retryAt)
+        value["retryAt"] = date(store.providerRetryDate(for: account.id) ?? snapshot.retryAt)
         value["limits"] = DisplayMetric.all(snapshot).map { metric -> [String: Any] in
             ["id": limitID(metric.id), "title": metric.title,
              "usedPercent": metric.window?.utilization.map { ($0 * 1000).rounded() / 10 } ?? NSNull(),
@@ -290,6 +290,9 @@ enum CLICommands {
             status += ", updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))"
         }
         if snapshot.isStale, let note = snapshot.note, status.hasPrefix("stale") { status += " (\(note))" }
+        if let retry = store.providerRetryDate(for: account.id) {
+            status += "; \(account.provider.displayName) asked to wait, next read after \(TokenFormatters.relativeUpdateString(updatedAt: retry))"
+        }
         var lines = [head + "  [\(status)]"]
         for metric in DisplayMetric.all(snapshot) {
             let percent = TokenFormatters.percentageString(for: metric.window?.utilization)

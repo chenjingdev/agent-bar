@@ -362,7 +362,15 @@ struct DisplayMetric: Identifiable {
         switch id {
         case "5h": return "5H"
         case "weekly": return "WK"
-        default: return String(title.prefix(3)).uppercased()
+        default:
+            // An Antigravity model group's limit ("group:claude-and-gpt-models:weekly"): the group's first word and the
+            // limit, so it never reads as "GRO" and two groups' lines stay apart.
+            if id.hasPrefix("group:") {
+                let slug = id.dropFirst(6).split(separator: ":").first.map(String.init) ?? ""
+                let word = slug.split(separator: "-").first.map { String($0.prefix(3)).uppercased() } ?? ""
+                return (word.isEmpty ? "" : word + " ") + (isFiveHour ? "5H" : "WK")
+            }
+            return String(title.prefix(3)).uppercased()
         }
     }
     /// The metric's name as the popover and Settings show it. `title` stays

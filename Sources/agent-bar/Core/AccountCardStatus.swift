@@ -22,6 +22,12 @@ struct AccountCardStatus: Equatable {
             return Self(tone: .attention, text: snapshot.note ?? String(localized: "Could not load usage"))
         }
         if snapshot.isStale {
+            // Cached usage being read again (at launch, or a refresh under way) is not a failure yet.
+            if refreshing {
+                guard snapshot.hasKnownUpdateTime else { return Self(tone: .quiet, text: String(localized: "Loading usage…")) }
+                let updated = TokenFormatters.relativeUpdateString(from: now, updatedAt: snapshot.updatedAt)
+                return Self(tone: .quiet, text: String(localized: "Refreshing… · updated \(updated)"))
+            }
             guard snapshot.hasKnownUpdateTime else {
                 return Self(tone: .attention, text: String(localized: "Couldn't refresh"), detail: snapshot.note)
             }
