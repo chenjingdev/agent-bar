@@ -1,0 +1,1059 @@
+import AppKit
+import Foundation
+
+// Every `agentbar` command. Each one does what a button in the menu bar popover or in Settings does, through the same
+// UsageStore methods, so the app's own checks (locks during a Claude Code switch, sign-in review, valid layouts) apply.
+enum CLICommands {
+    static let all: [CLISpec] = [
+        // MARK: Usage
+        CLISpec(path: ["status"], arguments: ["[account]"],
+                summary: "Show usage of every account (or one): % used of each limit, reset times, credits and resets.",
+                details: "Reads what AgentBar last loaded; it does not wait for a refresh (use `agentbar refresh` for fresh values).\nA limit without data shows --, never 0%.",
+                run: { try status($0) }),
+        CLISpec(path: ["refresh"], arguments: ["[account]"],
+                summary: "Refresh usage now (like the popover's refresh button) and show the result.",
+                details: "Only accounts used by a shown menu bar group are refreshed. Provider cooldowns still apply.",
+                options: [CLIOption("no-wait", nil, "Start the refresh and return at once.")],
+                run: { try await refresh($0) }),
+
+        // MARK: Accounts
+        CLISpec(path: ["accounts"], arguments: [], summary: "List accounts in their saved order with id, provider, email and state.",
+                run: { _ in accountsList() }),
+        CLISpec(path: ["account", "add"], arguments: ["<claude|codex|antigravity>"],
+                summary: "Sign in a new account in the browser and register it (waits up to 5 minutes).",
+                details: "Opens the provider's sign-in page in the default browser. A person has to finish the sign-in there.\nThe signed-in account is registered at once; an account already registered is refused.\nAntigravity needs no browser: the one account signed in to agy or the Antigravity app is added.",
+                options: [CLIOption("private", nil, "Open the sign-in in a private browser window instead.")],
+                run: { try await accountAdd($0) }),
+        CLISpec(path: ["account", "reconnect"], arguments: ["<account>"],
+                summary: "Sign an existing account in again in the browser (waits up to 5 minutes).",
+                details: "The browser must be signed in to the same account. A different account is refused (add it instead).",
+                options: [CLIOption("private", nil, "Open the sign-in in a private browser window instead."),
+                          CLIOption("force", nil, "Replace even when AgentBar cannot verify it is the same account.")],
+                run: { try await accountReconnect($0) }),
+        CLISpec(path: ["account", "cancel"], arguments: [], summary: "Cancel the account sign-in that is running.",
+                run: { _ in accountCancel() }),
+        CLISpec(path: ["account", "remove"], arguments: ["<account>"],
+                summary: "Delete an account and its AgentBar login from this Mac (needs --yes).",
+                details: "Removes the account, its credentials, usage cache and saved Claude Code sign-in. Claude Code's own login and\nthe provider account itself are not touched. This cannot be undone; signing in again needs the browser.",
+                options: [CLIOption("yes", nil, "Confirm the deletion.")],
+                run: { try await accountRemove($0) }),
+        CLISpec(path: ["account", "move"], arguments: ["<account>"],
+                summary: "Move an account to another position in the account order.",
+                options: [CLIOption("to", "ACCOUNT|N", "The account (or position number) whose place it takes.")],
+                run: { try accountMove($0) }),
+        CLISpec(path: ["account", "rename"], arguments: ["<account>", "<name>"],
+                summary: "Name an account (the name lists and menus show; an empty name goes back to the email).",
+                run: { try accountRename($0) }),
+        CLISpec(path: ["account", "retry-cleanup"], arguments: [], summary: "Retry deletions and clean-ups that could not finish.",
+                run: { _ in await retryCleanup() }),
+
+        // MARK: Claude Code
+        CLISpec(path: ["claude-code"], arguments: [], summary: "Show which account Claude Code uses and which accounts are ready for it.",
+                run: { _ in claudeCodeStatus() }),
+        CLISpec(path: ["claude-code", "use"], arguments: ["<account>"],
+                summary: "Switch Claude Code's default login to this account (open sessions switch within 30 s).",
+                details: "Needs the account set up once with `agentbar claude-code setup`. Remote Control disconnects.\nWhen Claude Code is signed in to an account AgentBar does not have, the switch removes that login: pass --yes to allow it.",
+                options: [CLIOption("yes", nil, "Allow removing a Claude Code login that AgentBar does not have.")],
+                run: { try await claudeCodeUse($0) }),
+        CLISpec(path: ["claude-code", "setup"], arguments: ["<account>"],
+                summary: "Sign a Claude account in once in the browser so Claude Code can use it (waits up to 5 minutes).",
+                run: { try await claudeCodeSetup($0) }),
+        CLISpec(path: ["claude-code", "cancel"], arguments: [], summary: "Cancel a running `claude-code setup` browser sign-in.",
+                run: { _ in claudeCodeCancel() }),
+
+        // MARK: Usage limit resets
+        CLISpec(path: ["resets"], arguments: ["<account>"], summary: "List an account's usage reset coupons: what each kind resets, how many, expiry.",
+                details: "Coupons come only with fresh usage; refresh first if the account's usage is stale.",
+                run: { try resets($0) }),
+        CLISpec(path: ["resets", "use"], arguments: ["<account>", "[kind]"],
+                summary: "Use one usage reset coupon (cannot be undone; needs --yes).",
+                details: "[kind] is the number from `agentbar resets <account>` when the account has several kinds (Claude);\nwithout it the coupon the panel offers first is used.",
+                options: [CLIOption("yes", nil, "Confirm using the coupon.")],
+                run: { try await resetUse($0) }),
+
+        // MARK: Menu bar groups
+        CLISpec(path: ["groups"], arguments: [], summary: "List menu bar groups with their style, options and usage lines.",
+                run: { _ in groupsList() }),
+        CLISpec(path: ["group", "add"], arguments: [], summary: "Add a menu bar group.",
+                options: [CLIOption("name", "NAME", "Group name (default: Group N)."),
+                          CLIOption("style", "STYLE", "bars, ring, capsule or text (default: bars).")],
+                run: { try groupAdd($0) }),
+        CLISpec(path: ["group", "set"], arguments: ["<group>"], summary: "Change a group's name, style, visibility, name badge, percentage and list order.",
+                details: "Styles: bars (Multi Bar), ring (Ring Gauge, first line only), capsule (Capsule Fill), text (Text Only, any number of lines).\nThe name is also the badge shown in front of the group's usage with --show-name on.",
+                options: [CLIOption("name", "NAME", "New group name (up to 24 characters)."),
+                          CLIOption("style", "STYLE", "bars, ring, capsule or text."),
+                          CLIOption("show", nil, "Show the group in the menu bar."),
+                          CLIOption("hide", nil, "Hide the group (its settings are kept)."),
+                          CLIOption("show-name", "on|off", "Show the group name in front of its usage in the menu bar."),
+                          CLIOption("percent", "on|off", "Show the percentage (Multi Bar shows the first line's unless `line set --percent`)."),
+                          CLIOption("bar", "on|off", "Show the bar (Multi Bar always does)."),
+                          CLIOption("sort", "ORDER", "How the group's panel lists its accounts: manual, 5h or weekly (soonest reset first).")],
+                run: { try groupSet($0) }),
+        CLISpec(path: ["group", "remove"], arguments: ["<group>"], summary: "Delete a menu bar group (never its accounts).",
+                run: { try groupRemove($0) }),
+        CLISpec(path: ["group", "move"], arguments: ["<group>"], summary: "Move a group to another position in the menu bar.",
+                options: [CLIOption("to", "GROUP|N", "The group (or position number) whose place it takes.")],
+                run: { try groupMove($0) }),
+        CLISpec(path: ["group", "account", "add"], arguments: ["<group>", "<account>"],
+                summary: "Add an account to a group's panel list (a line's account always belongs to its group).",
+                run: { try memberAdd($0) }),
+        CLISpec(path: ["group", "account", "remove"], arguments: ["<group>", "<account>"],
+                summary: "Remove an account and its usage lines from a group.",
+                run: { try memberRemove($0) }),
+        CLISpec(path: ["group", "account", "move"], arguments: ["<group>", "<account>"],
+                summary: "Move an account within a group's list.",
+                options: [CLIOption("to", "ACCOUNT", "The account whose place it takes.")],
+                run: { try memberMove($0) }),
+        CLISpec(path: ["line", "add"], arguments: ["<group>", "<account>"], summary: "Add a usage line (an account's limit) to a group.",
+                details: "Limits: 5h, weekly, or a model's weekly limit such as fable (model:fable). Groups other than Text Only hold 3 lines.",
+                options: [CLIOption("limit", "LIMIT", "5h, weekly or a model name (default: weekly)."),
+                          CLIOption("slot", "N", "The empty slot to use (default: the first empty one).")],
+                run: { try lineAdd($0) }),
+        CLISpec(path: ["line", "set"], arguments: ["<group>", "<slot>"], summary: "Change a usage line's account or limit, or make it the shown percentage.",
+                options: [CLIOption("account", "ACCOUNT", "Another account for the line."),
+                          CLIOption("limit", "LIMIT", "5h, weekly or a model name."),
+                          CLIOption("percent", nil, "Use this line's percentage as the group's large percentage (Multi Bar).")],
+                run: { try lineSet($0) }),
+        CLISpec(path: ["line", "remove"], arguments: ["<group>", "<slot>"], summary: "Remove a usage line from a group.",
+                run: { try lineRemove($0) }),
+        CLISpec(path: ["line", "move"], arguments: ["<group>", "<slot>"], summary: "Move a usage line to another slot (swaps with a line already there).",
+                options: [CLIOption("to", "SLOT", "The slot to move it to.")],
+                run: { try lineMove($0) }),
+
+        // MARK: Settings and app
+        CLISpec(path: ["settings"], arguments: [], summary: "Show settings: refresh interval, language, open at login, version, data folder.",
+                run: { _ in settingsShow() }),
+        CLISpec(path: ["settings", "set"], arguments: ["<key>", "<value>"],
+                summary: "Change a setting: refresh-interval 60|120|300|600, language en|ko, open-at-login on|off.",
+                details: "A new language applies after `agentbar restart`.",
+                run: { try settingsSet($0) }),
+        CLISpec(path: ["update"], arguments: [], summary: "Check for an AgentBar update now (Sparkle's window answers on screen).",
+                run: { _ in updateCheck() }),
+        CLISpec(path: ["restart"], arguments: [], summary: "Restart AgentBar (to apply a new language).", run: { _ in try restartApp() }),
+        CLISpec(path: ["open"], arguments: ["[accounts|menu-bar|general]"], summary: "Open the Settings window on a tab (for a person).",
+                options: [CLIOption("group", "GROUP", "Select this group in the Menu Bar tab.")],
+                run: { try openSettings($0) }),
+        CLISpec(path: ["quit"], arguments: [], summary: "Quit AgentBar.", run: { _ in quitApp() }),
+
+        // MARK: In the command itself
+        CLISpec(path: ["version"], arguments: [], summary: "Show this command's AgentBar version.", local: { _ in version() }),
+        CLISpec(path: ["paths"], arguments: [], summary: "Show AgentBar's data folder, logs and command socket.", local: { _ in paths() }),
+        CLISpec(path: ["install-cli"], arguments: [], summary: "Link `agentbar` into a folder on PATH (default ~/.local/bin).",
+                options: [CLIOption("dir", "DIR", "The folder for the link.")], local: { try installCLI($0) }),
+    ]
+
+    // MARK: - Helpers
+
+    @MainActor static var store: UsageStore { AppContainer.shared.store }
+
+    private static func date(_ value: Date?) -> Any { value.map { ISO8601DateFormatter().string(from: $0) } ?? NSNull() }
+    // A JSON value, or null.
+    private static func json<T>(_ value: T?) -> Any { value.map { $0 as Any } ?? NSNull() }
+    private static func short(_ id: UUID) -> String { String(id.uuidString.prefix(8)) }
+
+    // Waits on the main actor until `condition` holds, the time runs out, or the command was interrupted.
+    @MainActor
+    private static func wait(_ invocation: CLIInvocation, seconds: TimeInterval, every: (() -> Void)? = nil,
+                             until condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !condition() {
+            if Date() > deadline || !invocation.isOpen() { return false }
+            every?()
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        return true
+    }
+
+    @MainActor
+    static func account(_ reference: String, among list: [UsageAccount]? = nil) throws -> UsageAccount {
+        let accounts = list ?? store.orderedAccounts
+        let ref = reference.trimmingCharacters(in: .whitespaces)
+        if let number = Int(ref), ref.count < 4 {
+            guard accounts.indices.contains(number - 1) else { throw CLIError("No account number \(number). Run `agentbar accounts`.") }
+            return accounts[number - 1]
+        }
+        if let exact = accounts.first(where: { $0.id.uuidString.caseInsensitiveCompare(ref) == .orderedSame }) { return exact }
+        if let provider = ProviderKind(rawValue: ref.lowercased()) {
+            let matching = accounts.filter { $0.provider == provider }
+            if matching.count == 1 { return matching[0] }
+            throw CLIError(matching.isEmpty ? "No \(provider.displayName) account." : "Several \(provider.displayName) accounts: name one by number or email (`agentbar accounts`).")
+        }
+        var matching = accounts.filter { $0.identity?.email?.caseInsensitiveCompare(ref) == .orderedSame || $0.name.caseInsensitiveCompare(ref) == .orderedSame }
+        if matching.isEmpty, ref.count >= 4 { matching = accounts.filter { $0.id.uuidString.lowercased().hasPrefix(ref.lowercased()) } }
+        if matching.isEmpty { matching = accounts.filter { $0.title.lowercased().contains(ref.lowercased()) } }
+        if matching.count == 1 { return matching[0] }
+        if matching.isEmpty { throw CLIError("No account matches \"\(ref)\". Run `agentbar accounts`.") }
+        throw CLIError("\"\(ref)\" matches several accounts: " + matching.map { "\($0.title) (\(short($0.id)))" }.joined(separator: ", "))
+    }
+
+    @MainActor
+    static func group(_ reference: String) throws -> MenuBarLayout {
+        let groups = store.displayConfiguration.effectiveLayouts
+        let ref = reference.trimmingCharacters(in: .whitespaces)
+        if let number = Int(ref), ref.count < 4 {
+            guard groups.indices.contains(number - 1) else { throw CLIError("No group number \(number). Run `agentbar groups`.") }
+            return groups[number - 1]
+        }
+        var matching = groups.filter { $0.id.uuidString.caseInsensitiveCompare(ref) == .orderedSame || $0.name.caseInsensitiveCompare(ref) == .orderedSame }
+        if matching.isEmpty, ref.count >= 4 { matching = groups.filter { $0.id.uuidString.lowercased().hasPrefix(ref.lowercased()) } }
+        if matching.count == 1 { return matching[0] }
+        if matching.isEmpty { throw CLIError("No group matches \"\(ref)\". Run `agentbar groups`.") }
+        throw CLIError("\"\(ref)\" matches several groups; use the group's number from `agentbar groups`.")
+    }
+
+    // MARK: - Usage
+
+    @MainActor
+    static func state(_ account: UsageAccount) -> String {
+        let snapshot = store.snapshot(for: account)
+        if snapshot.requiresLogin { return "sign-in required" }
+        if !store.refreshAccountIDs.contains(account.id) { return "not in menu bar (not refreshed)" }
+        if store.refreshingAccounts.contains(account.id) && snapshot.isStale { return "refreshing" }
+        if snapshot.isStale && snapshot.note == ProviderSnapshot.notLoadedNote { return "loading" }
+        return snapshot.isStale ? "stale" : "ok"
+    }
+
+    @MainActor
+    static func claudeCodeState(_ account: UsageAccount) -> String? {
+        switch store.claudeCodeSetup(for: account).status {
+        case .hidden: return nil
+        case .inClaudeCode: return "in Claude Code"
+        case .ready: return "ready for Claude Code"
+        case .notSetUp: return "not set up for Claude Code"
+        case .signingIn: return "signing in for Claude Code"
+        }
+    }
+
+    @MainActor
+    static func limitID(_ id: String) -> String { id.hasPrefix("model:") ? String(id.dropFirst(6)) : id }
+
+    @MainActor
+    static func accountJSON(_ account: UsageAccount, detail: Bool) -> [String: Any] {
+        let snapshot = store.snapshot(for: account)
+        let number = (store.orderedAccounts.firstIndex { $0.id == account.id } ?? -1) + 1
+        var value: [String: Any] = [
+            "number": number, "id": account.id.uuidString, "provider": account.provider.rawValue, "name": account.name,
+            "email": account.identity?.email ?? NSNull(), "organization": account.identity?.organization ?? NSNull(),
+            "state": state(account), "inMenuBar": store.refreshAccountIDs.contains(account.id),
+            "claudeCode": claudeCodeState(account) ?? NSNull(),
+        ]
+        guard detail else { return value }
+        value["plan"] = snapshot.planName ?? NSNull()
+        value["note"] = snapshot.isStale ? (snapshot.note ?? NSNull()) : NSNull()
+        value["updatedAt"] = snapshot.note == ProviderSnapshot.notLoadedNote ? NSNull() : date(snapshot.updatedAt)
+        value["retryAt"] = date(snapshot.retryAt)
+        value["limits"] = DisplayMetric.all(snapshot).map { metric -> [String: Any] in
+            ["id": limitID(metric.id), "title": metric.title,
+             "usedPercent": metric.window?.utilization.map { ($0 * 1000).rounded() / 10 } ?? NSNull(),
+             "resetsAt": date(metric.window?.resetAt)]
+        }
+        value["coupons"] = snapshot.resetCoupons.map(couponsJSON) ?? NSNull()
+        return value
+    }
+
+    private static func scopeID(_ scope: UsageResetCoupons.Scope) -> String {
+        switch scope {
+        case .fiveHourAndWeekly: "5h+weekly"
+        case .fiveHour: "5h"
+        case .weekly: "weekly"
+        case .fableWeekly: "fable"
+        case .fiveHourAndFableWeekly: "5h+fable"
+        }
+    }
+
+    // The kinds of coupon an account has, numbered as `resets use` takes them.
+    static func couponKinds(_ coupons: UsageResetCoupons) -> [UsageResetCoupons.Option] {
+        coupons.options ?? [coupons.selectedOption]
+    }
+
+    @MainActor
+    static func couponsJSON(_ coupons: UsageResetCoupons) -> [String: Any] {
+        ["total": coupons.totalCount ?? coupons.count, "summary": CouponWords.summary(coupons),
+         "kinds": couponKinds(coupons).enumerated().map { index, option -> [String: Any] in
+             ["kind": index + 1, "resets": scopeID(option.scope), "title": CouponWords.selectionTitle(option), "count": option.count,
+              "expiries": option.expiries.map { date($0) }, "usable": option.canRedeem,
+              "blockedBecause": option.canRedeem ? NSNull() : CouponWords.unavailable(option.blockReason),
+              "affectedUsedPercent": json(option.affectedUsagePercent)]
+         }]
+    }
+
+    @MainActor
+    static func accountText(_ account: UsageAccount) -> String {
+        let snapshot = store.snapshot(for: account)
+        let number = (store.orderedAccounts.firstIndex { $0.id == account.id } ?? -1) + 1
+        var head = "\(number). \(account.provider.shortName) \(account.title)"
+        if let email = account.identity?.email, email != account.title { head += " <\(email)>" }
+        if let org = account.identity?.organization, !org.isEmpty { head += " · \(org)" }
+        if let plan = snapshot.planName { head += " · \(plan)" }
+        var status = state(account)
+        if status != "loading" && snapshot.note != ProviderSnapshot.placeholder(for: account.provider).note {
+            status += ", updated \(TokenFormatters.relativeUpdateString(updatedAt: snapshot.updatedAt))"
+        }
+        if snapshot.isStale, let note = snapshot.note, status.hasPrefix("stale") { status += " (\(note))" }
+        var lines = [head + "  [\(status)]"]
+        for metric in DisplayMetric.all(snapshot) {
+            let percent = TokenFormatters.percentageString(for: metric.window?.utilization)
+            let reset = metric.window?.utilization == nil ? "" : TokenFormatters.resetLabelString(resetAt: metric.window?.resetAt)
+            lines.append("   " + limitID(metric.id).padding(toLength: 8, withPad: " ", startingAt: 0) + percent.padding(toLength: 6, withPad: " ", startingAt: 0) + reset)
+        }
+        if let coupons = snapshot.resetCoupons { lines.append("   coupons \(CouponWords.summary(coupons))") }
+        if let claudeCode = claudeCodeState(account) { lines.append("   \(claudeCode)") }
+        return lines.joined(separator: "\n")
+    }
+
+    @MainActor
+    static func status(_ invocation: CLIInvocation) throws -> CLIResult {
+        let accounts = try invocation.positional(0).map { [try account($0)] } ?? store.orderedAccounts
+        if accounts.isEmpty { return CLIResult("No accounts. Add one with `agentbar account add claude` or `agentbar account add codex`.", json: ["accounts": []]) }
+        var text = accounts.map(accountText).joined(separator: "\n")
+        if store.isRefreshing { text += "\n(refresh in progress)" }
+        return CLIResult(text, json: ["accounts": accounts.map { accountJSON($0, detail: true) },
+                                      "refreshing": store.isRefreshing, "lastRefresh": date(store.lastRefresh)])
+    }
+
+    @MainActor
+    static func refresh(_ invocation: CLIInvocation) async throws -> CLIResult {
+        if let reference = invocation.positional(0) {
+            let target = try account(reference)
+            guard store.refreshAccountIDs.contains(target.id) else {
+                throw CLIError("\(target.title) is not used by a shown menu bar group, so it is not refreshed. Add a line with `agentbar line add`.")
+            }
+        }
+        if invocation.flag("no-wait") { store.refreshNow(); return CLIResult("Refresh started.") }
+        await store.refresh()
+        return try status(invocation)
+    }
+
+    // MARK: - Accounts
+
+    @MainActor
+    static func accountsList() -> CLIResult {
+        let accounts = store.orderedAccounts
+        let text = accounts.isEmpty ? "No accounts." : accounts.map { account in
+            var line = "\(store.orderedAccounts.firstIndex { $0.id == account.id }! + 1). \(account.provider.rawValue.padding(toLength: 6, withPad: " ", startingAt: 0)) \(account.title)"
+            if let org = account.identity?.organization, !org.isEmpty { line += " · \(org)" }
+            line += "  [\(state(account))]"
+            if let claudeCode = claudeCodeState(account) { line += " [\(claudeCode)]" }
+            if let lock = store.claudeCodeLockNote(for: account) { line += " [\(lock)]" }
+            return line + "  id \(short(account.id))"
+        }.joined(separator: "\n")
+        var json: [String: Any] = ["accounts": accounts.map { accountJSON($0, detail: false) }]
+        if !store.registry.cleanupPending.isEmpty || store.accounts.contains(where: \.deletionPending) { json["cleanupPending"] = true }
+        return CLIResult(text, json: json)
+    }
+
+    // Runs a browser sign-in to its review and returns it, telling the person what to do meanwhile.
+    @MainActor
+    private static func signIn(_ invocation: CLIInvocation, provider: ProviderKind, replacing: UsageAccount?) async throws -> PendingAccountLogin? {
+        if let replacing, let note = store.claudeCodeLockNote(for: replacing) { throw CLIError("\(replacing.title): \(note). Try again after it finishes.") }
+        guard !store.isLoggingIn, store.pendingLogin == nil else {
+            throw CLIError("Another account sign-in is running. Finish it, or run `agentbar account cancel`.")
+        }
+        store.errorMessage = nil
+        store.startLogin(provider, replacing: replacing)
+        guard store.isLoggingIn else { throw CLIError(store.errorMessage ?? "Could not start the sign-in.") }
+        var said: String?
+        var openedPrivate = false
+        let finished = await wait(invocation, seconds: 330, every: {
+            if let message = store.loginMessage, message != said { said = message; invocation.emit(message) }
+            if invocation.flag("private"), !openedPrivate, store.canOpenPrivateLogin { openedPrivate = true; store.openPrivateLogin() }
+        }, until: { store.pendingLogin != nil || !store.isLoggingIn })
+        if !finished { store.cancelLogin(); throw CLIError("Sign-in cancelled.") }
+        if let pending = store.pendingLogin { return pending }
+        // A reconnect proven to be the same account registers without review.
+        if replacing != nil, store.errorMessage == nil { return nil }
+        throw CLIError(store.errorMessage ?? "The sign-in was cancelled or timed out.")
+    }
+
+    @MainActor
+    static func accountAdd(_ invocation: CLIInvocation) async throws -> CLIResult {
+        guard let provider = ProviderKind(rawValue: invocation.positional(0)!.lowercased()) else {
+            throw CLIError("Unknown provider \(invocation.positional(0)!). Use claude, codex or antigravity.", code: 2)
+        }
+        guard let pending = try await signIn(invocation, provider: provider, replacing: nil) else { throw CLIError("The sign-in did not finish.") }
+        store.confirmLogin()
+        if store.pendingLogin != nil {
+            let reason = store.errorMessage ?? "The account could not be registered."
+            store.cancelLogin()
+            throw CLIError(reason)
+        }
+        guard let added = store.accounts.first(where: { $0.id == pending.account.id }) else { throw CLIError(store.errorMessage ?? "The account could not be registered.") }
+        return CLIResult("Added \(added.provider.displayName) account \(added.title) (id \(short(added.id))). It has its own menu bar group.",
+                         json: ["added": accountJSON(added, detail: false)])
+    }
+
+    @MainActor
+    static func accountReconnect(_ invocation: CLIInvocation) async throws -> CLIResult {
+        let target = try account(invocation.positional(0)!)
+        guard let pending = try await signIn(invocation, provider: target.provider, replacing: target) else {
+            let updated = store.accounts.first { $0.id == target.id } ?? target
+            return CLIResult("Reconnected \(updated.title).", json: ["reconnected": accountJSON(updated, detail: false)])
+        }
+        // Codex reports no account ID: the same email (and workspace) is as close to "the same account" as it gets.
+        let sameEmail = UsageStore.sameLogin(pending.account.identity, target.identity)
+        let force = invocation.flag("force") || sameEmail
+        switch store.reconnectionComparison {
+        case .different:
+            let email = store.pendingLogin?.account.identity?.email ?? "another account"
+            store.cancelLogin()
+            throw CLIError("The browser signed in as \(email), not \(target.title). Nothing changed. Add it with `agentbar account add \(target.provider.rawValue)`.")
+        case .unverified where !force, nil where !force:
+            let email = store.pendingLogin?.account.identity?.email ?? "an account"
+            store.cancelLogin()
+            throw CLIError("AgentBar cannot verify that \(email) is \(target.title). Nothing changed. Run again with --force to replace it anyway.")
+        default: break
+        }
+        store.confirmLogin(replaceUnverified: force)
+        if store.pendingLogin != nil {
+            let reason = store.errorMessage ?? "The account could not be reconnected."
+            store.cancelLogin()
+            throw CLIError(reason)
+        }
+        let updated = store.accounts.first { $0.id == target.id } ?? target
+        return CLIResult("Reconnected \(updated.title).", json: ["reconnected": accountJSON(updated, detail: false)])
+    }
+
+    @MainActor
+    static func accountCancel() -> CLIResult {
+        guard store.isLoggingIn || store.pendingLogin != nil else { return CLIResult("No account sign-in is running.", json: ["cancelled": false]) }
+        store.cancelLogin()
+        return CLIResult("Sign-in cancelled.", json: ["cancelled": true])
+    }
+
+    @MainActor
+    static func accountRemove(_ invocation: CLIInvocation) async throws -> CLIResult {
+        let target = try account(invocation.positional(0)!)
+        guard invocation.flag("yes") else {
+            throw CLIError("This deletes \(target.title) and its AgentBar login from this Mac. Run again with --yes to confirm.", code: 2)
+        }
+        if let note = store.claudeCodeLockNote(for: target) { throw CLIError("\(target.title): \(note). Delete it after that finishes.") }
+        store.errorMessage = nil
+        await store.delete(target)
+        if let left = store.accounts.first(where: { $0.id == target.id }) {
+            if left.deletionPending, store.errorMessage == nil {
+                return CLIResult("Removed \(target.title). Its saved Claude Code sign-in is removed when the running Claude Code switch ends.",
+                                 json: ["removed": target.id.uuidString, "pending": true])
+            }
+            throw CLIError(store.errorMessage ?? "\(target.title) could not be removed. Retry with `agentbar account retry-cleanup`.")
+        }
+        return CLIResult("Removed \(target.title).", json: ["removed": target.id.uuidString])
+    }
+
+    @MainActor
+    static func accountMove(_ invocation: CLIInvocation) throws -> CLIResult {
+        let source = try account(invocation.positional(0)!)
+        guard let to = invocation.value("to") else { throw CLIError("Say where with --to ACCOUNT|N.", code: 2) }
+        let target = try account(to)
+        if source.id != target.id { store.moveAccount(source.id, to: target.id) }
+        return accountsList()
+    }
+
+    @MainActor
+    static func accountRename(_ invocation: CLIInvocation) throws -> CLIResult {
+        let target = try account(invocation.positional(0)!)
+        let name = invocation.positional(1)!.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.rename(target, name: name.isEmpty ? (target.identity?.email ?? target.provider.displayName) : name)
+        let updated = store.accounts.first { $0.id == target.id } ?? target
+        return CLIResult("Named \(updated.identity?.email ?? short(updated.id)) \"\(updated.name)\".", json: ["account": accountJSON(updated, detail: false)])
+    }
+
+    @MainActor
+    static func retryCleanup() async -> CLIResult {
+        store.errorMessage = nil
+        await store.retryCleanup()
+        if let error = store.errorMessage { return CLIResult("Clean-up still pending: \(error)", json: ["done": false, "error": error]) }
+        return CLIResult("Clean-up done.", json: ["done": true])
+    }
+
+    // MARK: - Claude Code
+
+    @MainActor
+    static func claudeCodeStatus() -> CLIResult {
+        guard store.claudeCodeEnabled else {
+            return CLIResult("Use in Claude Code is off in this AgentBar (a development run with its own data folder).", json: ["available": "off"])
+        }
+        let availability: String
+        switch store.claudeCodeAvailability {
+        case .unknown: availability = "checking"
+        case .missing: availability = "Claude Code is not installed"
+        case .blocked(let reason): availability = reason
+        case .ready: availability = "ready"
+        }
+        let current = store.accounts.first { $0.id == store.claudeCodeAccountID }
+        let claude = store.orderedAccounts.filter { $0.provider == .claude }
+        var lines = ["Claude Code: \(availability)", "Uses: " + (current?.title ?? "no account AgentBar has")]
+        if let activity = store.claudeCodeActivity { lines.append("Switching: \(activity.message)") }
+        for account in claude { lines.append("  \(account.title): \(claudeCodeState(account) ?? "-")") }
+        return CLIResult(lines.joined(separator: "\n"), json: [
+            "available": availability, "account": current.map { accountJSON($0, detail: false) } ?? NSNull(),
+            "switching": store.claudeCodeActivity != nil,
+            "accounts": claude.map { ["id": $0.id.uuidString, "email": json($0.identity?.email), "state": json(claudeCodeState($0))] as [String: Any] },
+        ])
+    }
+
+    @MainActor
+    static func claudeCodeUse(_ invocation: CLIInvocation) async throws -> CLIResult {
+        let target = try account(invocation.positional(0)!)
+        guard target.provider == .claude else { throw CLIError("\(target.title) is not a Claude account.") }
+        guard store.claudeCodeEnabled else { throw CLIError("Use in Claude Code is off in this AgentBar (a development run with its own data folder).") }
+        if store.claudeCodeStarting || store.claudeCodeAvailability == .unknown {
+            _ = await wait(invocation, seconds: 30, until: { !store.claudeCodeStarting && store.claudeCodeAvailability != .unknown })
+        }
+        switch store.claudeCodePanel(for: target).control {
+        case .hidden: throw CLIError(store.claudeCodeEnabled ? "Claude Code is not installed." : "Use in Claude Code is off in this AgentBar.")
+        case .inClaudeCode: return CLIResult("Claude Code already uses \(target.title).", json: ["switched": false, "account": target.id.uuidString])
+        case .setUp: throw CLIError("\(target.title) is not set up for Claude Code yet. Run `agentbar claude-code setup \(target.identity?.email ?? short(target.id))` first.")
+        case .use(let enabled, let help): if !enabled { throw CLIError(help) }
+        }
+        store.useInClaudeCode(target)
+        var said: String?
+        let progress = {
+            if let message = store.claudeCodeActivity?.message, message != said { said = message; invocation.emit(message) }
+        }
+        _ = await wait(invocation, seconds: 300, every: progress, until: { store.claudeCodeActivity == nil })
+        if let confirmation = store.claudeCodeConfirmation, confirmation.accountID == target.id {
+            guard invocation.flag("yes") else {
+                store.cancelClaudeCodeConfirmation()
+                throw CLIError(ClaudeCodePanel.confirmationText(email: confirmation.login.email) + " Nothing changed. Run again with --yes to switch.")
+            }
+            store.confirmClaudeCodeSwitch()
+            _ = await wait(invocation, seconds: 300, every: progress, until: { store.claudeCodeActivity == nil })
+        }
+        if let result = store.claudeCodeResults[target.id] {
+            guard result.succeeded else { throw CLIError(result.message + " Log: \(store.claudeCodeLogURL.path)") }
+            return CLIResult(result.message, json: ["switched": true, "account": target.id.uuidString, "message": result.message])
+        }
+        if store.claudeCodeAccountID == target.id {
+            return CLIResult("Claude Code already uses \(target.title).", json: ["switched": false, "account": target.id.uuidString])
+        }
+        throw CLIError("The switch did not finish. Log: \(store.claudeCodeLogURL.path)")
+    }
+
+    @MainActor
+    static func claudeCodeSetup(_ invocation: CLIInvocation) async throws -> CLIResult {
+        let target = try account(invocation.positional(0)!)
+        guard target.provider == .claude else { throw CLIError("\(target.title) is not a Claude account.") }
+        guard store.claudeCodeEnabled else { throw CLIError("Use in Claude Code is off in this AgentBar (a development run with its own data folder).") }
+        if store.claudeCodeStarting || store.claudeCodeAvailability == .unknown {
+            _ = await wait(invocation, seconds: 30, until: { !store.claudeCodeStarting && store.claudeCodeAvailability != .unknown })
+        }
+        switch store.claudeCodeSetup(for: target).status {
+        case .hidden: throw CLIError(store.claudeCodeEnabled ? "Claude Code is not installed." : "Use in Claude Code is off in this AgentBar.")
+        case .inClaudeCode: return CLIResult("Claude Code already uses \(target.title).", json: ["ready": true])
+        case .ready: return CLIResult("\(target.title) is already ready for Claude Code.", json: ["ready": true])
+        case .signingIn: throw CLIError("\(target.title) is already signing in for Claude Code.")
+        case .notSetUp(let blocked): if let blocked { throw CLIError(blocked) }
+        }
+        store.prepareForClaudeCode(target)
+        guard store.claudeCodePreparation?.accountID == target.id else { throw CLIError("The sign-in could not start.") }
+        var said: String?
+        let finished = await wait(invocation, seconds: 330, every: {
+            if let message = store.claudeCodePreparation?.message, message != said { said = message; invocation.emit(message) }
+        }, until: { store.claudeCodePreparation == nil })
+        if !finished { store.cancelClaudeCodePreparation(); throw CLIError("Sign-in cancelled.") }
+        if store.claudeCodeReady.contains(target.id) || store.claudeCodeAccountID == target.id {
+            return CLIResult("\(target.title) is ready for Claude Code. Switch with `agentbar claude-code use`.", json: ["ready": true])
+        }
+        throw CLIError(store.claudeCodeSetupFailures[target.id].map { "\($0) Log: \(store.claudeCodeLogURL.path)" } ?? "The sign-in was cancelled.")
+    }
+
+    @MainActor
+    static func claudeCodeCancel() -> CLIResult {
+        guard store.claudeCodePreparation?.canCancel == true else { return CLIResult("No cancellable Claude Code sign-in is running.", json: ["cancelled": false]) }
+        store.cancelClaudeCodePreparation()
+        return CLIResult("Cancelling the Claude Code sign-in.", json: ["cancelled": true])
+    }
+
+    // MARK: - Usage limit resets
+
+    @MainActor
+    static func resets(_ invocation: CLIInvocation) throws -> CLIResult {
+        let target = try account(invocation.positional(0)!)
+        let snapshot = store.snapshot(for: target)
+        let panel = store.couponPanel(for: target)
+        guard let coupons = panel.coupons ?? snapshot.resetCoupons else {
+            let why = snapshot.isStale || snapshot.requiresLogin ? " (coupons come with fresh usage; usage is \(state(target)))" : ""
+            return CLIResult("\(target.title): no usage reset coupons\(why).", json: ["account": target.id.uuidString, "coupons": NSNull()])
+        }
+        var lines = ["\(target.title): \(CouponWords.summary(coupons))"]
+        if panel.coupons == nil { lines.append("  (usage is \(state(target)); refresh before using one)") }
+        for (index, option) in couponKinds(coupons).enumerated() {
+            var line = "  \(index + 1). \(CouponWords.selectionTitle(option))  resets \(scopeID(option.scope))"
+            if let detail = CouponWords.selectionDetail(option) { line += "  · \(detail)" }
+            if let used = option.affectedUsagePercent { line += "  · \(used)% used now" }
+            line += option.canRedeem ? "  [usable]" : "  [not usable]"
+            lines.append(line)
+        }
+        if case .result(let outcome, let left, let scope) = panel.line {
+            lines.append("Last use: " + CouponWords.message(outcome, left: left, scope: scope ?? coupons.scope))
+        }
+        return CLIResult(lines.joined(separator: "\n"), json: ["account": target.id.uuidString, "coupons": couponsJSON(coupons)])
+    }
+
+    @MainActor
+    static func resetUse(_ invocation: CLIInvocation) async throws -> CLIResult {
+        let target = try account(invocation.positional(0)!)
+        guard let coupons = store.couponPanel(for: target).coupons else {
+            throw CLIError("\(target.title) has no coupon to use now (they come with fresh usage: try `agentbar refresh`).")
+        }
+        let kinds = couponKinds(coupons)
+        var option = coupons.selectedOption
+        if let text = invocation.positional(1) {
+            guard let number = Int(text), kinds.indices.contains(number - 1) else {
+                throw CLIError("No coupon kind \(text). Run `agentbar resets \(invocation.positional(0)!)`.", code: 2)
+            }
+            option = kinds[number - 1]
+        } else if !option.canRedeem, let usable = kinds.first(where: \.canRedeem) {
+            option = usable
+        }
+        guard option.canRedeem else { throw CLIError("This coupon cannot be used now: \(CouponWords.unavailable(option.blockReason)).") }
+        guard invocation.flag("yes") else {
+            throw CLIError(CouponWords.question(option.scope, usedPercent: option.affectedUsagePercent) + " This cannot be undone. Run again with --yes.", code: 2)
+        }
+        // The panel's own steps: Reset, the kind (when there are several), OK.
+        store.cancelCoupon(target)
+        store.askToUseCoupon(target)
+        if case .choosing = store.couponPanel(for: target).line { store.chooseCoupon(option.claim, for: target) }
+        guard case .confirmation = store.couponPanel(for: target).line else { throw CLIError("AgentBar did not offer this coupon. Run `agentbar resets` again.") }
+        if case .confirmation(let claim?, _) = store.couponPanel(for: target).line, claim != option.claim {
+            store.cancelCoupon(target)
+            throw CLIError("Claude offers another coupon first. Run `agentbar resets` to see which.")
+        }
+        store.confirmCoupon(target)
+        invocation.emit(CouponWords.resetting())
+        _ = await wait(invocation, seconds: 120, until: {
+            if case .progress = store.couponLines[target.id] { return false }
+            return true
+        })
+        guard case .result(let outcome, let left, let scope) = store.couponLines[target.id] else { throw CLIError("No result yet; see `agentbar resets`.") }
+        let message = CouponWords.message(outcome, left: left, scope: scope ?? option.scope)
+        guard outcome == .reset else { throw CLIError(message) }
+        return CLIResult(message, json: ["reset": scopeID(option.scope), "left": json(left), "message": message])
+    }
+
+    // MARK: - Menu bar groups
+
+    private static func style(_ name: String) throws -> MenuBarStyle {
+        switch name.lowercased() {
+        case "bars", "multi-bar", "multibar", "badge": return .bars
+        case "ring", "ring-gauge": return .ring
+        case "capsule", "capsule-fill": return .capsule
+        case "text", "text-only": return .text
+        default: throw CLIError("Unknown style \(name). Use bars, ring, capsule or text.", code: 2)
+        }
+    }
+
+    private static func onOff(_ value: String, _ name: String) throws -> Bool {
+        switch value.lowercased() {
+        case "on", "true", "yes", "1": return true
+        case "off", "false", "no", "0": return false
+        default: throw CLIError("--\(name) takes on or off.", code: 2)
+        }
+    }
+
+    private static func limit(_ value: String) -> String {
+        let lower = value.lowercased()
+        if ["5h", "weekly"].contains(lower) || lower.hasPrefix("model:") { return lower }
+        if lower == "week" { return "weekly" }
+        return "model:" + lower
+    }
+
+    @MainActor
+    static func groupJSON(_ group: MenuBarLayout, number: Int) -> [String: Any] {
+        let percentID = group.shownPercentageLineID
+        return ["number": number, "id": group.id.uuidString, "name": group.name, "shown": group.enabled, "style": group.style.selection.rawValue,
+                "showName": group.effectiveBadgeMode.includesCommon, "percent": group.style == .text ? true : group.showPercent,
+                "bar": group.style.selection == .bars ? true : group.showBar, "sort": (group.listSort ?? .manual).rawValue,
+                "accounts": store.panelAccountIDs(for: group).compactMap { id in store.accounts.first { $0.id == id } }.map { ["id": $0.id.uuidString, "name": $0.name] },
+                "lines": slotted(group).map { slot, line -> [String: Any] in
+                    let account = store.accounts.first { $0.id == line.accountID }
+                    let entry = store.entries(for: group).first { $0.lineID == line.id }
+                    return ["slot": slot, "account": line.accountID.uuidString, "name": json(account?.name),
+                            "limit": limitID(line.metricID), "usedPercent": entry?.metric.window?.utilization.map { ($0 * 1000).rounded() / 10 } ?? NSNull(),
+                            "percentLine": (group.style == .bars || group.style == .text) && line.id == percentID,
+                            "displayed": group.displayedRows.contains { $0.id == line.id }]
+                }]
+    }
+
+    // Lines by their 1-based slot.
+    static func slotted(_ group: MenuBarLayout) -> [(Int, MenuBarLine)] {
+        group.rows.enumerated().map { (($0.element.slot ?? $0.offset) + 1, $0.element) }.sorted { $0.0 < $1.0 }
+    }
+
+    @MainActor
+    static func groupsList() -> CLIResult {
+        let groups = store.displayConfiguration.effectiveLayouts
+        let text = groups.isEmpty ? "No menu bar groups. Add one with `agentbar group add`." : groups.enumerated().map { index, group in
+            var head = "\(index + 1). \(group.name)  [\(group.enabled ? "shown" : "hidden")] \(group.style.selection.title)"
+            if group.effectiveBadgeMode.includesCommon { head += " · name shown" }
+            if group.style != .text && !group.showPercent { head += " · no percentage" }
+            if let sort = group.listSort, sort != .manual { head += " · sorted by \(sort == .fiveHourReset ? "5h" : "weekly") reset" }
+            let members = store.panelAccountIDs(for: group).compactMap { id in store.accounts.first { $0.id == id }?.title }
+
+            head += "  id \(short(group.id))"
+            if !members.isEmpty { head += "\n   accounts: " + members.joined(separator: ", ") }
+            let percentID = group.shownPercentageLineID
+            let lines = slotted(group).map { slot, line -> String in
+                let account = store.accounts.first { $0.id == line.accountID }
+                let entry = store.entries(for: group).first { $0.lineID == line.id }
+                var text = "   slot \(slot): \(account.map { "\($0.provider.shortName) \($0.title)" } ?? "?") · \(limitID(line.metricID)) "
+                    + TokenFormatters.percentageString(for: entry?.metric.window?.utilization)
+                if group.style == .bars && line.id == percentID { text += "  (large %)" }
+                if !group.displayedRows.contains(where: { $0.id == line.id }) { text += "  (not shown in this style)" }
+                return text
+            }
+            return ([head] + (lines.isEmpty ? ["   (no lines)"] : lines)).joined(separator: "\n")
+        }.joined(separator: "\n")
+        return CLIResult(text, json: ["groups": groups.enumerated().map { groupJSON($1, number: $0 + 1) }])
+    }
+
+    @MainActor
+    private static func requireDisplayChange(_ before: DisplayConfiguration, _ what: String) throws {
+        if store.displayConfiguration == before {
+            throw CLIError(store.displayError ?? "AgentBar did not accept the change: \(what).")
+        }
+    }
+
+    @MainActor
+    static func groupAdd(_ invocation: CLIInvocation) throws -> CLIResult {
+        let count = store.displayConfiguration.effectiveLayouts.count
+        var group = MenuBarLayout(name: invocation.value("name") ?? "Group \(count + 1)")
+        if let name = invocation.value("style") { group.style = try style(name) }
+        let before = store.displayConfiguration
+        store.updateDisplay { $0.editLayouts { $0.append(group) } }
+        try requireDisplayChange(before, "add a group")
+        return CLIResult("Added group \(count + 1): \(group.name) (id \(short(group.id))). Add lines with `agentbar line add \(count + 1) <account>`.",
+                         json: ["added": groupJSON(group, number: count + 1)])
+    }
+
+    @MainActor
+    static func groupSet(_ invocation: CLIInvocation) throws -> CLIResult {
+        let group = try group(invocation.positional(0)!)
+        if invocation.flag("show") && invocation.flag("hide") { throw CLIError("Use --show or --hide, not both.", code: 2) }
+        let newStyle = try invocation.value("style").map(style)
+        if let newStyle, newStyle != .text, group.style == .text, group.rows.count > MenuBarLayout.maximumLines {
+            throw CLIError("This Text Only group has \(group.rows.count) lines. Remove lines until three remain to use another style.")
+        }
+        let showName = try invocation.value("show-name").map { try onOff($0, "show-name") }
+        let percent = try invocation.value("percent").map { try onOff($0, "percent") }
+        let bar = try invocation.value("bar").map { try onOff($0, "bar") }
+        let sort = try invocation.value("sort").map { value -> GroupListSort in
+            switch value.lowercased() {
+            case "manual": return .manual
+            case "5h", "five-hour", "fivehourreset": return .fiveHourReset
+            case "weekly", "week", "weeklyreset": return .weeklyReset
+            default: throw CLIError("--sort takes manual, 5h or weekly.", code: 2)
+            }
+        }
+        if let name = invocation.value("name"), name.trimmingCharacters(in: .whitespaces).isEmpty { throw CLIError("A group needs a name.", code: 2) }
+        let before = store.displayConfiguration
+        store.updateDisplay { $0.editLayout(group.id) { value in
+            if let name = invocation.value("name") { value.name = String(name.prefix(MenuBarLayout.nameLimit)) }
+            if invocation.flag("show") { value.enabled = true }
+            if invocation.flag("hide") { value.enabled = false }
+            if let newStyle {
+                value.style = newStyle
+                if newStyle == .bars { value.showBar = true }
+                if newStyle == .text { value.showPercent = true }
+            }
+            if let showName { value.badgeMode = showName ? .common : BadgeDisplayMode.none }
+            if let percent { value.showPercentage(of: percent ? value.effectivePercentageLineID : nil) }
+            if let bar { value.showBar = bar }
+            if let sort { value.listSort = sort }
+        } }
+        let after = try self.group(group.id.uuidString)
+        if store.displayConfiguration == before && after != group { try requireDisplayChange(before, "change the group") }
+        let number = store.displayConfiguration.effectiveLayouts.firstIndex { $0.id == group.id }! + 1
+        return CLIResult("Group \(number): \(after.name) [\(after.enabled ? "shown" : "hidden")] \(after.style.selection.title).",
+                         json: ["group": groupJSON(after, number: number)])
+    }
+
+    @MainActor
+    static func groupRemove(_ invocation: CLIInvocation) throws -> CLIResult {
+        let group = try group(invocation.positional(0)!)
+        let before = store.displayConfiguration
+        store.updateDisplay { $0.editLayouts { $0.removeAll { $0.id == group.id } } }
+        try requireDisplayChange(before, "remove the group")
+        return CLIResult("Removed group \(group.name). Its accounts are kept.", json: ["removed": group.id.uuidString])
+    }
+
+    @MainActor
+    static func groupMove(_ invocation: CLIInvocation) throws -> CLIResult {
+        let source = try group(invocation.positional(0)!)
+        guard let to = invocation.value("to") else { throw CLIError("Say where with --to GROUP|N.", code: 2) }
+        let target = try group(to)
+        if source.id != target.id { store.moveMenuBarGroup(source.id, to: target.id) }
+        return groupsList()
+    }
+
+    @MainActor
+    static func memberAdd(_ invocation: CLIInvocation) throws -> CLIResult {
+        let group = try group(invocation.positional(0)!)
+        let target = try account(invocation.positional(1)!)
+        store.addGroupMember(target.id, to: group.id)
+        guard store.groupMembers(group.id)?.contains(target.id) == true else { throw CLIError(store.displayError ?? "AgentBar did not add the account.") }
+        return groupsList()
+    }
+
+    @MainActor
+    static func memberRemove(_ invocation: CLIInvocation) throws -> CLIResult {
+        let group = try group(invocation.positional(0)!)
+        let target = try account(invocation.positional(1)!)
+        guard group.effectiveMemberIDs.contains(target.id) else { throw CLIError("\(target.title) is not in \(group.name).") }
+        store.removeGroupMember(target.id, from: group.id)
+        return groupsList()
+    }
+
+    @MainActor
+    static func memberMove(_ invocation: CLIInvocation) throws -> CLIResult {
+        let group = try group(invocation.positional(0)!)
+        let members = group.effectiveMemberIDs.compactMap { id in store.accounts.first { $0.id == id } }
+        let source = try account(invocation.positional(1)!, among: members)
+        guard let to = invocation.value("to") else { throw CLIError("Say where with --to ACCOUNT.", code: 2) }
+        let target = try account(to, among: members)
+        if source.id != target.id { store.moveGroupMember(source.id, to: target.id, in: group.id) }
+        return groupsList()
+    }
+
+    @MainActor
+    private static func slotIndex(_ text: String, in group: MenuBarLayout) throws -> MenuBarLine {
+        guard let slot = Int(text), let line = slotted(group).first(where: { $0.0 == slot })?.1 else {
+            throw CLIError("Group \(group.name) has no line in slot \(text). Run `agentbar groups`.")
+        }
+        return line
+    }
+
+    @MainActor
+    static func lineAdd(_ invocation: CLIInvocation) throws -> CLIResult {
+        let group = try group(invocation.positional(0)!)
+        let target = try account(invocation.positional(1)!)
+        let metric = limit(invocation.value("limit") ?? "weekly")
+        let used = Set(slotted(group).map { $0.0 })
+        let capacity = group.style == .text ? Int.max : MenuBarLayout.maximumLines
+        let slot: Int
+        if let text = invocation.value("slot") {
+            guard let value = Int(text), value >= 1, value <= capacity else { throw CLIError("--slot is 1 to \(MenuBarLayout.maximumLines).", code: 2) }
+            guard !used.contains(value) else { throw CLIError("Slot \(value) of \(group.name) is taken. Use `agentbar line set` or another slot.") }
+            slot = value
+        } else {
+            guard let free = (1...max(capacity == Int.max ? used.count + 1 : capacity, 1)).first(where: { !used.contains($0) }) else {
+                throw CLIError("\(group.name) is full (three lines). Remove a line first, or use a Text Only group.")
+            }
+            slot = free
+        }
+        let before = store.displayConfiguration
+        store.updateDisplay { config in
+            config.setVisible(target.id, true)
+            let badge = config.display(target).badge
+            config.editLayout(group.id) { layout in
+                guard layout.style == .text || layout.rows.count < MenuBarLayout.maximumLines else { return }
+                layout.rows.append(MenuBarLine(accountID: target.id, metricID: metric, slot: slot - 1, badgeText: badge))
+                layout.rows.sort { ($0.slot ?? 0) < ($1.slot ?? 0) }
+            }
+        }
+        try requireDisplayChange(before, "add the line")
+        return CLIResult("Added \(target.title) · \(limitID(metric)) to \(group.name), slot \(slot).", json: ["group": group.id.uuidString, "slot": slot])
+    }
+
+    @MainActor
+    static func lineSet(_ invocation: CLIInvocation) throws -> CLIResult {
+        let group = try group(invocation.positional(0)!)
+        let line = try slotIndex(invocation.positional(1)!, in: group)
+        let newAccount = try invocation.value("account").map { try account($0) }
+        let metric = invocation.value("limit").map(limit)
+        guard newAccount != nil || metric != nil || invocation.flag("percent") else {
+            throw CLIError("Say what to change: --account, --limit or --percent.", code: 2)
+        }
+        let before = store.displayConfiguration
+        store.updateDisplay { config in
+            if let newAccount { config.setVisible(newAccount.id, true) }
+            config.editLayout(group.id) { layout in
+                guard let i = layout.rows.firstIndex(where: { $0.id == line.id }) else { return }
+                if let newAccount {
+                    layout.rows[i].accountID = newAccount.id
+                    if metric == nil, !DisplayMetric.all(store.snapshot(for: newAccount)).contains(where: { $0.id == line.metricID }) {
+                        layout.rows[i].metricID = "weekly"
+                    }
+                }
+                if let metric { layout.rows[i].metricID = metric }
+                if invocation.flag("percent") { layout.showPercentage(of: line.id) }
+            }
+        }
+        if store.displayConfiguration == before && !(invocation.flag("percent") && group.shownPercentageLineID == line.id) {
+            try requireDisplayChange(before, "change the line")
+        }
+        return groupsList()
+    }
+
+    @MainActor
+    static func lineRemove(_ invocation: CLIInvocation) throws -> CLIResult {
+        let group = try group(invocation.positional(0)!)
+        let line = try slotIndex(invocation.positional(1)!, in: group)
+        let before = store.displayConfiguration
+        store.updateDisplay { $0.editLayout(group.id) { layout in
+            layout.rows.removeAll { $0.id == line.id }
+            if layout.percentageLineID == line.id { layout.percentageLineID = nil }
+        } }
+        try requireDisplayChange(before, "remove the line")
+        return CLIResult("Removed slot \(invocation.positional(1)!) from \(group.name).", json: ["group": group.id.uuidString, "removed": Int(invocation.positional(1)!) ?? 0])
+    }
+
+    @MainActor
+    static func lineMove(_ invocation: CLIInvocation) throws -> CLIResult {
+        let group = try group(invocation.positional(0)!)
+        let line = try slotIndex(invocation.positional(1)!, in: group)
+        guard let to = invocation.value("to").flatMap(Int.init) else { throw CLIError("Say where with --to SLOT.", code: 2) }
+        let from = Int(invocation.positional(1)!)!
+        let upper = group.style == .text ? group.rows.count : MenuBarLayout.maximumLines
+        guard (1...upper).contains(to) else { throw CLIError("--to is 1 to \(upper).", code: 2) }
+        if to != from {
+            store.updateDisplay { $0.editLayout(group.id) { $0.moveLine(line.id, offset: to - from) } }
+        }
+        return groupsList()
+    }
+
+    // MARK: - Settings and app
+
+    @MainActor static let launchAtLogin = LaunchAtLogin()
+
+    @MainActor
+    static func settingsShow() -> CLIResult {
+        let settings = AppContainer.shared.settings
+        launchAtLogin.refresh()
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
+        let values: [String: Any] = [
+            "refreshInterval": Int(settings.refreshIntervalSeconds), "language": settings.language.rawValue,
+            "openAtLogin": launchAtLogin.isOn, "version": version, "updates": UpdateStatus.shared.isAvailable,
+            "dataFolder": store.files.root.path, "app": Bundle.main.bundlePath,
+        ]
+        let text = """
+        refresh-interval  \(Int(settings.refreshIntervalSeconds)) s
+        language          \(settings.language.rawValue) (\(settings.language.nativeName))
+        open-at-login     \(launchAtLogin.isOn ? "on" : "off")\(launchAtLogin.needsApproval ? " (waiting for approval in System Settings › Login Items)" : "")
+        version           \(version)\(UpdateStatus.shared.isAvailable ? "" : " (this build does not update itself)")
+        data folder       \(store.files.root.path)
+        app               \(Bundle.main.bundlePath)
+        """
+        return CLIResult(text, json: values)
+    }
+
+    @MainActor
+    static func settingsSet(_ invocation: CLIInvocation) throws -> CLIResult {
+        let settings = AppContainer.shared.settings
+        let value = invocation.positional(1)!
+        var note = ""
+        switch invocation.positional(0)!.lowercased() {
+        case "refresh-interval", "refresh", "interval":
+            guard let seconds = Double(value.replacingOccurrences(of: "s", with: "")), [60, 120, 300, 600].contains(seconds) else {
+                throw CLIError("refresh-interval is 60, 120, 300 or 600 (seconds).", code: 2)
+            }
+            settings.refreshIntervalSeconds = seconds
+        case "language", "lang":
+            guard let language = AppLanguage.allCases.first(where: { $0.rawValue == value.lowercased() || $0.nativeName.lowercased() == value.lowercased() }) else {
+                throw CLIError("language is en or ko.", code: 2)
+            }
+            if settings.language != language { settings.language = language; note = "\nThe new language applies after `agentbar restart`." }
+        case "open-at-login", "login":
+            launchAtLogin.set(try onOff(value, "open-at-login"))
+            if let error = launchAtLogin.errorMessage { throw CLIError(error) }
+        default:
+            throw CLIError("Unknown setting \(invocation.positional(0)!). Use refresh-interval, language or open-at-login.", code: 2)
+        }
+        var result = settingsShow()
+        result.text += note
+        return result
+    }
+
+    @MainActor
+    static func updateCheck() -> CLIResult {
+        guard UpdateStatus.shared.isAvailable else { return CLIResult("This AgentBar build does not update itself.", json: ["checking": false]) }
+        guard UpdateStatus.shared.canCheck else { return CLIResult("A check is already under way.", json: ["checking": false]) }
+        Updates.checkNow()
+        return CLIResult("Checking for an update. Sparkle's window shows the answer on screen.", json: ["checking": true])
+    }
+
+    @MainActor
+    static func restartApp() throws -> CLIResult {
+        guard AppRelauncher.canRelaunch else { throw CLIError("A development run cannot restart itself; quit it with `agentbar quit`.") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { AppRelauncher.relaunch(reopeningSettings: false) }
+        return CLIResult("AgentBar restarts.", json: ["restarting": true])
+    }
+
+    @MainActor
+    static func openSettings(_ invocation: CLIInvocation) throws -> CLIResult {
+        let tab: SettingsTab
+        switch (invocation.positional(0) ?? "accounts").lowercased() {
+        case "accounts": tab = .accounts
+        case "menu-bar", "menubar", "groups": tab = .menuBar
+        case "general", "settings": tab = .general
+        default: throw CLIError("Tabs: accounts, menu-bar, general.", code: 2)
+        }
+        let groupID = try invocation.value("group").map { try group($0).id }
+        SettingsWindowController.shared.show(tab: groupID == nil ? tab : .menuBar, groupID: groupID)
+        return CLIResult("Opened Settings › \(tab.title).")
+    }
+
+    @MainActor
+    static func quitApp() -> CLIResult {
+        // After the answer is sent.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApplication.shared.terminate(nil) }
+        return CLIResult("AgentBar quits.", json: ["quit": true])
+    }
+
+    // MARK: - In the command itself
+
+    static func version() -> CLIResult {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
+        return CLIResult("agentbar \(version)", json: ["version": version, "executable": CLIClient.executableURL.path])
+    }
+
+    static func paths() -> CLIResult {
+        let root = CLI.dataRoot()
+        let values = ["dataFolder": root.path, "socket": CLI.socketPath(root: root),
+                      "claudeCodeLog": ActivityLog.claudeCodeSwitchURL(root: root).path,
+                      "accounts": root.appendingPathComponent("accounts.json").path, "display": root.appendingPathComponent("display-v2.json").path]
+        return CLIResult(values.sorted { $0.key < $1.key }.map { "\($0.key.padding(toLength: 14, withPad: " ", startingAt: 0)) \($0.value)" }.joined(separator: "\n"), json: values)
+    }
+
+    static func installCLI(_ invocation: CLIInvocation) throws -> CLIResult {
+        let directory = invocation.value("dir").map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
+        let link = try CLIInstaller.link(in: directory, replace: true)
+        let onPath = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").contains { URL(fileURLWithPath: String($0)).standardizedFileURL == directory.standardizedFileURL }
+        return CLIResult("Linked \(link.path) → \(CLIClient.executableURL.path)" + (onPath ? "" : "\n\(directory.path) is not on PATH; add it to use `agentbar`."),
+                         json: ["link": link.path, "target": CLIClient.executableURL.path, "onPath": onPath])
+    }
+}
+
+enum CLIInstaller {
+    // Links `agentbar` in `directory` to this executable. Without `replace`, an existing file or link that is not ours stays.
+    @discardableResult
+    static func link(in directory: URL, replace: Bool) throws -> URL {
+        let link = directory.appendingPathComponent("agentbar")
+        let target = CLIClient.executableURL
+        let manager = FileManager.default
+        if let existing = try? manager.destinationOfSymbolicLink(atPath: link.path) {
+            if URL(fileURLWithPath: existing).resolvingSymlinksInPath() == target { return link }
+            // Without `replace`, only a link to an AgentBar that is gone is replaced.
+            let dangling = existing.hasSuffix("/Contents/MacOS/agent-bar") && !manager.fileExists(atPath: existing)
+            guard replace || dangling else { return link }
+            try manager.removeItem(at: link)
+        } else if manager.fileExists(atPath: link.path) {
+            guard replace else { return link }
+            throw CLIError("\(link.path) exists and is not a link. Remove it first.")
+        }
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try manager.createSymbolicLink(at: link, withDestinationURL: target)
+        return link
+    }
+
+    // At launch of an installed app: makes `agentbar` available when ~/.local/bin exists and has no `agentbar` yet, or
+    // has one that points to an AgentBar that is gone.
+    static func linkAtLaunch() {
+        guard CLIClient.appBundleURL != nil else { return }
+        let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }
+        _ = try? link(in: directory, replace: false)
+    }
+}

@@ -183,6 +183,22 @@ extension DisplayConfiguration {
         }
         layouts = result
     }
+    // A line's frozen badge describes its account and limit. When either changes, or the account's badge does, the
+    // label is made again (by freezeBadgeLabels) instead of naming what the line no longer shows.
+    mutating func releaseBadgeLabels(changedFrom old: DisplayConfiguration) {
+        guard layouts != nil else { return }
+        let oldLines = Dictionary(old.effectiveLayouts.flatMap(\.rows).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for i in layouts!.indices {
+            for j in layouts![i].rows.indices {
+                let line = layouts![i].rows[j]
+                guard line.badgeText != nil, let before = oldLines[line.id] else { continue }
+                let badgeChanged = old.accounts[line.accountID.uuidString]?.badge != accounts[line.accountID.uuidString]?.badge
+                if before.accountID != line.accountID || before.metricID != line.metricID || badgeChanged {
+                    layouts![i].rows[j].badgeText = nil
+                }
+            }
+        }
+    }
     mutating func freezeBadgeLabels() {
         var groups = effectiveLayouts
         for i in groups.indices {

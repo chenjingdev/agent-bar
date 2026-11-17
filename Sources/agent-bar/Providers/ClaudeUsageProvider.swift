@@ -41,7 +41,7 @@ struct ClaudeUsageProvider: UsageProviding {
                 }
                 let remoteResult = try await resolveRemoteUsage(credentials: credentials, withCoupons: couponsDue())
                 try control.checkCancellation()
-                guard credentials.cacheKey == (try readCredentials().cacheKey) else {
+                guard credentials.cacheKey == (try readCredentials(allowExpired: true).cacheKey) else {
                     throw AccountError.message(String(localized: "The CLI account changed during the request. Refresh again."))
                 }
                 let modelWeeklies: [ModelWeeklySummary] = (remoteResult.data.modelWeeklies ?? []).map { cached in

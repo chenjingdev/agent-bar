@@ -296,7 +296,7 @@ final class CodexRPC {
         guard let account = result["account"] as? [String: Any], account["type"] as? String == "chatgpt" else {
             throw AccountError.loginRequired
         }
-        return AccountIdentity(email: account["email"] as? String, organization: nil, organizationID: nil,
+        return AccountIdentity(email: account["email"] as? String, organization: account["workspaceName"] as? String, organizationID: nil,
                                stableID: account["accountId"] as? String)
     }
     func login(openURL: @Sendable (URL) -> Void) throws -> AccountIdentity {

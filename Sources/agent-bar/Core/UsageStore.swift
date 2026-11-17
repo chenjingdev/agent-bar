@@ -205,6 +205,7 @@ final class UsageStore: ObservableObject {
     func updateDisplay(_ change: (inout DisplayConfiguration) -> Void) {
         guard displayWritable else { return }
         var next = displayConfiguration; change(&next)
+        next.releaseBadgeLabels(changedFrom: displayConfiguration)
         if next.layouts != nil { next.freezeBadgeLabels() }
         // An edit that adds a line for an account a group does not hold yet makes it a member, rather than being dropped.
         next.normalizeMembers()
@@ -566,7 +567,7 @@ final class UsageStore: ObservableObject {
         var incoming = pending.account
         var added = false
         if let duplicate = next.accounts.first(where: {
-            $0.provider == incoming.provider && $0.id != pending.replacing && $0.identity.map { incoming.identity?.comparison(to: $0) == .same } == true
+            $0.provider == incoming.provider && $0.id != pending.replacing && Self.sameLogin(incoming.identity, $0.identity)
         }) { errorMessage = String(localized: "This account is already registered: \(duplicate.title)"); return }
         if let id = pending.replacing, !addAsNew {
             guard let index = next.accounts.firstIndex(where: { $0.id == id }), !next.accounts[index].deletionPending else { return }
@@ -599,6 +600,17 @@ final class UsageStore: ObservableObject {
         pendingLogin = nil; loginMessage = nil
         refreshNow()
         Task { await retryCleanup() }
+    }
+    // Whether two sign-ins are the same account. Codex reports no account ID, only the email and workspace, so for it a
+    // matching email in the same (or an unnamed) workspace is the same account.
+    nonisolated static func sameLogin(_ incoming: AccountIdentity?, _ existing: AccountIdentity?) -> Bool {
+        guard let incoming, let existing else { return false }
+        let comparison = incoming.comparison(to: existing)
+        if comparison == .same { return true }
+        guard comparison == .unverified, incoming.stableID == nil || existing.stableID == nil,
+              let email = incoming.email, let other = existing.email, email.caseInsensitiveCompare(other) == .orderedSame else { return false }
+        guard let workspace = incoming.organization, let otherWorkspace = existing.organization else { return true }
+        return workspace == otherWorkspace
     }
     func cancelLogin() {
         loginControl?.cancel()

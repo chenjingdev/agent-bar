@@ -30,6 +30,9 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
             providers: AppContainer.shared.availableProviders
         )
         Updates.start()
+        // `agentbar` commands reach this app through its socket.
+        CLIServer.shared.start(root: AppContainer.shared.store.files.root)
+        CLIInstaller.linkAtLaunch()
         if AppRelauncher.takeReopenSettingsRequest() {
             // Back where the language was changed, now in that language.
             SettingsWindowController.shared.show(tab: .general)
@@ -44,7 +47,15 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// The executable is both the app and the `agentbar` command: started with a command word it runs the command.
 @main
+enum AgentBarMain {
+    static func main() {
+        if CLI.isCommand(CommandLine.arguments) { exit(CLIClient.main(CommandLine.arguments)) }
+        AgentBarApp.main()
+    }
+}
+
 struct AgentBarApp: App {
     @NSApplicationDelegateAdaptor(AgentBarAppDelegate.self) private var appDelegate
 

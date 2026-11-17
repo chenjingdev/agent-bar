@@ -146,6 +146,36 @@ irm https://raw.githubusercontent.com/chenjingdev/agent-bar/main/windows/install
 
 서명 없는 실행 파일이 하나도 없습니다. Node.js 재단이 서명한 공식 `node.exe`와 읽을 수 있는 스크립트뿐이라 Smart App Control이 켜진 PC에서도 막히지 않습니다. 지울 때는 **설정 › 앱 › 설치된 앱**에서 AgentBar를 제거합니다. 코드와 만드는 법은 [windows/](windows)에 있습니다.
 
+## COMMAND LINE<br>명령으로 다루기
+
+메뉴 막대 패널과 설정에서 하는 일은 모두 터미널 명령으로도 할 수 있습니다. 그래서 Claude Code 같은 AI도 한도를 읽고 AgentBar를 사람처럼 바꿀 수 있습니다. 명령은 AgentBar 프로그램 자신(`AgentBar.app/Contents/MacOS/agent-bar`)입니다. 명령과 함께 실행하면 켜져 있는 AgentBar에 일을 넘기고(데이터 폴더의 `control.sock`, 나만 읽을 수 있음) 답을 출력한 뒤 끝납니다. AgentBar가 꺼져 있으면 먼저 뒤에서 켭니다.
+
+AgentBar는 켜질 때 `~/.local/bin` 폴더가 있고 그 안에 `agentbar`가 없으면 `agentbar`로 링크를 만듭니다. 그렇지 않으면 한 번 실행하세요.
+
+```bash
+/Applications/AgentBar.app/Contents/MacOS/agent-bar install-cli            # ~/.local/bin/agentbar
+/Applications/AgentBar.app/Contents/MacOS/agent-bar install-cli --dir 폴더  # PATH의 다른 폴더
+```
+
+```text
+agentbar status [계정]                    모든 계정의 사용량: 한도별 % · 초기화 시각 · 쿠폰
+agentbar refresh [계정]                   지금 새로 고치고 결과 보기
+agentbar accounts                         계정 순서대로: 번호 · id · 서비스 · 이름 · 상태
+agentbar account add claude|codex|antigravity     브라우저 로그인 뒤 등록(로그인은 사람이 마침)
+agentbar account reconnect|remove|rename|move <계정> ...
+agentbar claude-code                      Claude Code가 쓰는 계정, 준비된 계정
+agentbar claude-code setup|use <계정>     Claude Code용으로 한 번 로그인 / Claude Code를 그 계정으로 바꾸기
+agentbar resets <계정>                    사용량 초기화 쿠폰, `resets use <계정> [종류] --yes`로 하나 쓰기
+agentbar groups                           메뉴 막대 그룹과 그 계정 · 줄
+agentbar group add|set|remove|move        이름 · 모양 · 보이기 · 이름 뱃지 · 퍼센트 · 목록 순서
+agentbar group account add|remove|move    그룹 패널에 보일 계정
+agentbar line add|set|remove|move         사용량 줄: <그룹> <계정> --limit 5h|weekly|fable
+agentbar settings [set refresh-interval|language|open-at-login 값]
+agentbar update | open [탭] | restart | quit | version | paths
+```
+
+`agentbar --help`는 모든 명령을, `agentbar <명령> --help`는 그 명령을 설명합니다. 모든 명령에 `--json`이 있습니다. 계정은 `agentbar accounts`의 번호 · 이름이나 이메일 · id 앞부분, 또는 하나뿐일 때 `claude`/`codex`로, 그룹은 `agentbar groups`의 번호 · 이름 · id 앞부분으로 가리킵니다. 끝 상태는 0 완료, 1 실패, 2 명령 잘못(`--yes` 빠짐 포함), 3 AgentBar에 닿지 못함입니다. 명령은 버튼과 같은 단계를 거치므로 같은 확인이 적용됩니다. 로그인은 여전히 사람이 브라우저에서 마쳐야 하고, 계정 지우기와 쿠폰 쓰기에는 `--yes`가 필요합니다. `AGENTBAR_DATA_DIR`와 `AGENTBAR_DEFAULTS_SUITE`로 띄운 개발 실행에는 같은 변수로 실행한 명령이 닿습니다.
+
 ## REQUIREMENTS<br>필요한 것
 
 <p>

@@ -146,6 +146,36 @@ irm https://raw.githubusercontent.com/chenjingdev/agent-bar/main/windows/install
 
 It contains no unsigned program: only the official `node.exe` signed by the OpenJS Foundation and readable scripts, so PCs with Smart App Control on don't block it. To remove it, uninstall AgentBar in **Settings › Apps › Installed apps**. The code and how to build it are in [windows/](windows).
 
+## COMMAND LINE
+
+Everything the menu bar panel and Settings do can be done from a terminal too, so an AI agent such as Claude Code can read your limits and change AgentBar the way you do. The command is AgentBar's own program, `AgentBar.app/Contents/MacOS/agent-bar`: started with a command it hands the command to the running AgentBar (over `control.sock` in its data folder, readable only by you), prints the answer and exits. When AgentBar is not running it starts it in the background first.
+
+AgentBar links it as `agentbar` in `~/.local/bin` when it starts, if that folder exists and has no `agentbar` yet. Otherwise run once:
+
+```bash
+/Applications/AgentBar.app/Contents/MacOS/agent-bar install-cli            # ~/.local/bin/agentbar
+/Applications/AgentBar.app/Contents/MacOS/agent-bar install-cli --dir DIR  # another folder on PATH
+```
+
+```text
+agentbar status [account]                 usage of every account: % used per limit, reset times, coupons
+agentbar refresh [account]                refresh now and show the result
+agentbar accounts                         accounts in order: number, id, provider, name, state
+agentbar account add claude|codex|antigravity     browser sign-in, then register (you finish the sign-in)
+agentbar account reconnect|remove|rename|move <account> ...
+agentbar claude-code                      which account Claude Code uses, which are ready
+agentbar claude-code setup|use <account>  sign an account in once for Claude Code / switch Claude Code to it
+agentbar resets <account>                 usage reset coupons; `resets use <account> [kind] --yes` uses one
+agentbar groups                           menu bar groups, their accounts and lines
+agentbar group add|set|remove|move        name, style, show/hide, name badge, percentage, list order
+agentbar group account add|remove|move    the accounts a group's panel lists
+agentbar line add|set|remove|move         usage lines: <group> <account> --limit 5h|weekly|fable
+agentbar settings [set refresh-interval|language|open-at-login VALUE]
+agentbar update | open [tab] | restart | quit | version | paths
+```
+
+`agentbar --help` lists every command and `agentbar <command> --help` explains one. Every command takes `--json`. An account is named by its number in `agentbar accounts`, its name or email, the start of its id, or `claude`/`codex` when there is one; a group by its number in `agentbar groups`, its name or the start of its id. Exit status: 0 done, 1 failed, 2 wrong command line (including a missing `--yes`), 3 AgentBar not reachable. The commands go through the same steps as the buttons, so the same checks apply; signing in still needs you in the browser, and deleting an account or using a coupon needs `--yes`. A development run with `AGENTBAR_DATA_DIR` and `AGENTBAR_DEFAULTS_SUITE` is reached by commands run with the same variables.
+
 ## REQUIREMENTS
 
 <p>

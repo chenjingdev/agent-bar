@@ -236,9 +236,10 @@ struct DisplayConfiguration: Codable, Equatable {
             let used = live.compactMap { accounts[$0.id.uuidString]?.color }
             // A second account of the same provider gets a numbered badge so the
             // pair is readable before the user names them. Existing badges never change.
-            let siblings = live.filter { $0.provider == account.provider && accounts[$0.id.uuidString] != nil }
+            let taken = Set(live.filter { $0.provider == account.provider }.compactMap { accounts[$0.id.uuidString]?.badge })
             var badge = account.provider.shortName
-            if siblings.contains(where: { accounts[$0.id.uuidString]?.badge == badge }) { badge += "\(siblings.count + 1)" }
+            // The lowest number no sibling uses, so a deleted account's number does not make two badges alike.
+            if taken.contains(badge), let number = (2...).first(where: { !taken.contains(badge + "\($0)") }) { badge += "\(number)" }
             accounts[account.id.uuidString] = AccountDisplay(badge: badge, color: .next(for: account.provider, used: used),
                                                              bars: AccountDisplay.defaultBars(for: account.provider))
         }
