@@ -91,7 +91,7 @@ enum CLICommands {
                           CLIOption("style", "STYLE", "bars, ring, capsule or text (default: bars).")],
                 run: { try groupAdd($0) }),
         CLISpec(path: ["group", "set"], arguments: ["<group>"], summary: "Change a group's name, style, visibility, name badge, percentage and list order.",
-                details: "Styles: bars (Multi Bar), ring (Ring Gauge, first line only), capsule (Capsule Fill), text (Text Only, any number of lines).\nThe name is also the badge shown in front of the group's usage with --show-name on.\nComponents: the name (--show-name), the percentage (--percent) and the bar (--bar). A Multi Bar group with every\ncomponent off and no lines shows nothing: it is hidden and not refreshed (`agentbar warnings` says so).",
+                details: "Styles: bars (Multi Bar), ring (Ring Gauge, first line only), capsule (Capsule Fill), text (Text Only, any number of lines).\nThe name is also the badge shown in front of the group's usage with --show-name on.\nComponents: the name (--show-name), the percentage (--percent) and the bar (--bar). A Multi Bar group with every\ncomponent off shows only its lines' bars; with no lines it shows nothing, is hidden and not refreshed (`agentbar warnings`).",
                 options: [CLIOption("name", "NAME", "New group name (up to 24 characters)."),
                           CLIOption("style", "STYLE", "bars, ring, capsule or text."),
                           CLIOption("show", nil, "Show the group in the menu bar."),
@@ -257,7 +257,7 @@ enum CLICommands {
         if store.displayWidthWarning { add("menu-bar-width", "These groups use a large portion of the menu bar.") }
         for (index, group) in store.displayConfiguration.effectiveLayouts.enumerated() where !group.showsAnything {
             add("group-all-off", "Group \(index + 1) \(group.name): all components are off. This group is hidden and its refresh is paused. "
-                + "Turn one on: `agentbar group set \(index + 1) --percent on` (or --show-name on, --bar on, or --style ring|capsule|text).",
+                + "Turn one on: `agentbar group set \(index + 1) --percent on` or `--show-name on`, or add a usage line: `agentbar line add \(index + 1) <account>`.",
                 ["group": group.id.uuidString])
         }
         let paused = Set(store.displayConfiguration.effectiveLayouts.flatMap(\.rows).map(\.accountID))
@@ -985,7 +985,8 @@ enum CLICommands {
         let after = try self.group(group.id.uuidString)
         if store.displayConfiguration == before && after != group { try requireDisplayChange(before, "change the group") }
         let number = store.displayConfiguration.effectiveLayouts.firstIndex { $0.id == group.id }! + 1
-        return withWarnings(CLIResult("Group \(number): \(after.name) [\(groupState(after))] \(after.style.selection.title).",
+        let unchanged = after == group ? " Nothing changed: it already was so." : ""
+        return withWarnings(CLIResult("Group \(number): \(after.name) [\(groupState(after))] \(after.style.selection.title).\(unchanged)",
                                       json: ["group": groupJSON(after, number: number)]))
     }
 
