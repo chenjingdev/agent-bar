@@ -144,10 +144,11 @@ enum CLIRunner {
                 else { throw CLIError("`agentbar \(invocation.spec.name)` has nothing to run.") }
                 return (0, (json ? CLI.jsonString(result.json) : result.text) + "\n", "")
             }
-        } catch let error as CLIError {
-            return (error.code, "", json ? CLI.jsonString(["error": error.message, "exit": Int(error.code)]) + "\n" : "agentbar: \(error.message)\n")
         } catch {
-            return (1, "", json ? CLI.jsonString(["error": error.localizedDescription]) + "\n" : "agentbar: \(error.localizedDescription)\n")
+            // With --json the answer, failed or not, is one JSON object on standard output, as `fail` in the command prints it.
+            let failure = error as? CLIError ?? CLIError(error.localizedDescription)
+            if json { return (failure.code, CLI.jsonString(["error": failure.message, "exit": Int(failure.code)]) + "\n", "") }
+            return (failure.code, "", "agentbar: \(failure.message)\n")
         }
     }
 }
@@ -222,7 +223,9 @@ enum CLIClient {
         let process = Process()
         if let bundle = appBundleURL {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            process.arguments = ["-g"] + keys.flatMap { key in environment[key].map { ["--env", "\(key)=\($0)"] } ?? [] } + [bundle.path]
+            let passed = keys.flatMap { key in environment[key].map { ["--env", "\(key)=\($0)"] } ?? [] }
+            // A test run's AgentBar is a new instance of its own: `open` cannot hand variables to one already running.
+            process.arguments = (passed.isEmpty ? ["-g"] : ["-n", "-g"]) + passed + [bundle.path]
         } else {
             // A development build outside a bundle runs as a detached child.
             process.executableURL = executableURL

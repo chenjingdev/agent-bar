@@ -142,3 +142,28 @@ struct CLISecondBugTests {
         #expect(await memory.pendingKey(for: "folder|A") == nil)
     }
 }
+
+struct CLIConsentTests {
+    @MainActor @Test func jsonErrorsGoToStandardOutput() async {
+        let (code, out, err) = await CLIRunner.execute(["account", "add", "--json"], connection: nil)
+        #expect(code == 2 && err.isEmpty)
+        #expect(out.contains("\"error\"") && out.contains("\"exit\" : 2"))
+    }
+
+    // What Settings asks a person to confirm, the command asks --yes for.
+    @Test func confirmationsOfTheScreenNeedYes() {
+        for name in ["account add", "account reconnect", "account remove", "claude-code setup", "resets use", "group remove", "settings restore-groups"] {
+            let spec = CLICommands.all.first { $0.name == name }
+            #expect(spec?.options.contains { $0.name == "yes" } == true, "\(name) needs --yes")
+        }
+        #expect(CLICommands.all.first { $0.name == "account reconnect" }?.options.contains { $0.name == "add-as-new" } == true)
+    }
+
+    @Test func screenOnlyActionsHaveCommands() {
+        for name in ["warnings", "warnings dismiss", "account enable", "settings restore-groups"] {
+            #expect(CLICommands.all.contains { $0.name == name }, "\(name)")
+        }
+        #expect(CLICommands.all.first { $0.name == "update" }?.options.contains { $0.name == "show" } == true)
+        #expect(CLI.help(CLICommands.all.first { $0.name == "open" }, []).contains("login-items"))
+    }
+}

@@ -8,8 +8,8 @@ enum CLICommands {
         // MARK: Usage
         CLISpec(path: ["status"], arguments: ["[account]"],
                 summary: "Show usage of every account (or one): % used of each limit, reset times, credits and resets.",
-                details: "Reads what AgentBar last loaded; it does not wait for a refresh (use `agentbar refresh` for fresh values).\nA limit without data shows --, never 0%.",
-                run: { try status($0) }),
+                details: "Reads what AgentBar last loaded; it does not wait for a refresh (use `agentbar refresh` for fresh values).\nA limit without data shows --, never 0%. Warnings AgentBar shows on screen are listed last (see `agentbar warnings`).",
+                run: { await freshClaudeCode(); return try status($0) }),
         CLISpec(path: ["refresh"], arguments: ["[account]"],
                 summary: "Refresh usage now (like the popover's refresh button) and show the result.",
                 details: "Only accounts used by a shown menu bar group are refreshed. Provider cooldowns still apply.",
@@ -18,17 +18,21 @@ enum CLICommands {
 
         // MARK: Accounts
         CLISpec(path: ["accounts"], arguments: [], summary: "List accounts in their saved order with id, provider, email and state.",
-                run: { _ in accountsList() }),
+                details: "--json also gives, per account, why Delete/Reconnect wait (claudeCodeLock), why Claude Code's Use is blocked\n(claudeCodeBlocked), the last failed sign-in for Claude Code (claudeCodeSetupFailure) and whether it is paused.",
+                run: { _ in await freshClaudeCode(); try requireStorage(); return withWarnings(accountsList()) }),
         CLISpec(path: ["account", "add"], arguments: ["<claude|codex|antigravity>"],
-                summary: "Sign in a new account in the browser and register it (waits up to 5 minutes).",
-                details: "Opens the provider's sign-in page in the default browser. A person has to finish the sign-in there.\nThe signed-in account is registered at once; an account already registered is refused.\nAntigravity needs no browser: the one account signed in to agy or the Antigravity app is added.",
-                options: [CLIOption("private", nil, "Open the sign-in in a private browser window instead.")],
+                summary: "Sign in a new account in the browser and register it (needs --yes; waits up to 5 minutes).",
+                details: "Opens the provider's sign-in page in the default browser. A person has to finish the sign-in there, so ask them\nfirst and pass --yes. Claude: the first time, the notice Settings shows (how AgentBar keeps the sign-in, which\nAnthropic could block) must be accepted by the person; --yes accepts it. Without --yes nothing opens and the\nnotice is printed. The signed-in account (email, organization) is registered at once and printed; undo with\n`agentbar account remove <account> --yes`. An account already registered is refused.\nAntigravity needs no browser and no --yes: the one account signed in to agy or the Antigravity app is added.",
+                options: [CLIOption("yes", nil, "The person agreed to sign in (and, for Claude, accepted the notice)."),
+                          CLIOption("private", nil, "Open the sign-in in a private browser window instead.")],
                 run: { try await accountAdd($0) }),
         CLISpec(path: ["account", "reconnect"], arguments: ["<account>"],
-                summary: "Sign an existing account in again in the browser (waits up to 5 minutes).",
-                details: "The browser must be signed in to the same account. A different account is refused (add it instead).",
-                options: [CLIOption("private", nil, "Open the sign-in in a private browser window instead."),
-                          CLIOption("force", nil, "Replace even when AgentBar cannot verify it is the same account.")],
+                summary: "Sign an existing account in again in the browser (needs --yes; waits up to 5 minutes).",
+                details: "A person finishes the sign-in in the browser; pass --yes once they agreed (Claude: also accepts the notice,\nas for `account add`). The browser must be signed in to the same account. A different account changes nothing\nunless --add-as-new adds it as a new account (as Settings' Add Account button there). When AgentBar cannot verify\nit is the same account, --force reconnects anyway and --add-as-new adds it as a new one.",
+                options: [CLIOption("yes", nil, "The person agreed to sign in (and, for Claude, accepted the notice)."),
+                          CLIOption("private", nil, "Open the sign-in in a private browser window instead."),
+                          CLIOption("force", nil, "Replace even when AgentBar cannot verify it is the same account."),
+                          CLIOption("add-as-new", nil, "When the browser signed in to another (or unverified) account, add it as a new account.")],
                 run: { try await accountReconnect($0) }),
         CLISpec(path: ["account", "cancel"], arguments: [], summary: "Cancel the account sign-in that is running.",
                 run: { _ in accountCancel() }),
@@ -37,6 +41,10 @@ enum CLICommands {
                 details: "Removes the account, its credentials, usage cache and saved Claude Code sign-in. Claude Code's own login and\nthe provider account itself are not touched. This cannot be undone; signing in again needs the browser.",
                 options: [CLIOption("yes", nil, "Confirm the deletion.")],
                 run: { try await accountRemove($0) }),
+        CLISpec(path: ["account", "enable"], arguments: ["<account>"],
+                summary: "Resume a paused account (Settings' pause icon \"Enable this account\"): its lines show and refresh again.",
+                details: "An account is paused when `accounts --json` says \"paused\": true (left from older settings or a service that was off).",
+                run: { try accountEnable($0) }),
         CLISpec(path: ["account", "move"], arguments: ["<account>"],
                 summary: "Move an account to another position in the account order.",
                 options: [CLIOption("to", "ACCOUNT|N", "The account (or position number) whose place it takes.")],
@@ -48,15 +56,18 @@ enum CLICommands {
                 run: { _ in await retryCleanup() }),
 
         // MARK: Claude Code
-        CLISpec(path: ["claude-code"], arguments: [], summary: "Show which account Claude Code uses and which accounts are ready for it.",
-                run: { _ in claudeCodeStatus() }),
+        CLISpec(path: ["claude-code"], arguments: [], summary: "Show which account Claude Code uses, which accounts are ready, and the last switch result.",
+                details: "Reads Claude Code's login again first, so a `claude auth login` in a terminal shows. Per account: its state,\nwhy Use is blocked, the last failed sign-in for Claude Code, and the lines its panel row shows. `lastResult` is\nthe last switch (or the recovery of a switch cut short when AgentBar started), kept after the panel drops it.",
+                run: { _ in await freshClaudeCode(); return claudeCodeStatus() }),
         CLISpec(path: ["claude-code", "use"], arguments: ["<account>"],
                 summary: "Switch Claude Code's default login to this account (open sessions switch within 30 s).",
                 details: "Needs the account set up once with `agentbar claude-code setup`. Remote Control disconnects.\nWhen Claude Code is signed in to an account AgentBar does not have, the switch removes that login: pass --yes to allow it.",
                 options: [CLIOption("yes", nil, "Allow removing a Claude Code login that AgentBar does not have.")],
                 run: { try await claudeCodeUse($0) }),
         CLISpec(path: ["claude-code", "setup"], arguments: ["<account>"],
-                summary: "Sign a Claude account in once in the browser so Claude Code can use it (waits up to 5 minutes).",
+                summary: "Sign a Claude account in once in the browser so Claude Code can use it (needs --yes; waits up to 5 minutes).",
+                details: "A person finishes the sign-in in the browser, signed in to the account's own email; pass --yes once they agreed.",
+                options: [CLIOption("yes", nil, "The person agreed to sign in in the browser.")],
                 run: { try await claudeCodeSetup($0) }),
         CLISpec(path: ["claude-code", "cancel"], arguments: [], summary: "Cancel a running `claude-code setup` browser sign-in.",
                 run: { _ in claudeCodeCancel() }),
@@ -73,13 +84,14 @@ enum CLICommands {
 
         // MARK: Menu bar groups
         CLISpec(path: ["groups"], arguments: [], summary: "List menu bar groups with their style, options and usage lines.",
+                details: "--json per group: `inMenuBar` (shown and something to show), `allOff` (every component off: hidden, refresh\npaused); per line `accountPaused`. Warnings (menu bar width, display settings) come last.",
                 run: { _ in groupsList() }),
         CLISpec(path: ["group", "add"], arguments: [], summary: "Add a menu bar group.",
                 options: [CLIOption("name", "NAME", "Group name (default: Group N)."),
                           CLIOption("style", "STYLE", "bars, ring, capsule or text (default: bars).")],
                 run: { try groupAdd($0) }),
         CLISpec(path: ["group", "set"], arguments: ["<group>"], summary: "Change a group's name, style, visibility, name badge, percentage and list order.",
-                details: "Styles: bars (Multi Bar), ring (Ring Gauge, first line only), capsule (Capsule Fill), text (Text Only, any number of lines).\nThe name is also the badge shown in front of the group's usage with --show-name on.",
+                details: "Styles: bars (Multi Bar), ring (Ring Gauge, first line only), capsule (Capsule Fill), text (Text Only, any number of lines).\nThe name is also the badge shown in front of the group's usage with --show-name on.\nComponents: the name (--show-name), the percentage (--percent) and the bar (--bar). A Multi Bar group with every\ncomponent off and no lines shows nothing: it is hidden and not refreshed (`agentbar warnings` says so).",
                 options: [CLIOption("name", "NAME", "New group name (up to 24 characters)."),
                           CLIOption("style", "STYLE", "bars, ring, capsule or text."),
                           CLIOption("show", nil, "Show the group in the menu bar."),
@@ -89,7 +101,9 @@ enum CLICommands {
                           CLIOption("bar", "on|off", "Show the bar (Multi Bar always does)."),
                           CLIOption("sort", "ORDER", "How the group's panel lists its accounts: manual, 5h or weekly (soonest reset first).")],
                 run: { try groupSet($0) }),
-        CLISpec(path: ["group", "remove"], arguments: ["<group>"], summary: "Delete a menu bar group (never its accounts).",
+        CLISpec(path: ["group", "remove"], arguments: ["<group>"], summary: "Delete a menu bar group and its line layout (never its accounts; needs --yes).",
+                details: "The group's name, style and lines cannot be brought back. To keep them for later, hide it instead:\n`agentbar group set <group> --hide`.",
+                options: [CLIOption("yes", nil, "Confirm deleting the group.")],
                 run: { try groupRemove($0) }),
         CLISpec(path: ["group", "move"], arguments: ["<group>"], summary: "Move a group to another position in the menu bar.",
                 options: [CLIOption("to", "GROUP|N", "The group (or position number) whose place it takes.")],
@@ -105,7 +119,7 @@ enum CLICommands {
                 options: [CLIOption("to", "ACCOUNT", "The account whose place it takes.")],
                 run: { try memberMove($0) }),
         CLISpec(path: ["line", "add"], arguments: ["<group>", "<account>"], summary: "Add a usage line (an account's limit) to a group.",
-                details: "Limits: 5h, weekly, or a model's weekly limit such as fable (model:fable). Groups other than Text Only hold 3 lines.",
+                details: "Limits: 5h, weekly, or a model's weekly limit such as fable (model:fable). Groups other than Text Only hold 3 lines.\n<account> is from `agentbar accounts`; with no accounts yet, add one first (`agentbar account add`).",
                 options: [CLIOption("limit", "LIMIT", "5h, weekly or a model name (default: weekly)."),
                           CLIOption("slot", "N", "The empty slot to use (default: the first empty one).")],
                 run: { try lineAdd($0) }),
@@ -121,16 +135,31 @@ enum CLICommands {
                 run: { try lineMove($0) }),
 
         // MARK: Settings and app
-        CLISpec(path: ["settings"], arguments: [], summary: "Show settings: refresh interval, language, open at login, version, data folder.",
+        CLISpec(path: ["settings"], arguments: [], summary: "Show settings: refresh interval, language, open at login, updates, version, data folder.",
+                details: "Also: whether a restart is needed to show the chosen language, whether Open at Login waits for approval in\nSystem Settings (`agentbar open login-items`), the Claude sign-in notice, the last update check, and whether\nthe original groups can be restored (`agentbar settings restore-groups`).",
                 run: { _ in settingsShow() }),
+        CLISpec(path: ["settings", "restore-groups"], arguments: [],
+                summary: "Restore the original menu bar groups from before the layout change (needs --yes).",
+                details: "Settings › General › Recovery. Only when `settings --json` says hasOriginalGroups. Restores the original groups,\naccount order, selected limits and display options; the current layout is saved as a backup file first.",
+                options: [CLIOption("yes", nil, "Confirm replacing the current layout.")],
+                run: { try restoreGroups($0) }),
+        CLISpec(path: ["warnings"], arguments: [], summary: "Show the errors and warnings AgentBar shows on screen now (banners, panel notes).",
+                details: "Kinds: error (dismissable), storage-unavailable (accounts file unreadable: every change is blocked), display,\nmenu-bar-width, group-all-off, account-paused, claude-code, open-at-login-approval, restart-needed, cleanup-pending.",
+                run: { _ in warningsList() }),
+        CLISpec(path: ["warnings", "dismiss"], arguments: [], summary: "Dismiss the error banner (as its close button in Settings does).",
+                run: { _ in warningsDismiss() }),
         CLISpec(path: ["settings", "set"], arguments: ["<key>", "<value>"],
                 summary: "Change a setting: refresh-interval 60|120|300|600, language en|ko, open-at-login on|off.",
                 details: "A new language applies after `agentbar restart`.",
                 run: { try settingsSet($0) }),
-        CLISpec(path: ["update"], arguments: [], summary: "Check for an AgentBar update now (Sparkle's window answers on screen).",
-                run: { _ in updateCheck() }),
+        CLISpec(path: ["update"], arguments: [], summary: "Check whether a newer AgentBar exists (no window) and print the answer.",
+                details: "Asks the update feed quietly and waits up to 60 s. Installing is a person's click: --show opens Sparkle's\nwindow (Settings' Check for Updates…), where they press Install. The last answer stays in `agentbar settings\n--json` (update.outcome: available, up-to-date, failed, installing).",
+                options: [CLIOption("show", nil, "Open Sparkle's update window on screen instead (for a person to install).")],
+                run: { try await updateCheck($0) }),
         CLISpec(path: ["restart"], arguments: [], summary: "Restart AgentBar (to apply a new language).", run: { _ in try restartApp() }),
-        CLISpec(path: ["open"], arguments: ["[accounts|menu-bar|general]"], summary: "Open the Settings window on a tab (for a person).",
+        CLISpec(path: ["open"], arguments: ["[accounts|menu-bar|general|login-items]"],
+                summary: "Open the Settings window on a tab, or login-items: System Settings › Login Items (for a person).",
+                details: "login-items is where a person allows Open at Login when `settings` says it waits for approval.",
                 options: [CLIOption("group", "GROUP", "Select this group in the Menu Bar tab.")],
                 run: { try openSettings($0) }),
         CLISpec(path: ["quit"], arguments: [], summary: "Quit AgentBar.", run: { _ in quitApp() }),
@@ -201,6 +230,91 @@ enum CLICommands {
         throw CLIError("\"\(ref)\" matches several groups; use the group's number from `agentbar groups`.")
     }
 
+    // Reads Claude Code's login again, as Settings and a panel do when they open, and waits for the reading: it may have
+    // been changed in a terminal. The reading only asks whether a login exists and whose it is (no Keychain window).
+    @MainActor
+    static func freshClaudeCode() async {
+        guard store.claudeCodeEnabled else { return }
+        if store.claudeCodeStarting { for _ in 0..<200 where store.claudeCodeStarting { try? await Task.sleep(for: .milliseconds(150)) } }
+        store.refreshClaudeCodeState()
+        await store.claudeCodeReading?.value
+    }
+
+    // What AgentBar shows on screen as a banner, a note under a panel's header or under a group, for `warnings` and the
+    // `warnings` key of status, groups and settings.
+    @MainActor
+    static func warnings() -> [[String: Any]] {
+        var list: [[String: Any]] = []
+        func add(_ kind: String, _ message: String, _ extra: [String: Any] = [:]) {
+            list.append(["kind": kind, "message": message].merging(extra) { $1 })
+        }
+        if store.storageUnavailable {
+            add("storage-unavailable", (store.errorMessage ?? "AgentBar could not read its accounts file.") + " Every change is blocked until AgentBar can read it.")
+        } else if let error = store.errorMessage {
+            add("error", error, ["dismiss": "agentbar warnings dismiss"])
+        }
+        if let display = store.displayError { add("display", display) }
+        if store.displayWidthWarning { add("menu-bar-width", "These groups use a large portion of the menu bar.") }
+        for (index, group) in store.displayConfiguration.effectiveLayouts.enumerated() where !group.showsAnything {
+            add("group-all-off", "Group \(index + 1) \(group.name): all components are off. This group is hidden and its refresh is paused. "
+                + "Turn one on: `agentbar group set \(index + 1) --percent on` (or --show-name on, --bar on, or --style ring|capsule|text).",
+                ["group": group.id.uuidString])
+        }
+        let paused = Set(store.displayConfiguration.effectiveLayouts.flatMap(\.rows).map(\.accountID))
+            .filter { !store.displayConfiguration.isVisible($0) }
+        for account in store.orderedAccounts where paused.contains(account.id) {
+            add("account-paused", "\(account.title) is paused: its lines are not shown or refreshed. Resume it with `agentbar account enable \(short(account.id))`.",
+                ["account": account.id.uuidString])
+        }
+        if let notice = store.claudeCodeListNotice { add("claude-code", notice) }
+        launchAtLogin.refresh()
+        if launchAtLogin.needsApproval {
+            add("open-at-login-approval", "Open at Login waits for approval: a person allows AgentBar in System Settings › Login Items (`agentbar open login-items`).")
+        }
+        if let error = launchAtLogin.errorMessage { add("open-at-login", error) }
+        if AppContainer.shared.settings.language != AppLanguage.inUse && AppRelauncher.canRelaunch {
+            add("restart-needed", "Restart AgentBar to show it in the chosen language (`agentbar restart`).")
+        }
+        if !store.registry.cleanupPending.isEmpty || store.accounts.contains(where: \.deletionPending) {
+            add("cleanup-pending", "Some deletions or clean-ups have not finished. Retry with `agentbar account retry-cleanup`.")
+        }
+        return list
+    }
+
+    // When the accounts file cannot be read, "no accounts" would be wrong and every change is refused: say why instead.
+    @MainActor
+    static func requireStorage() throws {
+        guard store.storageUnavailable else { return }
+        let reason = (store.errorMessage ?? "unknown error").trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        throw CLIError("AgentBar cannot read its accounts file: \(reason). Accounts are not shown and every change "
+                       + "is blocked until it can (see `agentbar paths` for the file).")
+    }
+
+    @MainActor
+    private static func withWarnings(_ result: CLIResult) -> CLIResult {
+        let list = warnings()
+        var result = result
+        if var json = result.json as? [String: Any] { json["warnings"] = list; result.json = json }
+        if !list.isEmpty { result.text += "\nWarnings:\n" + list.map { "  ! " + ($0["message"] as? String ?? "") }.joined(separator: "\n") }
+        return result
+    }
+
+    @MainActor
+    static func warningsList() -> CLIResult {
+        let list = warnings()
+        let text = list.isEmpty ? "No warnings." : list.map { "[\($0["kind"]!)] \($0["message"]!)" }.joined(separator: "\n")
+        return CLIResult(text, json: ["warnings": list])
+    }
+
+    @MainActor
+    static func warningsDismiss() -> CLIResult {
+        guard !store.storageUnavailable, store.errorMessage != nil else {
+            return CLIResult(store.storageUnavailable ? "The accounts file cannot be read; that error stays." : "No error to dismiss.", json: ["dismissed": false])
+        }
+        store.errorMessage = nil
+        return CLIResult("Dismissed the error.", json: ["dismissed": true])
+    }
+
     // MARK: - Usage
 
     @MainActor
@@ -224,6 +338,14 @@ enum CLICommands {
         }
     }
 
+    // Why the panel's Use is greyed out for the account, or why it cannot be set up; nil when nothing stands in the way.
+    @MainActor
+    static func claudeCodeBlocked(_ account: UsageAccount) -> String? {
+        if case .use(false, let help) = store.claudeCodePanel(for: account).control { return help }
+        if case .notSetUp(let blocked?) = store.claudeCodeSetup(for: account).status { return blocked }
+        return nil
+    }
+
     @MainActor
     static func limitID(_ id: String) -> String { id.hasPrefix("model:") ? String(id.dropFirst(6)) : id }
 
@@ -236,6 +358,10 @@ enum CLICommands {
             "email": account.identity?.email ?? NSNull(), "organization": account.identity?.organization ?? NSNull(),
             "state": state(account), "inMenuBar": store.refreshAccountIDs.contains(account.id),
             "claudeCode": claudeCodeState(account) ?? NSNull(),
+            "paused": !store.displayConfiguration.isVisible(account.id),
+            "claudeCodeLock": json(store.claudeCodeLockNote(for: account)),
+            "claudeCodeBlocked": json(claudeCodeBlocked(account)),
+            "claudeCodeSetupFailure": json(store.claudeCodeSetupFailures[account.id]),
         ]
         guard detail else { return value }
         value["plan"] = snapshot.planName ?? NSNull()
@@ -307,11 +433,12 @@ enum CLICommands {
     @MainActor
     static func status(_ invocation: CLIInvocation) throws -> CLIResult {
         let accounts = try invocation.positional(0).map { [try account($0)] } ?? store.orderedAccounts
-        if accounts.isEmpty { return CLIResult("No accounts. Add one with `agentbar account add claude` or `agentbar account add codex`.", json: ["accounts": []]) }
+        try requireStorage()
+        if accounts.isEmpty { return withWarnings(CLIResult("No accounts. Add one with `agentbar account add claude` or `agentbar account add codex`.", json: ["accounts": []])) }
         var text = accounts.map(accountText).joined(separator: "\n")
         if store.isRefreshing { text += "\n(refresh in progress)" }
-        return CLIResult(text, json: ["accounts": accounts.map { accountJSON($0, detail: true) },
-                                      "refreshing": store.isRefreshing, "lastRefresh": date(store.lastRefresh)])
+        return withWarnings(CLIResult(text, json: ["accounts": accounts.map { accountJSON($0, detail: true) },
+                                                   "refreshing": store.isRefreshing, "lastRefresh": date(store.lastRefresh)]))
     }
 
     @MainActor
@@ -338,6 +465,8 @@ enum CLICommands {
             line += "  [\(state(account))]"
             if let claudeCode = claudeCodeState(account) { line += " [\(claudeCode)]" }
             if let lock = store.claudeCodeLockNote(for: account) { line += " [\(lock)]" }
+            if !store.displayConfiguration.isVisible(account.id) { line += " [paused: `agentbar account enable`]" }
+            if let failure = store.claudeCodeSetupFailures[account.id] { line += " [last Claude Code sign-in failed: \(failure)]" }
             return line + "  id \(short(account.id))"
         }.joined(separator: "\n")
         var json: [String: Any] = ["accounts": accounts.map { accountJSON($0, detail: false) }]
@@ -345,13 +474,33 @@ enum CLICommands {
         return CLIResult(text, json: json)
     }
 
+    static let claudeNotice = "How AgentBar reads Claude usage: AgentBar signs in through Claude Code and keeps that sign-in to read this "
+        + "account's usage. Anthropic's terms limit apps that keep Claude sign-ins, so Anthropic could block these reads at any time."
+
+    // What Settings asks before it opens a browser sign-in: a person has to do the sign-in, and the first Claude one shows
+    // the notice that has to be accepted (Continue). Without --yes the command stops here and says what the person agrees to.
+    @MainActor
+    private static func requireSignInConsent(_ invocation: CLIInvocation, provider: ProviderKind) throws {
+        let settings = AppContainer.shared.settings
+        let needsNotice = provider == .claude && !settings.claudeAccessNoticeAccepted
+        guard invocation.flag("yes") else {
+            var text = "This opens the \(provider.displayName) sign-in in the browser; a person has to finish it there."
+            if needsNotice { text += "\nThe person must first accept this notice (Settings shows it once, with Cancel and Continue):\n" + claudeNotice }
+            text += "\nNothing was opened. Ask the person, then run again with --yes."
+            throw CLIError(text, code: 2)
+        }
+        if needsNotice { settings.claudeAccessNoticeAccepted = true; invocation.emit("Notice accepted: " + claudeNotice) }
+    }
+
     // Runs a browser sign-in to its review and returns it, telling the person what to do meanwhile.
     @MainActor
     private static func signIn(_ invocation: CLIInvocation, provider: ProviderKind, replacing: UsageAccount?) async throws -> PendingAccountLogin? {
         if let replacing, let note = store.claudeCodeLockNote(for: replacing) { throw CLIError("\(replacing.title): \(note). Try again after it finishes.") }
+        if store.storageUnavailable { throw CLIError((store.errorMessage ?? "AgentBar cannot read its accounts file.") + " Sign-ins are blocked.") }
         guard !store.isLoggingIn, store.pendingLogin == nil else {
             throw CLIError("Another account sign-in is running. Finish it, or run `agentbar account cancel`.")
         }
+        if provider != .antigravity { try requireSignInConsent(invocation, provider: provider) }
         store.errorMessage = nil
         store.startLogin(provider, replacing: replacing)
         guard store.isLoggingIn else { throw CLIError(store.errorMessage ?? "Could not start the sign-in.") }
@@ -381,7 +530,9 @@ enum CLICommands {
             throw CLIError(reason)
         }
         guard let added = store.accounts.first(where: { $0.id == pending.account.id }) else { throw CLIError(store.errorMessage ?? "The account could not be registered.") }
-        return CLIResult("Added \(added.provider.displayName) account \(added.title) (id \(short(added.id))). It has its own menu bar group.",
+        let who = [added.identity?.email, added.identity?.visibleOrganization].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        return CLIResult("Added \(added.provider.displayName) account \(added.title) (id \(short(added.id)))\(who.isEmpty || who == added.title ? "" : ", signed in as \(who)"). "
+                         + "It has its own menu bar group. Not the right account? `agentbar account remove \(short(added.id)) --yes`.",
                          json: ["added": accountJSON(added, detail: false)])
     }
 
@@ -395,15 +546,27 @@ enum CLICommands {
         // Codex reports no account ID: the same email (and workspace) is as close to "the same account" as it gets.
         let sameEmail = UsageStore.sameLogin(pending.account.identity, target.identity)
         let force = invocation.flag("force") || sameEmail
+        if invocation.flag("add-as-new"), store.reconnectionComparison != .same, !sameEmail {
+            // Settings' Add Account button beside a different or unverified sign-in.
+            store.confirmLogin(addAsNew: true)
+            if store.pendingLogin != nil {
+                let reason = store.errorMessage ?? "The account could not be added."
+                store.cancelLogin()
+                throw CLIError(reason)
+            }
+            guard let added = store.accounts.first(where: { $0.id == pending.account.id }) else { throw CLIError(store.errorMessage ?? "The account could not be added.") }
+            return CLIResult("The browser signed in as \(added.identity?.email ?? added.title), not \(target.title): added it as a new account (id \(short(added.id))). \(target.title) is unchanged.",
+                             json: ["added": accountJSON(added, detail: false), "reconnected": NSNull()])
+        }
         switch store.reconnectionComparison {
         case .different:
             let email = store.pendingLogin?.account.identity?.email ?? "another account"
             store.cancelLogin()
-            throw CLIError("The browser signed in as \(email), not \(target.title). Nothing changed. Add it with `agentbar account add \(target.provider.rawValue)`.")
+            throw CLIError("The browser signed in as \(email), not \(target.title). Nothing changed. Run again with --add-as-new to add \(email) as a new account.")
         case .unverified where !force, nil where !force:
             let email = store.pendingLogin?.account.identity?.email ?? "an account"
             store.cancelLogin()
-            throw CLIError("AgentBar cannot verify that \(email) is \(target.title). Nothing changed. Run again with --force to replace it anyway.")
+            throw CLIError("AgentBar cannot verify that \(email) is \(target.title). Nothing changed. Run again with --force to reconnect anyway, or --add-as-new to add it as a new account.")
         default: break
         }
         store.confirmLogin(replaceUnverified: force)
@@ -440,6 +603,18 @@ enum CLICommands {
             throw CLIError(store.errorMessage ?? "\(target.title) could not be removed. Retry with `agentbar account retry-cleanup`.")
         }
         return CLIResult("Removed \(target.title).", json: ["removed": target.id.uuidString])
+    }
+
+    @MainActor
+    static func accountEnable(_ invocation: CLIInvocation) throws -> CLIResult {
+        let target = try account(invocation.positional(0)!)
+        guard !store.displayConfiguration.isVisible(target.id) else {
+            return CLIResult("\(target.title) is not paused.", json: ["account": accountJSON(target, detail: false), "changed": false])
+        }
+        let before = store.displayConfiguration
+        store.updateDisplay { $0.setVisible(target.id, true) }
+        try requireDisplayChange(before, "resume the account")
+        return CLIResult("\(target.title) is enabled again: its lines show and refresh.", json: ["account": accountJSON(target, detail: false), "changed": true])
     }
 
     @MainActor
@@ -486,11 +661,40 @@ enum CLICommands {
         let claude = store.orderedAccounts.filter { $0.provider == .claude }
         var lines = ["Claude Code: \(availability)", "Uses: " + (current?.title ?? "no account AgentBar has")]
         if let activity = store.claudeCodeActivity { lines.append("Switching: \(activity.message)") }
-        for account in claude { lines.append("  \(account.title): \(claudeCodeState(account) ?? "-")") }
+        let last = store.claudeCodeLastResult
+        let lastJSON: Any = last.map { result -> [String: Any] in
+            ["account": result.accountID.uuidString, "name": json(store.accounts.first { $0.id == result.accountID }?.title),
+             "succeeded": result.succeeded, "message": result.message, "at": date(result.at)]
+        } ?? NSNull()
+        if let last {
+            lines.append("Last switch: \(last.succeeded ? "done" : "failed"), \(TokenFormatters.relativeUpdateString(updatedAt: last.at)): \(last.message)"
+                         + (last.succeeded ? "" : " Log: \(store.claudeCodeLogURL.path)"))
+        }
+        func rowLines(_ account: UsageAccount) -> [String] {
+            store.claudeCodeListRow(for: account).lines.map { line in
+                switch line {
+                case .progress(let text), .notice(let text): return text
+                case .confirmation(let email): return ClaudeCodePanel.confirmationText(email: email)
+                case .result(_, let message): return message
+                }
+            }
+        }
+        for account in claude {
+            var line = "  \(account.title): \(claudeCodeState(account) ?? "-")"
+            if let blocked = claudeCodeBlocked(account) { line += " (blocked: \(blocked))" }
+            if let failure = store.claudeCodeSetupFailures[account.id] { line += " (last sign-in for Claude Code failed: \(failure))" }
+            lines.append(line)
+        }
+        if let notice = store.claudeCodeListNotice { lines.append("Note: \(notice)") }
         return CLIResult(lines.joined(separator: "\n"), json: [
             "available": availability, "account": current.map { accountJSON($0, detail: false) } ?? NSNull(),
-            "switching": store.claudeCodeActivity != nil,
-            "accounts": claude.map { ["id": $0.id.uuidString, "email": json($0.identity?.email), "state": json(claudeCodeState($0))] as [String: Any] },
+            "switching": store.claudeCodeActivity != nil, "switchMessage": json(store.claudeCodeActivity?.message),
+            "lastResult": lastJSON, "notice": json(store.claudeCodeListNotice), "log": store.claudeCodeLogURL.path,
+            "accounts": claude.map { account -> [String: Any] in
+                ["id": account.id.uuidString, "email": json(account.identity?.email), "state": json(claudeCodeState(account)),
+                 "blocked": json(claudeCodeBlocked(account)), "setupFailure": json(store.claudeCodeSetupFailures[account.id]),
+                 "lock": json(store.claudeCodeLockNote(for: account)), "panelLines": rowLines(account)]
+            },
         ])
     }
 
@@ -546,6 +750,10 @@ enum CLICommands {
         case .ready: return CLIResult("\(target.title) is already ready for Claude Code.", json: ["ready": true])
         case .signingIn: throw CLIError("\(target.title) is already signing in for Claude Code.")
         case .notSetUp(let blocked): if let blocked { throw CLIError(blocked) }
+        }
+        guard invocation.flag("yes") else {
+            throw CLIError("This opens the Claude sign-in in the browser; a person has to finish it there, signed in as \(target.identity?.email ?? target.title). "
+                           + "Nothing was opened. Ask the person, then run again with --yes.", code: 2)
         }
         store.prepareForClaudeCode(target)
         guard store.claudeCodePreparation?.accountID == target.id else { throw CLIError("The sign-in could not start.") }
@@ -667,6 +875,7 @@ enum CLICommands {
         return ["number": number, "id": group.id.uuidString, "name": group.name, "shown": group.enabled, "style": group.style.selection.rawValue,
                 "showName": group.effectiveBadgeMode.includesCommon, "percent": group.style == .text ? true : group.showPercent,
                 "bar": group.style.selection == .bars ? true : group.showBar, "sort": (group.listSort ?? .manual).rawValue,
+                "allOff": !group.showsAnything, "inMenuBar": group.enabled && group.showsAnything,
                 "accounts": store.panelAccountIDs(for: group).compactMap { id in store.accounts.first { $0.id == id } }.map { ["id": $0.id.uuidString, "name": $0.name] },
                 "lines": slotted(group).map { slot, line -> [String: Any] in
                     let account = store.accounts.first { $0.id == line.accountID }
@@ -674,6 +883,7 @@ enum CLICommands {
                     return ["slot": slot, "account": line.accountID.uuidString, "name": json(account?.name),
                             "limit": limitID(line.metricID), "usedPercent": entry?.metric.window?.utilization.map { ($0 * 1000).rounded() / 10 } ?? NSNull(),
                             "percentLine": (group.style == .bars || group.style == .text) && line.id == percentID,
+                            "accountPaused": !store.displayConfiguration.isVisible(line.accountID),
                             "displayed": group.displayedRows.contains { $0.id == line.id }]
                 }]
     }
@@ -683,11 +893,16 @@ enum CLICommands {
         group.rows.enumerated().map { (($0.element.slot ?? $0.offset) + 1, $0.element) }.sorted { $0.0 < $1.0 }
     }
 
+    // Whether the group is in the menu bar, as `groups` and every command that changes a group say it.
+    static func groupState(_ group: MenuBarLayout) -> String {
+        group.enabled ? (group.showsAnything ? "shown" : "hidden: all components off, refresh paused") : "hidden"
+    }
+
     @MainActor
     static func groupsList() -> CLIResult {
         let groups = store.displayConfiguration.effectiveLayouts
         let text = groups.isEmpty ? "No menu bar groups. Add one with `agentbar group add`." : groups.enumerated().map { index, group in
-            var head = "\(index + 1). \(group.name)  [\(group.enabled ? "shown" : "hidden")] \(group.style.selection.title)"
+            var head = "\(index + 1). \(group.name)  [\(groupState(group))] \(group.style.selection.title)"
             if group.effectiveBadgeMode.includesCommon { head += " · name shown" }
             if group.style != .text && !group.showPercent { head += " · no percentage" }
             if let sort = group.listSort, sort != .manual { head += " · sorted by \(sort == .fiveHourReset ? "5h" : "weekly") reset" }
@@ -703,16 +918,18 @@ enum CLICommands {
                     + TokenFormatters.percentageString(for: entry?.metric.window?.utilization)
                 if group.style == .bars && line.id == percentID { text += "  (large %)" }
                 if !group.displayedRows.contains(where: { $0.id == line.id }) { text += "  (not shown in this style)" }
+                if !store.displayConfiguration.isVisible(line.accountID) { text += "  (account paused: `agentbar account enable`)" }
                 return text
             }
             return ([head] + (lines.isEmpty ? ["   (no lines)"] : lines)).joined(separator: "\n")
         }.joined(separator: "\n")
-        return CLIResult(text, json: ["groups": groups.enumerated().map { groupJSON($1, number: $0 + 1) }])
+        return withWarnings(CLIResult(text, json: ["groups": groups.enumerated().map { groupJSON($1, number: $0 + 1) }]))
     }
 
     @MainActor
     private static func requireDisplayChange(_ before: DisplayConfiguration, _ what: String) throws {
         if store.displayConfiguration == before {
+            try requireStorage()
             throw CLIError(store.displayError ?? "AgentBar did not accept the change: \(what).")
         }
     }
@@ -725,8 +942,9 @@ enum CLICommands {
         let before = store.displayConfiguration
         store.updateDisplay { $0.editLayouts { $0.append(group) } }
         try requireDisplayChange(before, "add a group")
-        return CLIResult("Added group \(count + 1): \(group.name) (id \(short(group.id))). Add lines with `agentbar line add \(count + 1) <account>`.",
-                         json: ["added": groupJSON(group, number: count + 1)])
+        let added = (try? self.group(group.id.uuidString)) ?? group
+        return withWarnings(CLIResult("Added group \(count + 1): \(added.name) [\(groupState(added))] (id \(short(group.id))). Add lines with `agentbar line add \(count + 1) <account>`.",
+                                      json: ["added": groupJSON(added, number: count + 1)]))
     }
 
     @MainActor
@@ -767,13 +985,17 @@ enum CLICommands {
         let after = try self.group(group.id.uuidString)
         if store.displayConfiguration == before && after != group { try requireDisplayChange(before, "change the group") }
         let number = store.displayConfiguration.effectiveLayouts.firstIndex { $0.id == group.id }! + 1
-        return CLIResult("Group \(number): \(after.name) [\(after.enabled ? "shown" : "hidden")] \(after.style.selection.title).",
-                         json: ["group": groupJSON(after, number: number)])
+        return withWarnings(CLIResult("Group \(number): \(after.name) [\(groupState(after))] \(after.style.selection.title).",
+                                      json: ["group": groupJSON(after, number: number)]))
     }
 
     @MainActor
     static func groupRemove(_ invocation: CLIInvocation) throws -> CLIResult {
         let group = try group(invocation.positional(0)!)
+        guard invocation.flag("yes") else {
+            throw CLIError("This deletes group \(group.name) and its \(group.rows.count) usage line(s); its accounts remain. It cannot be undone "
+                           + "(`agentbar group set \(group.name) --hide` keeps it for later). Run again with --yes to confirm.", code: 2)
+        }
         let before = store.displayConfiguration
         store.updateDisplay { $0.editLayouts { $0.removeAll { $0.id == group.id } } }
         try requireDisplayChange(before, "remove the group")
@@ -855,7 +1077,8 @@ enum CLICommands {
             }
         }
         try requireDisplayChange(before, "add the line")
-        return CLIResult("Added \(target.title) · \(limitID(metric)) to \(group.name), slot \(slot).", json: ["group": group.id.uuidString, "slot": slot])
+        let after = (try? self.group(group.id.uuidString)) ?? group
+        return withWarnings(CLIResult("Added \(target.title) · \(limitID(metric)) to \(group.name) [\(groupState(after))], slot \(slot).", json: ["group": group.id.uuidString, "slot": slot]))
     }
 
     @MainActor
@@ -898,7 +1121,9 @@ enum CLICommands {
             if layout.percentageLineID == line.id { layout.percentageLineID = nil }
         } }
         try requireDisplayChange(before, "remove the line")
-        return CLIResult("Removed slot \(invocation.positional(1)!) from \(group.name).", json: ["group": group.id.uuidString, "removed": Int(invocation.positional(1)!) ?? 0])
+        let after = (try? self.group(group.id.uuidString)) ?? group
+        return withWarnings(CLIResult("Removed slot \(invocation.positional(1)!) from \(group.name) [\(groupState(after))].",
+                                      json: ["group": group.id.uuidString, "removed": Int(invocation.positional(1)!) ?? 0]))
     }
 
     @MainActor
@@ -924,20 +1149,39 @@ enum CLICommands {
         let settings = AppContainer.shared.settings
         launchAtLogin.refresh()
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
+        let restartNeeded = settings.language != AppLanguage.inUse
+        let updates = UpdateStatus.shared
         let values: [String: Any] = [
             "refreshInterval": Int(settings.refreshIntervalSeconds), "language": settings.language.rawValue,
-            "openAtLogin": launchAtLogin.isOn, "version": version, "updates": UpdateStatus.shared.isAvailable,
+            "languageInUse": AppLanguage.inUse.rawValue, "restartNeeded": restartNeeded,
+            "openAtLogin": launchAtLogin.isOn, "openAtLoginNeedsApproval": launchAtLogin.needsApproval,
+            "openAtLoginError": json(launchAtLogin.errorMessage),
+            "claudeNoticeAccepted": settings.claudeAccessNoticeAccepted, "hasOriginalGroups": store.hasOriginalDisplayConfiguration,
+            "version": version, "updates": updates.isAvailable,
+            "update": ["selfUpdating": updates.isAvailable, "canCheck": updates.canCheck, "lastCheck": date(updates.lastCheckDate()),
+                       "outcome": json(updates.outcome), "foundVersion": json(updates.foundVersion), "failure": json(updates.failure)] as [String: Any],
             "dataFolder": store.files.root.path, "app": Bundle.main.bundlePath,
         ]
-        let text = """
+        var update = updates.isAvailable ? "checked \(updates.lastCheckDate().map { TokenFormatters.relativeUpdateString(updatedAt: $0) } ?? "never")" : "this build does not update itself"
+        switch updates.outcome {
+        case "available": update += ", \(updates.foundVersion ?? "a new version") is available (a person installs it: `agentbar update --show`)"
+        case "up-to-date": update += ", up to date"
+        case "failed": update += ", the check failed: \(updates.failure ?? "")"
+        case "installing": update += ", installing \(updates.foundVersion ?? "")"
+        default: break
+        }
+        var text = """
         refresh-interval  \(Int(settings.refreshIntervalSeconds)) s
-        language          \(settings.language.rawValue) (\(settings.language.nativeName))
-        open-at-login     \(launchAtLogin.isOn ? "on" : "off")\(launchAtLogin.needsApproval ? " (waiting for approval in System Settings › Login Items)" : "")
-        version           \(version)\(UpdateStatus.shared.isAvailable ? "" : " (this build does not update itself)")
+        language          \(settings.language.rawValue) (\(settings.language.nativeName))\(restartNeeded ? " — restart needed: shown after `agentbar restart` (now \(AppLanguage.inUse.rawValue))" : ", in use (no restart needed)")
+        open-at-login     \(launchAtLogin.isOn ? "on" : "off")\(launchAtLogin.needsApproval ? " (waiting for approval in System Settings › Login Items: `agentbar open login-items`)" : launchAtLogin.isOn ? " (approved)" : "")
+        claude notice     \(settings.claudeAccessNoticeAccepted ? "accepted" : "not accepted yet (asked before the first Claude sign-in)")
+        version           \(version)
+        updates           \(update)
         data folder       \(store.files.root.path)
         app               \(Bundle.main.bundlePath)
         """
-        return CLIResult(text, json: values)
+        if store.hasOriginalDisplayConfiguration { text += "\noriginal groups   can be restored: `agentbar settings restore-groups --yes`" }
+        return withWarnings(CLIResult(text, json: values))
     }
 
     @MainActor
@@ -955,7 +1199,10 @@ enum CLICommands {
             guard let language = AppLanguage.allCases.first(where: { $0.rawValue == value.lowercased() || $0.nativeName.lowercased() == value.lowercased() }) else {
                 throw CLIError("language is en or ko.", code: 2)
             }
-            if settings.language != language { settings.language = language; note = "\nThe new language applies after `agentbar restart`." }
+            // As the screen's picker: saved and applied; a restart is needed only when it differs from the one shown now.
+            settings.language = language
+            language.apply()
+            if language != AppLanguage.inUse { note = "\nThe new language applies after `agentbar restart`." }
         case "open-at-login", "login":
             launchAtLogin.set(try onOff(value, "open-at-login"))
             if let error = launchAtLogin.errorMessage { throw CLIError(error) }
@@ -968,11 +1215,49 @@ enum CLICommands {
     }
 
     @MainActor
-    static func updateCheck() -> CLIResult {
-        guard UpdateStatus.shared.isAvailable else { return CLIResult("This AgentBar build does not update itself.", json: ["checking": false]) }
-        guard UpdateStatus.shared.canCheck else { return CLIResult("A check is already under way.", json: ["checking": false]) }
-        Updates.checkNow()
-        return CLIResult("Checking for an update. Sparkle's window shows the answer on screen.", json: ["checking": true])
+    static func restoreGroups(_ invocation: CLIInvocation) throws -> CLIResult {
+        guard store.hasOriginalDisplayConfiguration else { throw CLIError("There are no original groups to restore (`settings --json` says hasOriginalGroups).") }
+        guard invocation.flag("yes") else {
+            throw CLIError("This restores the original groups, account order, selected limits and display options. "
+                           + "Your current layout is saved as a backup first. Run again with --yes to confirm.", code: 2)
+        }
+        store.displayError = nil
+        let before = store.displayConfiguration
+        store.restoreOriginalDisplayConfiguration()
+        if let error = store.displayError { throw CLIError(error) }
+        var result = groupsList()
+        if store.displayConfiguration == before { result.text = "The original groups are already in place.\n" + result.text }
+        else { result.text = "Restored the original groups (the layout before is kept as a backup in \(store.files.root.path)).\n" + result.text }
+        return result
+    }
+
+    @MainActor
+    static func updateCheck(_ invocation: CLIInvocation) async throws -> CLIResult {
+        let updates = UpdateStatus.shared
+        guard updates.isAvailable else { return CLIResult("This AgentBar build does not update itself.", json: ["checking": false, "outcome": NSNull()]) }
+        guard updates.canCheck else { return CLIResult("Sparkle is already checking (it also checks when AgentBar starts). Try again in a few seconds.", json: ["checking": false, "outcome": json(updates.outcome)]) }
+        if invocation.flag("show") {
+            Updates.checkNow()
+            return CLIResult("Opened Sparkle's update window. A person installs from there.", json: ["checking": true, "window": true])
+        }
+        let started = Date()
+        Updates.probe()
+        // Sparkle drops a probe asked for while its updater is still starting (just after AgentBar opened): ask again
+        // every two seconds until a check is under way or answered.
+        var asked = Date()
+        let answered = await wait(invocation, seconds: 60, every: {
+            if !updates.sessionInProgress(), Date().timeIntervalSince(asked) > 2 { asked = Date(); Updates.probe() }
+        }, until: { (updates.answeredAt ?? .distantPast) >= started })
+        guard answered else { throw CLIError("The update feed did not answer within 60 s.") }
+        let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
+        let message: String
+        switch updates.outcome {
+        case "available": message = "AgentBar \(updates.foundVersion ?? "") is available (this is \(current)). A person installs it: `agentbar update --show`."
+        case "up-to-date": message = "AgentBar \(current) is up to date."
+        case "installing": message = "Installing AgentBar \(updates.foundVersion ?? "")."
+        default: throw CLIError("The update check failed: \(updates.failure ?? "unknown error").")
+        }
+        return CLIResult(message, json: ["outcome": json(updates.outcome), "foundVersion": json(updates.foundVersion), "version": current])
     }
 
     @MainActor
@@ -989,7 +1274,10 @@ enum CLICommands {
         case "accounts": tab = .accounts
         case "menu-bar", "menubar", "groups": tab = .menuBar
         case "general", "settings": tab = .general
-        default: throw CLIError("Tabs: accounts, menu-bar, general.", code: 2)
+        case "login-items":
+            launchAtLogin.openLoginItems()
+            return CLIResult("Opened System Settings › Login Items. A person allows AgentBar there.", json: ["opened": "login-items"])
+        default: throw CLIError("Tabs: accounts, menu-bar, general, login-items.", code: 2)
         }
         let groupID = try invocation.value("group").map { try group($0).id }
         SettingsWindowController.shared.show(tab: groupID == nil ? tab : .menuBar, groupID: groupID)

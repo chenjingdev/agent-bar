@@ -46,6 +46,14 @@ struct ClaudeCodeConfirmation: Equatable {
     var login: ClaudeCodeUnknownLogin
 }
 
+// The last switch result or launch recovery, whichever came last; panels drop their result lines, this stays.
+struct ClaudeCodeLastResult: Equatable {
+    var accountID: UUID
+    var succeeded: Bool
+    var message: String
+    var at: Date
+}
+
 // How the last switch to an account ended. It stays until panels that showed it have closed twice.
 struct ClaudeCodeResult: Equatable {
     var succeeded: Bool
@@ -538,6 +546,8 @@ extension UsageStore {
     // A new result has not been on screen yet, unless the open panel shows its account right now.
     private func setClaudeCodeResult(_ result: ClaudeCodeResult, for id: UUID) {
         claudeCodeResults[id] = result
+        // Kept after the panel lets the line go, for `agentbar claude-code` to read.
+        claudeCodeLastResult = ClaudeCodeLastResult(accountID: id, succeeded: result.succeeded, message: result.message, at: Date())
         claudeCodeResultsShown.remove(id)
         noteClaudeCodeShown()
     }

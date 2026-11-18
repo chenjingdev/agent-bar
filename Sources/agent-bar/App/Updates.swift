@@ -28,6 +28,14 @@ enum Updates {
         UpdateDriver.shared.checkNow()
         #endif
     }
+
+    /// Asks the feed whether a new version exists without any window, for `agentbar update`: Sparkle's own answer is
+    /// a modal alert, and while it waits for a click nothing else on the main thread runs, the command socket included.
+    @MainActor static func probe() {
+        #if canImport(Sparkle)
+        UpdateDriver.shared.probe()
+        #endif
+    }
 }
 
 /// What Check for Updates… in Settings needs: whether this build updates itself
@@ -38,11 +46,28 @@ final class UpdateStatus: ObservableObject {
     static let shared = UpdateStatus()
     @Published fileprivate(set) var isAvailable = false
     @Published fileprivate(set) var canCheck = false
+    // What the last check found, for `agentbar update`: "available", "up-to-date", "failed" or "installing"; nil
+    // before a check has answered since AgentBar started.
+    @Published fileprivate(set) var outcome: String?
+    @Published fileprivate(set) var foundVersion: String?
+    @Published fileprivate(set) var failure: String?
+    @Published fileprivate(set) var answeredAt: Date?
+    // When Sparkle last looked, by itself or when asked (kept across launches by Sparkle).
+    fileprivate(set) var lastCheckDate: () -> Date? = { nil }
+    // Whether a check or an update is running now.
+    fileprivate(set) var sessionInProgress: () -> Bool = { false }
+
+    fileprivate func answer(_ outcome: String, version: String? = nil, failure: String? = nil) {
+        self.outcome = outcome
+        foundVersion = version
+        self.failure = failure
+        answeredAt = Date()
+    }
 }
 
 #if canImport(Sparkle)
 @MainActor
-private final class UpdateDriver: NSObject, SPUStandardUserDriverDelegate {
+private final class UpdateDriver: NSObject, SPUStandardUserDriverDelegate, SPUUpdaterDelegate {
     static let shared = UpdateDriver()
     private var controller: SPUStandardUpdaterController?
 
@@ -51,9 +76,11 @@ private final class UpdateDriver: NSObject, SPUStandardUserDriverDelegate {
         guard controller == nil,
               Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil,
               Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") != nil else { return }
-        let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: self)
+        let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
         self.controller = controller
         UpdateStatus.shared.isAvailable = true
+        UpdateStatus.shared.lastCheckDate = { [weak controller] in controller?.updater.lastUpdateCheckDate }
+        UpdateStatus.shared.sessionInProgress = { [weak controller] in controller?.updater.sessionInProgress ?? false }
         controller.updater.publisher(for: \.canCheckForUpdates)
             .receive(on: DispatchQueue.main)
             .assign(to: &UpdateStatus.shared.$canCheck)
@@ -63,6 +90,32 @@ private final class UpdateDriver: NSObject, SPUStandardUserDriverDelegate {
         controller?.checkForUpdates(nil)
     }
 
+    func probe() {
+        controller?.updater.checkForUpdateInformation()
+    }
+
     nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    // What each check found, so `agentbar update --wait` can say it (the window still shows it to a person).
+    nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        let version = item.displayVersionString
+        Task { @MainActor in UpdateStatus.shared.answer("available", version: version) }
+    }
+
+    nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+        Task { @MainActor in UpdateStatus.shared.answer("up-to-date") }
+    }
+
+    nonisolated func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        let message = error.localizedDescription
+        // Not finding an update also ends a check with an error; that one is answered above.
+        if (error as NSError).code == Int(SUError.noUpdateError.rawValue) { return }
+        Task { @MainActor in UpdateStatus.shared.answer("failed", failure: message) }
+    }
+
+    nonisolated func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+        let version = item.displayVersionString
+        Task { @MainActor in UpdateStatus.shared.answer("installing", version: version) }
+    }
 }
 #endif

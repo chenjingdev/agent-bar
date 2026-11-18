@@ -66,7 +66,7 @@ struct CLISpec: Sendable {
 }
 
 enum CLI {
-    static let globalOptions = [CLIOption("json", nil, "Print the result as JSON (errors too: {\"error\": …})."),
+    static let globalOptions = [CLIOption("json", nil, "Print the result as one JSON object on standard output (errors too: {\"error\": …, \"exit\": N})."),
                                 CLIOption("help", nil, "Show this command's help.")]
 
     // Whether the executable was started as the command rather than as the app. macOS passes the app `-psn_…` and
@@ -151,7 +151,10 @@ enum CLI {
             "the start of its id. <slot> is a usage line's slot in its group, 1 to 3 (more in Text Only groups).",
             "",
             "Commands are carried out by the running AgentBar app, which is started in the background when it is not",
-            "running. Every command takes --json. Exit status: 0 done, 1 failed, 2 wrong command line, 3 AgentBar not reachable.",
+            "running. Every command takes --json (one JSON object on standard output, errors too).",
+            "What Settings asks a person to confirm needs --yes: a browser sign-in, deleting an account or group, using a coupon,",
+            "restoring the original groups. Without it nothing happens and the command says what the person agrees to (exit 2).",
+            "Exit status: 0 done, 1 failed, 2 wrong command line or --yes missing, 3 AgentBar not reachable.",
             "Run `agentbar <command> --help` for a command's options.",
         ]).joined(separator: "\n")
     }

@@ -41,6 +41,7 @@ final class UsageStore: ObservableObject {
     @Published var claudeCodeActivity: ClaudeCodeActivity?
     @Published var claudeCodeConfirmation: ClaudeCodeConfirmation?
     @Published var claudeCodeResults: [UUID: ClaudeCodeResult] = [:]
+    @Published var claudeCodeLastResult: ClaudeCodeLastResult?
     // Accounts whose own folder holds a login a switch can hand to Claude Code without the browser.
     @Published var claudeCodeReady: Set<UUID> = []
     @Published var claudeCodePreparation: ClaudeCodePreparation?
