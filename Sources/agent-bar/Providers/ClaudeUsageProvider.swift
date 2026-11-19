@@ -77,6 +77,10 @@ struct ClaudeUsageProvider: UsageProviding {
                 if !remoteResult.isStale {
                     snapshot.resetCoupons = noteCoupons(answer: remoteResult.couponAnswer, subscriptionType: credentials.subscriptionType,
                                                          refused: remoteResult.couponsRefused)
+                    snapshot.credits = await noteCredits(answer: remoteResult.answer, credentials: credentials)
+                } else {
+                    // Credits change slowly; while usage is held back (429) the last ones read still show.
+                    snapshot.credits = creditsRecord()?.credits
                 }
                 return snapshot
             } catch {
@@ -151,7 +155,8 @@ struct ClaudeUsageProvider: UsageProviding {
                 isStale: false,
                 sourceDescription: sourceDescription(for: successData),
                 couponAnswer: withCoupons && !apiResult.couponsRefused ? apiResult.body : nil,
-                couponsRefused: apiResult.couponsRefused
+                couponsRefused: apiResult.couponsRefused,
+                answer: apiResult.body
             )
         }
 
@@ -516,6 +521,8 @@ private struct RemoteUsageResult {
     // The answer, when the read also asked for coupons.
     var couponAnswer: Data? = nil
     var couponsRefused = false
+    // The usage answer itself, when the read was not answered from the cache.
+    var answer: Data? = nil
 }
 
 enum ClaudeUsageSource: String, Codable {
@@ -845,6 +852,47 @@ struct ClaudeUsageCache {
             ClaudeUsagePolicy.rateLimitedMaxTTL
         )
         return cache.timestamp.addingTimeInterval(backoff)
+    }
+}
+
+// Credits: from the usage answer, plus the prepaid balance for Pro and Max, kept next to the usage cache so a read
+// answered from the cache still shows them.
+extension ClaudeUsageProvider {
+    private var creditsRecordURL: URL? { cacheURL.map { ClaudeCreditsRecord.url(nextTo: $0) } }
+
+    func creditsRecord() -> ClaudeCreditsRecord? {
+        guard let url = creditsRecordURL, let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(ClaudeCreditsRecord.self, from: data)
+    }
+
+    fileprivate func noteCredits(answer: Data?, credentials: ClaudeCredentials, now: Date = .now) async -> AccountCredits? {
+        let previous = creditsRecord()
+        var record = previous ?? ClaudeCreditsRecord()
+        if let answer { record.usageItems = ClaudeCredits.credits(fromUsage: answer) }
+        let plan = credentials.subscriptionType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let due = record.prepaidChecked.map { now.timeIntervalSince($0) >= ClaudeCreditsRecord.prepaidInterval } ?? true
+        if cacheURL != nil, plan == "max" || plan == "pro", due,
+           let organization = (try? statusReader(directory, control))?.organizationID,
+           let url = URL(string: "https://api.anthropic.com/api/oauth/organizations/\(organization)/prepaid/credits") {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 10
+            request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+            request.setValue(couponUserAgent(), forHTTPHeaderField: "User-Agent")
+            if let (data, response) = try? await transport(request) {
+                record.prepaidChecked = now
+                if (response as? HTTPURLResponse)?.statusCode == 200 { record.prepaid = ClaudeCredits.prepaid(from: data) }
+            }
+        }
+        if record != previous, let url = creditsRecordURL {
+            let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+            if let data = try? encoder.encode(record) {
+                try? data.write(to: url, options: .atomic)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
+        }
+        return record.credits
     }
 }
 

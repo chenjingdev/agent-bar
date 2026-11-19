@@ -128,6 +128,8 @@ struct ProviderSnapshot: Equatable, Codable, Sendable {
     var limitGroups: [LimitGroupSummary]? = nil
     /// Usage-reset coupons the service reported with this usage. Dropped when the usage is only cached.
     var resetCoupons: UsageResetCoupons? = nil
+    /// Credits the service reported with this usage (Codex balance, Claude dollar credits, usage credits, prepaid).
+    var credits: AccountCredits? = nil
 
     // Older Claude caches used the Unix epoch to force a refresh.
     var hasKnownUpdateTime: Bool { updatedAt.timeIntervalSince1970 > 0 }

@@ -374,6 +374,7 @@ enum CLICommands {
              "resetsAt": date(metric.window?.resetAt)]
         }
         value["coupons"] = snapshot.resetCoupons.map(couponsJSON) ?? NSNull()
+        value["credits"] = snapshot.credits.map(creditsJSON) ?? NSNull()
         return value
     }
 
@@ -404,6 +405,16 @@ enum CLICommands {
     }
 
     @MainActor
+    static func creditsJSON(_ credits: AccountCredits) -> [String: Any] {
+        ["summary": CreditWords.summary(credits),
+         "items": credits.items.map { item -> [String: Any] in
+             ["kind": item.kind.rawValue, "text": CreditWords.item(item), "title": json(item.title), "used": json(item.used),
+              "limit": json(item.limit), "balance": json(item.balance), "currency": json(item.currency),
+              "endsAt": date(item.endsAt), "enabled": json(item.enabled), "unlimited": item.unlimited]
+         }]
+    }
+
+    @MainActor
     static func accountText(_ account: UsageAccount) -> String {
         let snapshot = store.snapshot(for: account)
         let number = (store.orderedAccounts.firstIndex { $0.id == account.id } ?? -1) + 1
@@ -426,6 +437,7 @@ enum CLICommands {
             lines.append("   " + limitID(metric.id).padding(toLength: 8, withPad: " ", startingAt: 0) + percent.padding(toLength: 6, withPad: " ", startingAt: 0) + reset)
         }
         if let coupons = snapshot.resetCoupons { lines.append("   coupons \(CouponWords.summary(coupons))") }
+        if let credits = snapshot.credits, !credits.isEmpty { lines.append("   credits \(CreditWords.summary(credits))") }
         if let claudeCode = claudeCodeState(account) { lines.append("   \(claudeCode)") }
         return lines.joined(separator: "\n")
     }

@@ -169,7 +169,9 @@ enum ClaudeCedar {
         case .weekly: .weekly
         case .full: .fiveHourAndWeekly
         case .fable:
-            hasFiveHour == true || selected.grant.clears?.contains("five_hour") == true
+            // What a grant clears is in its `clears`, as Claude Code words it; the plan's 5-hour window counts only when
+            // the grant does not say.
+            (selected.grant.clears.map { $0.contains("five_hour") } ?? (hasFiveHour == true))
                 ? .fiveHourAndFableWeekly : .fableWeekly
         }
         let expiries = matching.flatMap { item in

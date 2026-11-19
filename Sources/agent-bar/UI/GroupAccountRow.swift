@@ -48,6 +48,9 @@ struct GroupAccountRow: View {
                                    confirm: actions.confirmCoupon,
                                    cancel: actions.cancelCoupon)
                 }
+                if let credits = snapshot.credits, !credits.isEmpty {
+                    CreditLineView(credits: credits)
+                }
                 // Only what needs attention; a fresh account says nothing, and the footer says when the list was updated.
                 if status(at: .now).tone != .ok {
                     TimelineView(.periodic(from: .now, by: 30)) { context in AccountStatusLine(status: status(at: context.date)) }

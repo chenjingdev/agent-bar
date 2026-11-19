@@ -57,14 +57,34 @@ enum ClaudeCodeVersionCheck: Equatable, Sendable {
 enum ClaudeCouponClient {
     static let minimumVersion = ClaudeCodeVersion(major: 2, minor: 1, patch: 295)
 
-    // Read the installed version once at launch on the provider's background task.
-    static let userAgent: String = userAgent(installed: {
-        guard let output = try? SystemClaudeCLI().run(["--version"],
-            environment: ProviderCLI.processEnvironment(),
-            directory: FileManager.default.homeDirectoryForCurrentUser, timeout: 5),
-            output.status == 0 else { return nil }
-        return ClaudeCodeVersion(output: output.text)
-    }())
+    // The installed version, read on the provider's background task and read again every 10 minutes (Claude Code updates
+    // itself), or after a minute when a read failed: a read that timed out right after login must not hold the minimum.
+    static var userAgent: String {
+        let now = Date()
+        state.lock.lock()
+        let held = state.value
+        state.lock.unlock()
+        if let held, now < held.until { return held.agent }
+        let version: ClaudeCodeVersion? = {
+            guard let output = try? SystemClaudeCLI().run(["--version"],
+                environment: ProviderCLI.processEnvironment(),
+                directory: FileManager.default.homeDirectoryForCurrentUser, timeout: 5),
+                output.status == 0 else { return nil }
+            return ClaudeCodeVersion(output: output.text)
+        }()
+        // A failed read keeps the last version read, if any.
+        let agent = version.map { userAgent(installed: $0) } ?? held?.agent ?? userAgent(installed: nil)
+        state.lock.lock()
+        state.value = (agent, now.addingTimeInterval(version == nil ? 60 : 600))
+        state.lock.unlock()
+        return agent
+    }
+
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var value: (agent: String, until: Date)?
+    }
+    private static let state = State()
 
     static func userAgent(installed: ClaudeCodeVersion?) -> String {
         "claude-cli/\(max(installed ?? minimumVersion, minimumVersion)) (external, cli)"

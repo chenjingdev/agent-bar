@@ -31,6 +31,7 @@ struct CodexUsageProvider: UsageProviding {
                     sourceDescription: "Codex app-server account/rateLimits/read",
                     note: String(localized: "Account-wide Codex usage limits."), isStale: false, requiresLogin: false)
                 snapshot.resetCoupons = CodexResetCredits.coupons(from: response)
+                snapshot.credits = CodexCredits.credits(from: response)
                 return snapshot
             } catch {
                 var failed = ProviderSnapshot.placeholder(for: .codex).failed(error.localizedDescription,

@@ -50,7 +50,9 @@ struct ClaudeResetCouponTests {
         #expect(scope(["clears": ["five_hour", "seven_day"]]) == .fiveHourAndWeekly)
         let fable: [String: Any] = ["type": "full", "gives_back_weekly": true, "clears": ["seven_day_overage_included"]]
         #expect(scope(fable, hasFiveHour: false) == .fableWeekly)
-        #expect(scope(fable, hasFiveHour: true) == .fiveHourAndFableWeekly)
+        // What the grant clears decides, not the plan: a Max account's Fable grant clears only the Fable weekly limit.
+        #expect(scope(fable, hasFiveHour: true) == .fableWeekly)
+        #expect(scope(["type": "full", "gives_back_weekly": true], hasFiveHour: true) == .fiveHourAndFableWeekly)
         #expect(scope(["gives_back_weekly": true, "clears": ["five_hour", "seven_day_overage_included"]]) == .fiveHourAndFableWeekly)
     }
 
@@ -108,7 +110,7 @@ struct ClaudeResetCouponTests {
         let block = try #require(ClaudeCedar.block(from: data))
         let coupons = try #require(ClaudeCedar.coupons(block, hasFiveHour: true, now: Self.now))
         let options = try #require(coupons.options)
-        #expect(options.map(\.scope) == [.weekly, .fiveHourAndFableWeekly, .fiveHourAndWeekly])
+        #expect(options.map(\.scope) == [.weekly, .fableWeekly, .fiveHourAndWeekly])
         #expect(options.map(\.canRedeem) == [true, true, false])
         #expect(options[2].blockReason == .limitRequired)
         #expect(coupons.selectedOption.claim == .claudeGrant(grantID: "weekly"))
@@ -214,13 +216,14 @@ struct ClaudeResetCouponTests {
         fixture.transport.answer = (200, Self.body(grants: [["id": "g", "resets_left": 2, "ends_at": Self.at(9_000), "type": "full"]]))
         let first = await fixture.provider.load()
         #expect(first.resetCoupons?.count == 2 && first.fiveHour?.utilization != nil)
-        #expect(fixture.transport.requests.map(\.url) == [ClaudeCedar.readURL])
+        // Besides the usage read only the prepaid balance, at most every half hour.
+        #expect(fixture.transport.requests.map(\.url) == [ClaudeCedar.readURL, ClaudeFixture.prepaidURL])
         #expect(fixture.transport.requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer tok")
         #expect(fixture.transport.requests.first?.value(forHTTPHeaderField: "User-Agent") == ClaudeFixture.couponAgent)
         // The next read within the half hour asks for usage only, and the coupons are what was known.
         ClaudeUsageCache(overrideURL: fixture.cacheURL, enabled: true).expire()
         let second = await fixture.provider.load()
-        #expect(fixture.transport.requests.count == 2)
+        #expect(fixture.transport.requests.count == 3)
         #expect(fixture.transport.requests.last?.url?.absoluteString == "https://api.anthropic.com/api/oauth/usage")
         #expect(fixture.transport.requests.last?.value(forHTTPHeaderField: "User-Agent") == ClaudeFixture.couponAgent)
         #expect(second.resetCoupons?.count == 2)
@@ -332,7 +335,7 @@ struct ClaudeResetCouponTests {
             return (body, HTTPURLResponse(url: request.url!, statusCode: refused ? 400 : 200, httpVersion: nil, headerFields: nil)!)
         }, couponUserAgent: { ClaudeFixture.couponAgent })
         let snapshot = await provider.load()
-        #expect(sent.all.map(\.url) == [ClaudeCedar.readURL, URL(string: "https://api.anthropic.com/api/oauth/usage")!])
+        #expect(sent.all.map(\.url) == [ClaudeCedar.readURL, URL(string: "https://api.anthropic.com/api/oauth/usage")!, ClaudeFixture.prepaidURL])
         #expect(sent.all.allSatisfy { $0.value(forHTTPHeaderField: "User-Agent") == ClaudeFixture.couponAgent })
         #expect(!snapshot.isStale && snapshot.fiveHour?.utilization != nil && snapshot.resetCoupons == nil)
         #expect(!provider.couponsDue())
@@ -357,7 +360,7 @@ extension ClaudeResetCouponTests {
         }, couponUserAgent: { ClaudeFixture.couponAgent })
         let coupons = try #require(await provider.load().resetCoupons)
         _ = await provider.useCoupon(coupons)
-        #expect(sent.all.map(\.httpMethod) == ["GET", "GET", "POST"])
+        #expect(sent.all.filter { $0.url != ClaudeFixture.prepaidURL }.map(\.httpMethod) == ["GET", "GET", "POST"])
     }
 }
 
@@ -371,6 +374,7 @@ private final class SentURLs: @unchecked Sendable {
 // An account folder with a sign-in that has not expired, its organization, and a fake transport.
 private struct ClaudeFixture {
     static let couponAgent = "claude-cli/2.1.325 (external, cli)"
+    static let prepaidURL = URL(string: "https://api.anthropic.com/api/oauth/organizations/0f1e2d3c-org/prepaid/credits")
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("coupon-claude-\(UUID())")
     let transport = FakeTransport()
     var cacheURL: URL { root.appendingPathComponent("cache/usage.json") }

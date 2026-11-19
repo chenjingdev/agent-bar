@@ -376,3 +376,14 @@
 "Couldn't reset. Try again in a moment." = "초기화하지 못했습니다. 잠시 뒤 다시 해 보세요.";
 "Use 1 coupon to reset the weekly limit?" = "쿠폰 1장으로 주간 한도를 초기화할까요?";
 "The weekly limit is reset." = "주간 한도를 초기화했습니다.";
+
+/* Credits on a group's account list and in the CLI. */
+"Credits unlimited" = "크레딧 무제한";
+"Credits %@" = "크레딧 %@";
+"Credit" = "크레딧";
+"%@ of %@ used" = "%@ / %@ 사용";
+"Usage credits off" = "추가 사용 꺼짐";
+"Usage credits %@ / %@" = "추가 사용 %@ / %@";
+"Usage credits %@ spent" = "추가 사용 %@ 씀";
+"Prepaid %@" = "선불 잔액 %@";
+"Claude Code and Cowork credit" = "Claude Code·Cowork 크레딧";
