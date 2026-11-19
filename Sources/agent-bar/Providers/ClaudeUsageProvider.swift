@@ -156,7 +156,8 @@ struct ClaudeUsageProvider: UsageProviding {
                 sourceDescription: sourceDescription(for: successData),
                 couponAnswer: withCoupons && !apiResult.couponsRefused ? apiResult.body : nil,
                 couponsRefused: apiResult.couponsRefused,
-                answer: apiResult.body
+                // The coupon read asks with `skip_spend=1`, which leaves the credits out; only a plain read brings them.
+                answer: withCoupons && !apiResult.couponsRefused ? nil : apiResult.body
             )
         }
 
@@ -904,15 +905,16 @@ extension ClaudeUsageProvider {
     func couponRecord() -> ClaudeCouponRecord? {
         guard let url = couponRecordURL, let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        // A record read with another Claude Code version still shows; `couponsDue` reads it again with this one.
         guard let record = try? decoder.decode(ClaudeCouponRecord.self, from: data),
-              record.userAgent == couponUserAgent(), record.includesConditions == true else { return nil }
+              record.includesConditions == true else { return nil }
         return record
     }
 
     // Whether this read should also ask for the coupons. Never without a usage cache, so tests and the claim do not.
     func couponsDue(now: Date = .now) -> Bool {
         guard cacheURL != nil else { return false }
-        guard let record = couponRecord() else { return true }
+        guard let record = couponRecord(), record.userAgent == couponUserAgent() else { return true }
         return now >= record.nextCheck || (record.coupons != nil && record.coupons?.options == nil)
     }
 
