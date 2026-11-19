@@ -383,6 +383,15 @@
 "Credit" = "크레딧";
 "%@ of %@ used" = "%@ / %@ 사용";
 "Usage credits off" = "추가 사용 꺼짐";
+"Usage credits off · %@" = "추가 사용 꺼짐 · %@";
+"Usage credits blocked · %@" = "추가 사용 막힘 · %@";
+"organization out of credits" = "조직 크레딧 소진";
+"monthly limit reached" = "월 한도 도달";
+"turned off by the organization" = "조직이 꺼 둠";
+"turned off for this account" = "이 계정만 꺼짐";
+"limit $0" = "한도 $0";
+"not on this seat" = "이 좌석엔 없음";
+"not set up" = "조직 설정 안 됨";
 "Usage credits %@ / %@" = "추가 사용 %@ / %@";
 "Usage credits %@ spent" = "추가 사용 %@ 씀";
 "Prepaid %@" = "선불 잔액 %@";

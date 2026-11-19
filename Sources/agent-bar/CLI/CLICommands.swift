@@ -410,7 +410,8 @@ enum CLICommands {
          "items": credits.items.map { item -> [String: Any] in
              ["kind": item.kind.rawValue, "text": CreditWords.item(item), "title": json(item.title), "used": json(item.used),
               "limit": json(item.limit), "balance": json(item.balance), "currency": json(item.currency),
-              "endsAt": date(item.endsAt), "enabled": json(item.enabled), "unlimited": item.unlimited]
+              "endsAt": date(item.endsAt), "enabled": json(item.enabled), "unlimited": item.unlimited,
+              "reason": json(item.reason)]
          }]
     }
 

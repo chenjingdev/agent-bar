@@ -44,6 +44,25 @@ struct AccountCreditsTests {
         #expect(CreditWords.item(empty) == "Prepaid $0")
     }
 
+    @Test func teamSeatSaysWhyUsageCreditsAreOff() throws {
+        func words(_ extra: [String: Any]) throws -> String {
+            let items = ClaudeCredits.credits(fromUsage: try JSONSerialization.data(withJSONObject: ["extra_usage": extra]))
+            return CreditWords.summary(AccountCredits(items: items))
+        }
+        let base: [String: Any] = ["monthly_limit": NSNull(), "used_credits": NSNull(), "utilization": NSNull(), "currency": "USD"]
+        #expect(try words(base.merging(["is_enabled": false, "disabled_reason": "out_of_credits"]) { $1 })
+                == "Usage credits blocked · organization out of credits")
+        #expect(try words(base.merging(["is_enabled": true, "monthly_limit": 5000, "used_credits": 5000,
+                                        "disabled_reason": "org_spend_cap_reached"]) { $1 })
+                == "Usage credits blocked · monthly limit reached · $50 / $50")
+        #expect(try words(base.merging(["is_enabled": false, "disabled_reason": "org_level_disabled_until",
+                                        "spend_limit_reached": false]) { $1 }) == "Usage credits off · turned off by the organization")
+        #expect(try words(base.merging(["is_enabled": false, "disabled_reason": "member_zero_credit_limit"]) { $1 })
+                == "Usage credits off · limit $0")
+        #expect(try words(base.merging(["is_enabled": false, "disabled_reason": "something_new"]) { $1 }) == "Usage credits off")
+        #expect(try words(base.merging(["is_enabled": false]) { $1 }) == "Usage credits off")
+    }
+
     @Test func userAgentNeverBelowMinimum() {
         #expect(ClaudeCouponClient.userAgent(installed: ClaudeCodeVersion(major: 2, minor: 1, patch: 327)) == "claude-cli/2.1.327 (external, cli)")
         #expect(ClaudeCouponClient.userAgent(installed: nil) == "claude-cli/2.1.295 (external, cli)")

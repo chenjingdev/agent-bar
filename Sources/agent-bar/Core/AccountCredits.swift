@@ -25,6 +25,9 @@ struct AccountCredits: Equatable, Codable, Sendable {
         var endsAt: Date? = nil
         var enabled: Bool? = nil
         var unlimited: Bool = false
+        // Why usage credits are off or blocked, as the usage answer's `extra_usage.disabled_reason` says it. A Team or
+        // Enterprise seat learns its organization's credits only this way: the prepaid balance is Pro, Max and Ultra only.
+        var reason: String? = nil
     }
 
     var items: [Item]
@@ -71,9 +74,12 @@ enum ClaudeCredits {
         if let extra = reply["extra_usage"] as? [String: Any] {
             let currency = (extra["currency"] as? String) ?? "USD"
             let enabled = extra["is_enabled"] as? Bool ?? false
+            var reason = (extra["disabled_reason"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            // Claude Code reads org_level_disabled_until as a reached cap unless spend_limit_reached says otherwise.
+            if reason == "org_level_disabled_until", extra["spend_limit_reached"] as? Bool == false { reason = "org_level_disabled" }
             items.append(.init(kind: .extraUsage, used: number(extra["used_credits"]).map { $0 / 100 },
                                limit: number(extra["monthly_limit"]).map { $0 / 100 }, currency: currency, enabled: enabled,
-                               unlimited: enabled && number(extra["monthly_limit"]) == nil))
+                               unlimited: enabled && number(extra["monthly_limit"]) == nil, reason: reason))
         }
         return items
     }

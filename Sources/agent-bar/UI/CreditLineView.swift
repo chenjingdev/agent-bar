@@ -23,14 +23,42 @@ enum CreditWords {
             if let ends = item.endsAt { text += " · " + String(localized: "expires \(CouponWords.day(ends, bundle))", bundle: bundle) }
             return text
         case .extraUsage:
-            guard item.enabled == true else { return String(localized: "Usage credits off", bundle: bundle) }
             let used = money(item.used ?? 0, item.currency)
+            var text: String
+            if let reason = item.reason, let why = reasonWords(reason, bundle) {
+                // Spent up or capped: the organization has usage credits, but none are left for now.
+                if blocking.contains(reason) {
+                    text = String(localized: "Usage credits blocked · \(why)", bundle: bundle)
+                    if let limit = item.limit { text += " · " + "\(used) / \(money(limit, item.currency))" }
+                    return text
+                }
+                return String(localized: "Usage credits off · \(why)", bundle: bundle)
+            }
+            guard item.enabled == true else { return String(localized: "Usage credits off", bundle: bundle) }
             if let limit = item.limit {
                 return String(localized: "Usage credits \(used) / \(money(limit, item.currency))", bundle: bundle)
             }
             return String(localized: "Usage credits \(used) spent", bundle: bundle)
         case .prepaid:
             return String(localized: "Prepaid \(money(item.balance ?? 0, item.currency))", bundle: bundle)
+        }
+    }
+
+    // The reasons Claude Code counts as credits that are on but used up (its "blocked"), not turned off.
+    static let blocking: Set<String> = ["out_of_credits", "org_spend_cap_reached", "org_level_disabled_until"]
+
+    // `extra_usage.disabled_reason`, grouped as Claude Code's own messages group them; an unknown one says nothing more.
+    static func reasonWords(_ reason: String, _ bundle: Bundle = .main) -> String? {
+        switch reason {
+        case "out_of_credits": String(localized: "organization out of credits", bundle: bundle)
+        case "org_spend_cap_reached", "org_level_disabled_until": String(localized: "monthly limit reached", bundle: bundle)
+        case "org_level_disabled", "org_service_level_disabled": String(localized: "turned off by the organization", bundle: bundle)
+        case "member_level_disabled": String(localized: "turned off for this account", bundle: bundle)
+        case "member_zero_credit_limit", "seat_tier_zero_credit_limit", "group_zero_credit_limit":
+            String(localized: "limit $0", bundle: bundle)
+        case "seat_tier_level_disabled": String(localized: "not on this seat", bundle: bundle)
+        case "overage_not_provisioned", "no_limits_configured": String(localized: "not set up", bundle: bundle)
+        default: nil
         }
     }
 
