@@ -14,6 +14,8 @@ struct AccountCredits: Equatable, Codable, Sendable {
             case extraUsage
             // Prepaid money left.
             case prepaid
+            // Console API spend this calendar month (UTC), read with an Admin API key: only what was used, no balance.
+            case apiSpend
         }
         var kind: Kind
         var title: String? = nil
@@ -92,6 +94,20 @@ enum ClaudeCredits {
         return .init(kind: .prepaid, balance: cents / 100, currency: (reply["currency"] as? String) ?? "USD", endsAt: next)
     }
 
+    // `GET /v1/organizations/cost_report` with a day bucket: each result's `amount` is a decimal string in cents.
+    static func apiSpend(fromCostReport answer: Data) -> AccountCredits.Item? {
+        guard let reply = (try? JSONSerialization.jsonObject(with: answer)) as? [String: Any],
+              let buckets = reply["data"] as? [[String: Any]] else { return nil }
+        var cents = 0.0
+        for bucket in buckets {
+            for case let result as [String: Any] in (bucket["results"] as? [Any]) ?? [] {
+                if let text = result["amount"] as? String, let value = Double(text) { cents += value }
+                else if let value = number(result["amount"]) { cents += value }
+            }
+        }
+        return .init(kind: .apiSpend, used: cents / 100, currency: "USD")
+    }
+
     private static func grant(_ block: [String: Any], title: String?) -> AccountCredits.Item? {
         let limit = number(block["limit_dollars"])
         let used = number(block["used_dollars"]) ?? number(block["remaining_dollars"]).flatMap { left in limit.map { $0 - left } }
@@ -121,6 +137,8 @@ struct ClaudeCreditsRecord: Codable, Equatable {
     var usageItems: [AccountCredits.Item]?
     var prepaid: AccountCredits.Item?
     var prepaidChecked: Date?
+    var apiSpend: AccountCredits.Item?
+    var apiSpendChecked: Date?
 
     static let prepaidInterval: TimeInterval = 30 * 60
 
@@ -129,7 +147,7 @@ struct ClaudeCreditsRecord: Codable, Equatable {
     }
 
     var credits: AccountCredits? {
-        let items = (usageItems ?? []) + (prepaid.map { [$0] } ?? [])
+        let items = (usageItems ?? []) + (prepaid.map { [$0] } ?? []) + (apiSpend.map { [$0] } ?? [])
         return items.isEmpty ? nil : AccountCredits(items: items)
     }
 }

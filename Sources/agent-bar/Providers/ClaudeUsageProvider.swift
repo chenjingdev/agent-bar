@@ -886,6 +886,26 @@ extension ClaudeUsageProvider {
                 if (response as? HTTPURLResponse)?.statusCode == 200 { record.prepaid = ClaudeCredits.prepaid(from: data) }
             }
         }
+        // An Admin API key kept next to the account's login (`anthropic-admin-key`) brings this month's Console API spend.
+        let apiDue = record.apiSpendChecked.map { now.timeIntervalSince($0) >= ClaudeCreditsRecord.prepaidInterval } ?? true
+        if cacheURL != nil, apiDue,
+           let key = (try? String(contentsOf: directory.appendingPathComponent("anthropic-admin-key"), encoding: .utf8))?
+               .trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: "UTC")!
+            let start = calendar.dateInterval(of: .month, for: now)?.start ?? now
+            let stamp = ISO8601DateFormatter().string(from: start)
+            if let url = URL(string: "https://api.anthropic.com/v1/organizations/cost_report?starting_at=\(stamp)&bucket_width=1d&limit=31") {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 15
+                request.setValue(key, forHTTPHeaderField: "x-api-key")
+                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                if let (data, response) = try? await transport(request) {
+                    record.apiSpendChecked = now
+                    if (response as? HTTPURLResponse)?.statusCode == 200 { record.apiSpend = ClaudeCredits.apiSpend(fromCostReport: data) }
+                }
+            }
+        }
         if record != previous, let url = creditsRecordURL {
             let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
             if let data = try? encoder.encode(record) {

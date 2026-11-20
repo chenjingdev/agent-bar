@@ -41,6 +41,8 @@ enum CreditWords {
             return String(localized: "Usage credits \(used) spent", bundle: bundle)
         case .prepaid:
             return String(localized: "Prepaid \(money(item.balance ?? 0, item.currency))", bundle: bundle)
+        case .apiSpend:
+            return String(localized: "API spent \(money(item.used ?? 0, item.currency)) this month", bundle: bundle)
         }
     }
 

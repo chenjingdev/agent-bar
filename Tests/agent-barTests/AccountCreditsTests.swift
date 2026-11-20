@@ -44,6 +44,14 @@ struct AccountCreditsTests {
         #expect(CreditWords.item(empty) == "Prepaid $0")
     }
 
+    @Test func consoleApiSpendIsCentsSummedOverTheMonth() throws {
+        let report: [String: Any] = ["data": [["results": []], ["results": [["amount": "122.6", "currency": "USD"], ["amount": "50"]]]]]
+        let item = try #require(ClaudeCredits.apiSpend(fromCostReport: try JSONSerialization.data(withJSONObject: report)))
+        #expect(item.kind == .apiSpend)
+        #expect(abs((item.used ?? 0) - 1.726) < 0.0001)
+        #expect(CreditWords.item(item) == "API spent $1.73 this month")
+    }
+
     @Test func teamSeatSaysWhyUsageCreditsAreOff() throws {
         func words(_ extra: [String: Any]) throws -> String {
             let items = ClaudeCredits.credits(fromUsage: try JSONSerialization.data(withJSONObject: ["extra_usage": extra]))
